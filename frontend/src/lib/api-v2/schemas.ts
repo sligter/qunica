@@ -50,6 +50,7 @@ export const groupSchedulerConfigSchema: z.ZodType<GroupSchedulerConfig> = z.obj
 })
 
 const groupTurnStatusSchema = z.enum([
+  'queued',
   'pending',
   'running',
   'waiting_for_user',
@@ -361,6 +362,8 @@ const estimatedCostSchema = z
 
 const groupTurnTraceSchema: z.ZodType<GroupTurnTraceResponse> = z
   .object({
+    execution_locations: z.array(z.object({ agent_id: z.string(), computer_id: z.string(), computer_name: z.string(), generation: z.string() })).optional(),
+    stop_confirmation_required: z.boolean().optional(),
     turn: groupTurnSummarySchema,
     budget: groupTurnBudgetUsageSchema,
     dispatches: z.array(agentDispatchTraceSchema),

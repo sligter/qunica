@@ -34,6 +34,7 @@ export function openApiV2SseStream(opts: {
   url: string
   body: unknown
   token: string
+  initialMethod?: 'GET' | 'POST'
   lastEventId?: string
   /** Read-only endpoint for retries. Missing identity must never re-execute a POST. */
   replayUrl?: (lastEventId: string | undefined) => string | null
@@ -107,7 +108,8 @@ export function openApiV2SseStream(opts: {
     if (lastEventId) headers['last-event-id'] = lastEventId
 
     void fetchEventSource(apiUrl(opts.url), {
-      method: 'POST', headers, body: JSON.stringify(opts.body), signal: current.signal,
+      method: opts.initialMethod ?? 'POST', headers,
+      body: opts.initialMethod === 'GET' ? undefined : JSON.stringify(opts.body), signal: current.signal,
       openWhenHidden: true,
       fetch: async (input, init) => {
         if (stale()) throw new DOMException('Stream superseded', 'AbortError')
@@ -131,6 +133,16 @@ export function openApiV2SseStream(opts: {
         if (stale()) throw new DOMException('Stream superseded', 'AbortError')
         if (!response.ok) {
           if (response.status === 401) expireAuthToken(opts.token)
+          if (response.status === 409) {
+            const body = await response.clone().json().catch(() => null)
+            if (body?.error?.code === 'resync_required') {
+              const active = await opts.handlers.onRecover?.(ctrl.signal)
+              if (stale()) throw new DOMException('Stream superseded', 'AbortError')
+              if (active === false) close()
+              else { cleanup(); opts.handlers.onDisconnect?.(new Error('Run replay expired. Reload the conversation.')) }
+              throw new FatalSseError('Run replay expired')
+            }
+          }
           // A send may be accepted before the first event is durable.
           if (response.status === 404 && opts.replayUrl && !firstRequest) {
             if (lastEventId) lastEventId = undefined

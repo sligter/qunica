@@ -26,6 +26,8 @@ pub struct GroupTurnTraceResponse {
     dispatches: Vec<DispatchSnapshot>,
     estimated_cost: Option<EstimatedCostResponse>,
     cost_estimation_status: CostEstimationStatus,
+    stop_confirmation_required: bool,
+    execution_locations: Vec<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,7 +58,7 @@ pub async fn get(
     headers: HeaderMap,
     Path((group_id, turn_id)): Path<(String, String)>,
 ) -> Result<Json<GroupTurnTraceResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let turn_id = validate_uuid(&turn_id, "turn id")?;
     ensure_active_owned_group(state.db.pool(), &group_id, &owner_id).await?;
@@ -75,7 +77,20 @@ pub async fn get(
         return Err(ApiError::not_found("turn not found"));
     }
 
-    Ok(Json(trace_response(trace)))
+    let mut response = trace_response(trace);
+    response.stop_confirmation_required = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM execution_jobs WHERE turn_id=? AND status='interrupted' AND COALESCE(error,'')!='effects_verified_stopped')",
+    )
+    .bind(&turn_id)
+    .fetch_one(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("failed to load stop confirmation state"))?;
+    let locations:Vec<String>=sqlx::query_scalar("SELECT json_object('agent_id',b.agent_id,'computer_id',b.computer_id,'computer_name',c.name,'generation',b.generation) FROM computer_run_bindings b JOIN computers c ON c.id=b.computer_id WHERE b.turn_id=? ORDER BY b.agent_id,b.computer_id,b.generation").bind(&turn_id).fetch_all(state.db.pool()).await.map_err(|_|ApiError::internal("failed to load execution locations"))?;
+    response.execution_locations = locations
+        .into_iter()
+        .filter_map(|raw| serde_json::from_str(&raw).ok())
+        .collect();
+    Ok(Json(response))
 }
 
 /// Idempotently cancel an owner-scoped scheduler turn. Persistent state is
@@ -85,7 +100,7 @@ pub async fn cancel(
     headers: HeaderMap,
     Path((group_id, turn_id)): Path<(String, String)>,
 ) -> Result<Json<GroupTurnTraceResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let turn_id = validate_uuid(&turn_id, "turn id")?;
     ensure_active_owned_group(state.db.pool(), &group_id, &owner_id).await?;
@@ -100,11 +115,28 @@ pub async fn cancel(
     }
     let was_active = matches!(
         existing.turn.status,
-        TurnStatus::Pending | TurnStatus::Running | TurnStatus::WaitingForUser
+        TurnStatus::Queued | TurnStatus::Pending | TurnStatus::Running | TurnStatus::WaitingForUser
     );
-    let turn = store.cancel_turn(&turn_id).await.map_err(map_trace_error)?;
+    crate::api::commands::accept(
+        &state,
+        &owner_id,
+        crate::api::commands::Command {
+            request_id: headers
+                .get("x-request-id")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            name: "turn.cancel".into(),
+            target: serde_json::json!({"turn_id":turn_id}),
+            payload: serde_json::json!({}),
+        },
+    )
+    .await?;
     if was_active {
-        state.active_turns.cancel(&turn.thread_id, &turn.id).await;
+        state
+            .active_turns
+            .cancel(&existing.turn.thread_id, &turn_id)
+            .await;
     }
     let trace = store
         .load_turn_trace(&turn_id)
@@ -136,6 +168,8 @@ fn trace_response(trace: TurnTrace) -> GroupTurnTraceResponse {
         dispatches,
         estimated_cost: None,
         cost_estimation_status: CostEstimationStatus::Unavailable,
+        stop_confirmation_required: false,
+        execution_locations: Vec::new(),
     }
 }
 

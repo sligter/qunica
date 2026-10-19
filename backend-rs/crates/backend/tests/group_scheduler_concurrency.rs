@@ -158,9 +158,11 @@ async fn finishing_a_dispatch_retries_a_transient_sqlite_write_lock() {
     let store = fixture.store.clone();
     let output = fixture.output("message-after-lock");
     let ready = Arc::new(Barrier::new(2));
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let finish_ready = ready.clone();
     let finish = tokio::spawn(async move {
         finish_ready.wait().await;
+        let _ = entered_tx.send(());
         store
             .finish_dispatch(FinishDispatch {
                 dispatch_id: "dispatch-locked".to_owned(),
@@ -173,6 +175,9 @@ async fn finishing_a_dispatch_retries_a_transient_sqlite_write_lock() {
             .await
     });
     ready.wait().await;
+    // Wait until the worker actually enters the write attempt; a busy test
+    // runtime must not turn the retry assertion into a scheduling race.
+    entered_rx.await.unwrap();
     let started = std::time::Instant::now();
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     blocker.rollback().await.unwrap();
@@ -219,13 +224,16 @@ async fn persisting_a_stream_event_retries_a_transient_sqlite_write_lock() {
         json!({"status": "completed"}),
     );
     let ready = Arc::new(Barrier::new(2));
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let persist_ready = ready.clone();
     let thread_id = fixture.thread_id.clone();
     let persist = tokio::spawn(async move {
         persist_ready.wait().await;
+        let _ = entered_tx.send(());
         allocator.persist_event(&thread_id, &event).await
     });
     ready.wait().await;
+    entered_rx.await.unwrap();
     let started = std::time::Instant::now();
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     blocker.rollback().await.unwrap();

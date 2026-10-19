@@ -306,7 +306,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
         workspace_id: values.workspace_id,
         workspace_ids: [values.workspace_id, ...values.workspace_ids],
         llm_provider_id:
-          values.runtime_kind === 'llm_chat' ? values.llm_provider_id || null : null,
+          (values.runtime_kind === 'llm_chat' || values.acp_profile === 'opencode') ? values.llm_provider_id || null : null,
         skill_ids: selectedSkillIds,
       })
       form.reset()
@@ -482,6 +482,14 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
           onRefreshCapabilities={acpCapabilities.refresh}
         />
       )}
+
+      {runtimeKind === 'acp' && form.watch('acp_profile') === 'opencode' ? <div className="space-y-1.5">
+        <Label htmlFor="computer-provider">{t('computers:proxyProvider')}</Label>
+        <select id="computer-provider" className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" {...form.register('llm_provider_id')}>
+          <option value="">{t('computers:proxyProviderOptional')}</option>
+          {(providers.data ?? []).filter(p => ['openai','openai-compatible','openai_compatible','deepseek','vllm','openrouter'].includes(p.kind)).map(p => <option key={p.id} value={p.id}>{p.name} · {p.default_model}</option>)}
+        </select>
+      </div> : null}
 
       {runtimeKind === 'llm_chat' && (
         <>

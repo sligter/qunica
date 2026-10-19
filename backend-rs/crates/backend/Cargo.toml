@@ -8,12 +8,16 @@ license.workspace = true
 qunica-domain = { path = "../domain" }
 anyhow = "1"
 async-trait = "0.1"
-axum = { version = "0.7", features = ["macros", "multipart"] }
+axum = { version = "0.7", features = ["macros", "multipart", "ws"] }
 base64 = "0.22"
 bcrypt = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10.4"
 clap = { version = "4", features = ["derive", "env"] }
+croner = "3.0.1"
 futures-util = "0.3"
 globset = "0.4"
+hmac = "0.12"
 jsonwebtoken = "9"
 # The browser build has no native terminal to fall back on, so the server owns
 # the PTY. Same version the desktop shell already uses.
@@ -51,4 +55,6 @@ windows-sys = { version = "0.61", features = [
 libc = "0.2"
 
 [dev-dependencies]
+qunica-computer-supervisor = { path = "../computer-supervisor" }
+tokio-tungstenite = "0.24"
 tower = { version = "0.5", features = ["util"] }

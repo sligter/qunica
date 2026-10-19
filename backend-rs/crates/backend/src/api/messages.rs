@@ -11,12 +11,11 @@ use axum::{
     Json,
 };
 use futures_util::StreamExt;
-use qunica_domain::events::{StreamEvent, StreamEventKind};
+use qunica_domain::events::StreamEventKind;
 use qunica_domain::runtime::ReasoningEffort;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
@@ -28,42 +27,33 @@ use crate::{
             event_kind_from_wire, last_event_id, parse_replay_cursor, replay_existing_stream,
             replay_group_stream, sse_response, SseResponse,
         },
-        workspace_files::{validate_conversation_attachments, ConversationScope},
         AppState,
     },
-    runtime::{
-        group::MessageAttachment, run_group_turn, run_group_turn_with_stream_id,
-        sequence::SequenceAllocator, RuntimeServices, TurnOutcome, TurnRequest,
-    },
+    runtime::{group::MessageAttachment, TurnOutcome},
 };
 
-/// Buffered events between the runtime task and the SSE response body. Bounded
-/// so a slow/absent client applies backpressure (and so disconnects surface as
-/// a failed send rather than unbounded growth).
-const CHANNEL_CAPACITY: usize = 64;
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MessageInput {
-    content: String,
+    pub(crate) content: String,
     #[serde(default)]
-    attachments: Vec<MessageAttachmentInput>,
+    pub(crate) attachments: Vec<MessageAttachmentInput>,
     #[serde(default)]
-    thread_id: Option<String>,
+    pub(crate) thread_id: Option<String>,
     #[serde(default)]
-    client_request_id: Option<String>,
+    pub(crate) client_request_id: Option<String>,
     /// Model to use for this message only, overriding the agent's configured
     /// one. Validated against the bound provider's model list before the turn
     /// starts, so a bad value is a normal 400 rather than an in-stream error.
     #[serde(default)]
-    model_override: Option<String>,
+    pub(crate) model_override: Option<String>,
     /// Reasoning depth for this message: `low`, `medium`, or `high`.
     #[serde(default)]
-    effort_override: Option<String>,
+    pub(crate) effort_override: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MessageAttachmentInput {
-    path: String,
+    pub(crate) path: String,
 }
 
 pub type StreamRequest = MessageInput;
@@ -79,6 +69,7 @@ pub struct ListMessagesQuery {
 #[derive(Debug, Serialize)]
 pub struct MessageResponse {
     id: String,
+    seq: String,
     group_id: String,
     thread_id: Option<String>,
     sender_type: String,
@@ -147,6 +138,7 @@ struct PersistedEventRow {
 #[derive(Debug, sqlx::FromRow)]
 struct MessageRow {
     id: String,
+    seq: i64,
     group_id: String,
     thread_id: String,
     sender_type: String,
@@ -201,6 +193,7 @@ impl From<MessageRow> for MessageResponse {
             .unwrap_or_default();
         Self {
             id: row.id,
+            seq: row.seq.to_string(),
             group_id: row.group_id,
             thread_id: Some(row.thread_id),
             sender_type: row.sender_type,
@@ -252,7 +245,7 @@ async fn list_for_kind(
     query: ListMessagesQuery,
     expected: ConversationKind,
 ) -> Result<Json<Vec<MessageResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let limit = parse_limit(query.limit.as_deref())?;
     let before_id = query
@@ -334,7 +327,7 @@ async fn reset_context_for_kind(
     group_id: String,
     expected: ConversationKind,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
 
@@ -384,7 +377,7 @@ async fn clear_for_kind(
     group_id: String,
     expected: ConversationKind,
 ) -> Result<Json<ClearMessagesResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
@@ -491,7 +484,7 @@ async fn delete_for_kind(
     message_id: String,
     expected: ConversationKind,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let message_id = validate_uuid(&message_id, "message id")?;
 
@@ -590,7 +583,7 @@ async fn send_for_kind(
     body: SendRequest,
     expected: ConversationKind,
 ) -> Result<(StatusCode, Json<MessageSendResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     send_for_owner(&state, &owner_id, &group_id, body, expected).await
 }
 
@@ -646,69 +639,17 @@ async fn send_for_owner(
     body: SendRequest,
     expected: ConversationKind,
 ) -> Result<(StatusCode, Json<MessageSendResponse>), ApiError> {
-    let group_id = validate_uuid(group_id, "group id")?;
-
-    let content = body.content.trim().to_string();
-    ensure_active_owned_conversation(state.db.pool(), &group_id, owner_id, expected).await?;
-    let thread_id = body
-        .thread_id
-        .as_deref()
-        .map(|raw| validate_uuid(raw, "thread id"))
-        .transpose()?;
-    if let Some(thread_id) = thread_id.as_deref() {
-        ensure_writable_thread(state, &group_id, thread_id).await?;
-    }
-    if expected == ConversationKind::Direct {
-        ensure_direct_agent_available(state.db.pool(), &group_id, owner_id).await?;
-    }
-    let attachment_paths = body
-        .attachments
-        .into_iter()
-        .map(|attachment| attachment.path)
-        .collect::<Vec<_>>();
-    // Attachments always belong to the conversation workspace, never to an
-    // agent's own folder: their stored paths are relative to that one root.
-    let attachments = validate_conversation_attachments(
-        state.db.pool(),
-        crate::api::workspace_files::ConversationRoot::conversation(
-            conversation_scope(expected),
-            &group_id,
-            owner_id,
-        ),
-        &attachment_paths,
-    )
-    .await?;
-    if content.is_empty() && attachments.is_empty() {
-        return Err(ApiError::invalid_input(
-            "content or attachments must not be empty",
-        ));
-    }
-
-    let (tx, mut rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
-    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
-        .with_active_turn_registry(state.active_turns.clone());
-    let model_override = validate_model_override(
-        state.db.pool(),
-        &group_id,
-        owner_id,
-        body.model_override.as_deref(),
-    )
-    .await?;
-    let effort_override = parse_effort_override(body.effort_override.as_deref())?;
-    let request = TurnRequest {
-        group_id: group_id.clone(),
-        owner_id: owner_id.to_string(),
-        thread_id,
-        content,
-        attachments,
-        model_override,
-        effort_override,
-    };
-    let handle = tokio::spawn(async move { run_group_turn(services, request, tx).await });
-
+    ensure_active_owned_conversation(state.db.pool(), group_id, owner_id, expected).await?;
+    let response = accept_http_message(state, owner_id, group_id, body).await?;
+    let stream_id = Uuid::parse_str(response["stream_id"].as_str().unwrap()).unwrap();
+    let mut rx = super::sse_replay::follow_new_stream(
+        state.db.pool().clone(),
+        group_id.to_string(),
+        stream_id,
+    );
     let mut durable_events = Vec::new();
     let mut warnings = Vec::new();
-    while let Some(event) = rx.recv().await {
+    while let Some(event) = rx.next().await {
         if is_durable_response_event(&event.kind) {
             durable_events.push(DurableEventRef {
                 event_id: event.event_id.clone(),
@@ -725,9 +666,18 @@ async fn send_for_owner(
         }
     }
 
-    let outcome = handle
-        .await
-        .map_err(|_| ApiError::internal("message send task failed"))?;
+    let execution_status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM execution_jobs WHERE stream_id=?")
+            .bind(stream_id.to_string())
+            .fetch_optional(state.db.pool())
+            .await
+            .map_err(|_| ApiError::internal("database error"))?;
+    let outcome = match execution_status.as_deref() {
+        Some("waiting_for_user") => TurnOutcome::WaitingForUser,
+        Some("failed" | "interrupted") => TurnOutcome::Error,
+        Some("cancelled") => TurnOutcome::Cancelled,
+        _ => TurnOutcome::Completed,
+    };
 
     let mut user_message_id: Option<String> = None;
     let mut agent_reply_ids = Vec::new();
@@ -794,14 +744,14 @@ async fn send_for_owner(
         return Err(ApiError::invalid_input(message));
     };
 
-    let user_message = fetch_message_response(state.db.pool(), &group_id, &user_message_id).await?;
+    let user_message = fetch_message_response(state.db.pool(), group_id, &user_message_id).await?;
     let mut agent_replies = Vec::new();
     for id in agent_reply_ids {
-        agent_replies.push(fetch_message_response(state.db.pool(), &group_id, &id).await?);
+        agent_replies.push(fetch_message_response(state.db.pool(), group_id, &id).await?);
     }
     let mut dispatch_messages = Vec::new();
     for id in dispatch_message_ids {
-        dispatch_messages.push(fetch_message_response(state.db.pool(), &group_id, &id).await?);
+        dispatch_messages.push(fetch_message_response(state.db.pool(), group_id, &id).await?);
     }
 
     let all_silent = saw_silence && !silent_turns.is_empty() && agent_replies.is_empty();
@@ -833,7 +783,7 @@ async fn send_for_owner(
 /// JSON 400 the client can show as a form error, instead of a turn that opens
 /// an SSE stream and then fails inside it. `None` means the agents keep their
 /// configured models.
-async fn validate_model_override(
+pub(crate) async fn validate_model_override(
     pool: &sqlx::SqlitePool,
     group_id: &str,
     owner_id: &str,
@@ -886,7 +836,9 @@ async fn validate_model_override(
 /// concern — the UI hides the control for models that do not advertise it —
 /// but an unrecognized level is still rejected here rather than silently
 /// dropped, so a typo does not quietly produce an ordinary answer.
-fn parse_effort_override(raw: Option<&str>) -> Result<Option<ReasoningEffort>, ApiError> {
+pub(crate) fn parse_effort_override(
+    raw: Option<&str>,
+) -> Result<Option<ReasoningEffort>, ApiError> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
@@ -942,8 +894,10 @@ async fn replay_for_kind(
     stream_id: String,
     expected: ConversationKind,
 ) -> Result<SseResponse, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
+    let stream_id:String=sqlx::query_scalar("SELECT json_extract(response_json,'$.stream_id') FROM command_receipts WHERE owner_id=? AND request_id=? AND command_name='message.send'")
+        .bind(&owner_id).bind(&stream_id).fetch_optional(state.db.pool()).await.map_err(|_|ApiError::internal("database error"))?.unwrap_or(stream_id);
     let stream_id = Uuid::parse_str(&stream_id)
         .map_err(|_| ApiError::invalid_input("stream id must be a UUID"))?;
     ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
@@ -980,98 +934,44 @@ async fn stream_for_kind(
     body: StreamRequest,
     expected: ConversationKind,
 ) -> Result<SseResponse, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let group_id = validate_uuid(&group_id, "group id")?;
-
-    let content = body.content.trim().to_string();
+    let owner_id = current_user_id(&headers, &state).await?;
     ensure_active_owned_conversation(state.db.pool(), &group_id, &owner_id, expected).await?;
-    let thread_id = body
-        .thread_id
-        .as_deref()
-        .map(|raw| validate_uuid(raw, "thread id"))
-        .transpose()?;
-    if let Some(thread_id) = thread_id.as_deref() {
-        ensure_conversation_thread(state.db.pool(), &group_id, thread_id).await?;
-    }
-    if expected == ConversationKind::Direct {
-        ensure_direct_agent_available(state.db.pool(), &group_id, &owner_id).await?;
-    }
-    let attachment_paths = body
-        .attachments
-        .into_iter()
-        .map(|attachment| attachment.path)
-        .collect::<Vec<_>>();
-    // Attachments always belong to the conversation workspace, never to an
-    // agent's own folder: their stored paths are relative to that one root.
-    let attachments = validate_conversation_attachments(
-        state.db.pool(),
-        crate::api::workspace_files::ConversationRoot::conversation(
-            conversation_scope(expected),
-            &group_id,
-            &owner_id,
-        ),
-        &attachment_paths,
-    )
-    .await?;
-    if content.is_empty() && attachments.is_empty() {
-        return Err(ApiError::invalid_input(
-            "content or attachments must not be empty",
+    if let Some(cursor) = last_event_id(&headers)? {
+        return Ok(sse_response(
+            replay_group_stream(
+                state.db.pool().clone(),
+                group_id,
+                parse_replay_cursor(&cursor)?,
+            )
+            .await?,
         ));
     }
-
-    if let Some(cursor) = last_event_id(&headers)? {
-        let cursor = parse_replay_cursor(&cursor)?;
-        let body = replay_group_stream(state.db.pool().clone(), group_id, cursor).await?;
-        return Ok(sse_response(body));
-    }
-
-    let stream_id = body
-        .client_request_id
-        .as_deref()
-        .map(Uuid::parse_str)
-        .transpose()
-        .map_err(|_| ApiError::invalid_input("client_request_id must be a UUID"))?
-        .unwrap_or_else(Uuid::new_v4);
-    if let Some(body) =
-        replay_existing_stream(state.db.pool().clone(), group_id.clone(), stream_id).await?
-    {
-        return Ok(sse_response(body));
-    }
-    if let Some(thread_id) = thread_id.as_deref() {
-        ensure_writable_thread(&state, &group_id, thread_id).await?;
-    }
-
-    let (tx, rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
-    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
-        .with_active_turn_registry(state.active_turns.clone());
-    let model_override = validate_model_override(
-        state.db.pool(),
-        &group_id,
-        &owner_id,
-        body.model_override.as_deref(),
-    )
-    .await?;
-    let effort_override = parse_effort_override(body.effort_override.as_deref())?;
-    let request = TurnRequest {
+    let response = accept_http_message(&state, &owner_id, &group_id, body).await?;
+    let stream = Uuid::parse_str(response["stream_id"].as_str().unwrap()).unwrap();
+    Ok(sse_response(super::sse_replay::follow_new_stream(
+        state.db.pool().clone(),
         group_id,
-        owner_id,
-        thread_id,
-        content,
-        attachments,
-        model_override,
-        effort_override,
+        stream,
+    )))
+}
+
+async fn accept_http_message(
+    state: &AppState,
+    owner: &str,
+    group: &str,
+    body: MessageInput,
+) -> Result<Value, ApiError> {
+    let command = super::commands::Command {
+        request_id: body
+            .client_request_id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        name: "message.send".into(),
+        target: serde_json::json!({"conversation_id":group,"thread_id":body.thread_id}),
+        payload: serde_json::to_value(body)
+            .map_err(|_| ApiError::invalid_input("invalid message"))?,
     };
-    tokio::spawn(async move {
-        run_group_turn_with_stream_id(services, request, tx, stream_id).await;
-    });
-
-    let body = futures_util::stream::unfold(rx, |mut rx| async move {
-        let event = rx.recv().await?;
-        Some((event, rx))
-    })
-    .boxed();
-
-    Ok(sse_response(body))
+    super::commands::accept(state, owner, command).await
 }
 
 async fn fetch_persisted_event(
@@ -1097,7 +997,7 @@ async fn fetch_message_response(
     message_id: &str,
 ) -> Result<MessageResponse, ApiError> {
     let row = sqlx::query_as::<_, MessageRow>(
-        "SELECT m.id, m.group_id, m.thread_id, m.sender_type, m.sender_id, m.message_type, \
+        "SELECT m.id, m.seq, m.group_id, m.thread_id, m.sender_type, m.sender_id, m.message_type, \
                 m.content, m.content_json, m.status, m.turn_id, m.dispatch_id, m.reply_to_message_id, \
                 CASE WHEN gt.trigger_message_id = m.id THEN gt.status END AS turn_status, \
                 CASE WHEN gt.trigger_message_id = m.id THEN gt.termination_reason END AS turn_termination_reason, \
@@ -1196,7 +1096,7 @@ async fn fetch_message_page(
     rows.map_err(|_| ApiError::internal("database error"))
 }
 
-async fn ensure_direct_agent_available(
+pub(crate) async fn ensure_direct_agent_available(
     pool: &sqlx::SqlitePool,
     group_id: &str,
     owner_id: &str,
@@ -1225,36 +1125,6 @@ async fn ensure_direct_agent_available(
 /// the partial reply stays in history as a normal visible message and the
 /// thread returns to `active` so the new turn starts fresh. Archived, cleared
 /// and other terminal threads stay read-only.
-async fn ensure_writable_thread(
-    state: &AppState,
-    group_id: &str,
-    thread_id: &str,
-) -> Result<(), ApiError> {
-    let status: Option<String> = sqlx::query_scalar(
-        "SELECT status FROM threads \
-         WHERE id = ? AND group_id = ? AND agent_id IS NULL AND status != 'cleared'",
-    )
-    .bind(thread_id)
-    .bind(group_id)
-    .fetch_optional(state.db.pool())
-    .await
-    .map_err(|_| ApiError::internal("database error"))?;
-    match status.as_deref() {
-        Some("active") => Ok(()),
-        Some("paused") => {
-            let allocator =
-                SequenceAllocator::new(state.db.pool().clone(), state.write_lock.clone());
-            allocator
-                .supersede_paused_thread(thread_id)
-                .await
-                .map_err(|_| ApiError::internal("failed to supersede paused thread"))?;
-            Ok(())
-        }
-        Some(_) => Err(ApiError::conflict("thread is not active")),
-        None => Err(ApiError::not_found("thread not found")),
-    }
-}
-
 async fn ensure_conversation_thread(
     pool: &sqlx::SqlitePool,
     group_id: &str,
@@ -1277,13 +1147,6 @@ fn validate_uuid(raw: &str, field: &str) -> Result<String, ApiError> {
     Uuid::parse_str(raw.trim())
         .map(|id| id.to_string())
         .map_err(|_| ApiError::invalid_input(format!("invalid {field}")))
-}
-
-fn conversation_scope(kind: ConversationKind) -> ConversationScope {
-    match kind {
-        ConversationKind::Group => ConversationScope::Groups,
-        ConversationKind::Direct => ConversationScope::DirectChats,
-    }
 }
 
 fn parse_limit(raw: Option<&str>) -> Result<i64, ApiError> {

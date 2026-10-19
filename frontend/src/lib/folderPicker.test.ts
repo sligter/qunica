@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { normalizeWindowsPath, pickFolder } from './folderPicker'
+import { useDesktopConnection } from './desktopConnection'
 
 describe('pickFolder', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
+    useDesktopConnection.setState({connection:{mode:'local'}})
   })
 
   // The OS dialog shows the folders of the machine running the browser. On a
@@ -29,6 +31,11 @@ describe('pickFolder', () => {
     // No Tauri host answers in jsdom, so the desktop branch reports the
     // failure rather than silently falling through to the browser one.
     expect(result.kind).toBe('error')
+  })
+  it('browses the server filesystem when a desktop shell uses a remote instance',async()=>{
+    Object.defineProperty(window,'__TAURI_INTERNALS__',{value:{},configurable:true})
+    useDesktopConnection.setState({connection:{mode:'remote',origin:'https://remote.example'}})
+    await expect(pickFolder()).resolves.toEqual({kind:'serverBrowse'})
   })
 })
 

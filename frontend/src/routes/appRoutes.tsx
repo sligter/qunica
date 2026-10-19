@@ -74,6 +74,10 @@ const AppActionsPage = lazy(() =>
 const SystemLogsPage = lazy(() =>
   import('@/pages/settings/SystemLogsPage').then((m) => ({ default: m.SystemLogsPage })),
 )
+const AutomationsPage = lazy(() =>
+  import('@/pages/settings/AutomationsPage').then((m) => ({ default: m.AutomationsPage })),
+)
+const ComputersPage = lazy(() => import('@/pages/settings/ComputersPage').then((m) => ({ default: m.ComputersPage })))
 const TokenUsagePage = lazy(() =>
   import('@/pages/usage/TokenUsagePage').then((m) => ({ default: m.TokenUsagePage })),
 )
@@ -158,6 +162,8 @@ export const appChildren: RouteObject[] = [
       { path: 'system', element: <SystemSettingsPage /> },
       { path: 'media', element: <MediaSettingsPage /> },
       { path: 'decision', element: <DecisionSettingsPage /> },
+      { path: 'automations', element: <AutomationsPage /> },
+      { path: 'computers', element: <ComputersPage /> },
       { path: 'logs', element: <SystemLogsPage /> },
       { path: 'assistant-actions', element: <AppActionsPage /> },
     ],

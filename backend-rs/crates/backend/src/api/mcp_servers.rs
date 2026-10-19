@@ -175,7 +175,7 @@ pub async fn create(
     headers: HeaderMap,
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<McpServerResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok((
         StatusCode::CREATED,
         Json(create_inner(&state, &owner_id, body).await?),
@@ -271,7 +271,7 @@ pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<McpServerResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let sql = format!(
         "SELECT {MCP_SERVER_COLUMNS} FROM mcp_servers \
          WHERE owner_id = ? AND status != 'deleted' \
@@ -293,7 +293,7 @@ pub async fn get(
     headers: HeaderMap,
     Path(server_id): Path<String>,
 ) -> Result<Json<McpServerResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let server_id = validate_uuid(&server_id)?;
     let row = load_owned(state.db.pool(), &server_id, &owner_id).await?;
     Ok(Json(row.into()))
@@ -305,7 +305,7 @@ pub async fn update(
     Path(server_id): Path<String>,
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<McpServerResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok(Json(
         update_inner(&state, &owner_id, &server_id, body).await?,
     ))
@@ -433,7 +433,7 @@ pub async fn delete(
     headers: HeaderMap,
     Path(server_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let server_id = validate_uuid(&server_id)?;
     load_owned(state.db.pool(), &server_id, &owner_id).await?;
 
@@ -462,7 +462,7 @@ pub async fn test_connection(
     headers: HeaderMap,
     Path(server_id): Path<String>,
 ) -> Result<Json<TestConnectionResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let server_id = validate_uuid(&server_id)?;
     let row = load_owned(state.db.pool(), &server_id, &owner_id).await?;
     Ok(Json(probe(&row.to_config()).await))
@@ -477,7 +477,7 @@ pub async fn test_draft(
     headers: HeaderMap,
     Json(body): Json<CreateRequest>,
 ) -> Result<Json<TestConnectionResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
 
     // Testing an edit to a saved server sends "keep" for every header the
     // operator did not retype, and the client cannot fill those in because it

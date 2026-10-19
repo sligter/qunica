@@ -66,6 +66,7 @@ android/artifacts/
 landing/
 
 # Local agent tooling and scratch state
+/.tmp/
 .tmp-liveagent-git/
 .build-desktop.*.pid
 # Per-workspace runtime state. Currently only ever holds logs, which `*.log`

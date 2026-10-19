@@ -37,6 +37,313 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
+fn authenticated(method: &str, uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn claims(token: &str) -> Value {
+    serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(token.split('.').nth(1).unwrap())
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+async fn register_account(app: &Router, email: &str) {
+    let (status, _) = send(
+        app,
+        post_json(
+            "/api/v2/auth/register",
+            json!({"email": email, "password": "supersecret", "name": "Device User"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+async fn login_account(app: &Router, email: &str) -> String {
+    let (status, token) = send(
+        app,
+        post_json(
+            "/api/v2/auth/login",
+            json!({"email": email, "password": "supersecret", "device_label": "Test device"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    token["access_token"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn logout_and_owned_device_revocation_leave_other_sessions_active() {
+    let (app, state) = qunica_backend::api::router_with_state_for_tests().await;
+    register_account(&app, "devices@example.com").await;
+    let first = login_account(&app, "devices@example.com").await;
+    let second = login_account(&app, "devices@example.com").await;
+    assert_ne!(first, second);
+    let second_id = claims(&second)["session_id"].as_str().unwrap().to_string();
+    let (status, sessions) =
+        send(&app, authenticated("GET", "/api/v2/auth/sessions", &first)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(sessions.as_array().unwrap().len(), 2);
+    assert_eq!(
+        sessions
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| s["current"] == true)
+            .count(),
+        1
+    );
+    assert!(!sessions.to_string().contains("credential_id"));
+    assert!(!sessions.to_string().contains("access_token"));
+
+    register_account(&app, "other@example.com").await;
+    let other = login_account(&app, "other@example.com").await;
+    let path = format!("/api/v2/auth/sessions/{second_id}");
+    assert_eq!(
+        send(&app, authenticated("DELETE", &path, &other)).await.0,
+        StatusCode::NOT_FOUND
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            send(&app, authenticated("DELETE", &path, &first)).await.0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    for path in [
+        "/api/v2/auth/me",
+        "/api/v2/groups",
+        "/api/v2/agents",
+        "/api/v2/auth/sessions",
+    ] {
+        let (status, error) = send(&app, authenticated("GET", path, &second)).await;
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "revoked session accepted at {path}"
+        );
+        assert_eq!(error["error"]["code"], "session_revoked");
+    }
+    let restarted = qunica_backend::api::router(state);
+    assert_eq!(
+        send(&restarted, authenticated("GET", "/api/v2/auth/me", &first))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&restarted, authenticated("GET", "/api/v2/auth/me", &second))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        send(
+            &restarted,
+            authenticated("POST", "/api/v2/auth/logout", &first)
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(&restarted, authenticated("GET", "/api/v2/auth/me", &first))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        send(&restarted, authenticated("GET", "/api/v2/auth/me", &other))
+            .await
+            .0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn paired_device_session_has_an_independent_credential_and_revocation() {
+    let (app, state) = qunica_backend::api::router_with_state_for_tests().await;
+    register_account(&app, "pairing@example.com").await;
+    let desktop = login_account(&app, "pairing@example.com").await;
+    let mut request = post_json("/api/v2/auth/sessions", json!({"device_label": "My phone"}));
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {desktop}").parse().unwrap(),
+    );
+    let (status, result) = send(&app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    let phone = result["access_token"].as_str().unwrap();
+    assert_ne!(claims(phone)["session_id"], claims(&desktop)["session_id"]);
+    assert_ne!(claims(phone)["jti"], claims(&desktop)["jti"]);
+    assert!(claims(phone).get("exp").is_none());
+    assert_eq!(
+        send(&app, authenticated("POST", "/api/v2/auth/logout", phone))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(&app, authenticated("GET", "/api/v2/auth/me", &desktop))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(&app, authenticated("GET", "/api/v2/auth/me", phone))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Signature alone is insufficient: both account and credential must match
+    // the live session row, including when two instances share a signing key.
+    let original = claims(&desktop);
+    for changed in [
+        json!({"sub": "different-owner", "session_id": original["session_id"], "jti": original["jti"]}),
+        json!({"sub": original["sub"], "session_id": original["session_id"], "jti": "wrong-credential"}),
+        json!({"sub": original["sub"], "session_id": "unknown-session", "jti": original["jti"]}),
+        json!({"sub": original["sub"], "session_id": original["session_id"]}),
+    ] {
+        let forged = encode(
+            &Header::new(Algorithm::HS256),
+            &changed,
+            &EncodingKey::from_secret(state.auth.secret_key.as_bytes()),
+        )
+        .unwrap();
+        assert_eq!(
+            send(&app, authenticated("GET", "/api/v2/auth/me", &forged))
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+}
+
+#[tokio::test]
+async fn revocation_ends_an_idle_sse_without_ending_another_device_stream() {
+    use futures_util::{stream, StreamExt};
+    use qunica_backend::api::auth::guard_session_stream;
+    let (app, state) = qunica_backend::api::router_with_state_for_tests().await;
+    register_account(&app, "streams@example.com").await;
+    let first = login_account(&app, "streams@example.com").await;
+    let second = login_account(&app, "streams@example.com").await;
+    let stream_app = Router::new()
+        .route(
+            "/events",
+            axum::routing::get(|| async {
+                let frames = stream::once(async { Ok::<_, std::io::Error>("data: ready\n\n") })
+                    .chain(stream::pending());
+                (
+                    [("content-type", "text/event-stream")],
+                    Body::from_stream(frames),
+                )
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            guard_session_stream,
+        ));
+    let mut first_stream = stream_app
+        .clone()
+        .oneshot(authenticated("GET", "/events", &first))
+        .await
+        .unwrap()
+        .into_body()
+        .into_data_stream();
+    let mut second_stream = stream_app
+        .oneshot(authenticated("GET", "/events", &second))
+        .await
+        .unwrap()
+        .into_body()
+        .into_data_stream();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), first_stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok()
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), second_stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok()
+    );
+    assert_eq!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            send(&app, authenticated("POST", "/api/v2/auth/logout", &first))
+        )
+        .await
+        .unwrap()
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), first_stream.next())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), second_stream.next())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn sessions_and_revocations_survive_database_reopen_and_repeated_migrations() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!(
+        "sqlite:{}?mode=rwc",
+        dir.path().join("auth.sqlite3").display()
+    );
+    let (_, mut state) = qunica_backend::api::router_with_state_for_tests().await;
+    state.db = Db::connect(&url).await.unwrap();
+    state.db.migrate().await.unwrap();
+    state.db.migrate().await.unwrap();
+    let app = qunica_backend::api::router(state.clone());
+    register_account(&app, "restart@example.com").await;
+    let active = login_account(&app, "restart@example.com").await;
+    let revoked = login_account(&app, "restart@example.com").await;
+    assert_eq!(
+        send(&app, authenticated("POST", "/api/v2/auth/logout", &revoked))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let credentials: Vec<String> = sqlx::query_scalar("SELECT credential_id FROM auth_sessions")
+        .fetch_all(state.db.pool())
+        .await
+        .unwrap();
+    assert!(credentials
+        .iter()
+        .all(|value| !value.contains('.') && value != &active && value != &revoked));
+    drop(app);
+    state.db.pool().close().await;
+    state.db = Db::connect(&url).await.unwrap();
+    state.db.migrate().await.unwrap();
+    let app = qunica_backend::api::router(state);
+    assert_eq!(
+        send(&app, authenticated("GET", "/api/v2/auth/me", &active))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (status, error) = send(&app, authenticated("GET", "/api/v2/auth/me", &revoked)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(error["error"]["code"], "session_revoked");
+}
+
 #[tokio::test]
 async fn register_login_and_me_round_trip() {
     let app = app().await;
@@ -74,6 +381,8 @@ async fn register_login_and_me_round_trip() {
     )
     .unwrap();
     assert_eq!(claims["sub"], user_id);
+    assert!(claims["session_id"].as_str().is_some());
+    assert!(claims["jti"].as_str().is_some());
     assert!(claims.get("exp").is_none(), "login tokens must not expire");
 
     let me_request = Request::builder()
@@ -205,7 +514,7 @@ async fn me_requires_bearer_token() {
 }
 
 #[tokio::test]
-async fn legacy_login_stays_valid_after_its_original_expiry() {
+async fn legacy_login_requires_reauthentication_without_creating_a_session() {
     let (app, state) = qunica_backend::api::router_with_state_for_tests().await;
     let (status, user) = send(
         &app,
@@ -216,26 +525,35 @@ async fn legacy_login_stays_valid_after_its_original_expiry() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    // A pre-upgrade token whose original expiry was decades ago still belongs
-    // to this account. Rebuilding the router also preserves that login.
-    let token = encode(
-        &Header::new(Algorithm::HS256),
-        &json!({"sub": user["id"], "exp": 1}),
-        &EncodingKey::from_secret(state.auth.secret_key.as_bytes()),
-    )
-    .unwrap();
-    let restarted = qunica_backend::api::router(state);
-    let (status, me) = send(
-        &restarted,
-        Request::builder()
-            .uri("/api/v2/auth/me")
-            .header("authorization", format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(me["id"], user["id"]);
+    // Both legacy formats require a fresh interactive login, regardless of exp.
+    for claims in [
+        json!({"sub": user["id"], "exp": 1}),
+        json!({"sub": user["id"]}),
+    ] {
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(state.auth.secret_key.as_bytes()),
+        )
+        .unwrap();
+        let restarted = qunica_backend::api::router(state.clone());
+        let (status, error) = send(
+            &restarted,
+            Request::builder()
+                .uri("/api/v2/auth/me")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(error["error"]["code"], "session_upgrade_required");
+    }
+    let sessions: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auth_sessions")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(sessions, 0);
 }
 
 #[tokio::test]

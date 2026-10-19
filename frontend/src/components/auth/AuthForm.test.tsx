@@ -33,10 +33,16 @@ async function renderChineseAuthForm(mode: 'login' | 'register') {
 }
 
 describe('AuthForm localized server diagnostics', () => {
+  it('explains the one-time device session migration in Chinese', async () => {
+    useAuthStore.getState().logout('session_upgrade_required')
+    await renderChineseAuthForm('login')
+    expect(screen.getByRole('status')).toHaveTextContent('请重新登录一次')
+  })
+
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
-    useAuthStore.setState({ token: null, user: null, hydrated: false })
+    useAuthStore.setState({ token: null, user: null, hydrated: false, loginNotice: null })
     localStorage.clear()
   })
 

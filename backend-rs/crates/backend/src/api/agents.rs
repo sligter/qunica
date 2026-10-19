@@ -50,14 +50,12 @@ const AGENT_AVATAR_PRESETS: [&str; 8] = [
     "preset:ember",
 ];
 const SYSTEM_PROMPT_WRITER_PROMPT: &str = "You write production system prompts for agents running inside Qunica. Return only the complete system prompt in Markdown, with no code fence or commentary.\n\
-The prompt must be specific to the supplied role and usable as-is. It must tell the agent to:\n\
-- establish its role, outcomes, boundaries, and a short execution workflow;\n\
-- inspect relevant workspace context before acting and keep changes focused;\n\
-- use only tools exposed at runtime, never invent tools, and respect workspace boundaries;\n\
-- follow mounted Skills when relevant and collaborate clearly with other Agents or groups;\n\
-- verify meaningful work and report changes, checks, and remaining risks concisely;\n\
-- ask for clarification only when missing information blocks safe progress;\n\
+The prompt must be specific to the supplied role and usable as-is. It must:\n\
+- establish the agent's role, outcomes, boundaries, and a short execution workflow;\n\
+- state role-specific quality bars, conventions, and checks;\n\
+- tell the agent to follow mounted Skills when relevant and collaborate clearly with other Agents or groups;\n\
 - use the language of the supplied role details or existing prompt when it is clear.\n\
+The host already injects generic rules every turn (read context first, verify changes, confirm risky actions, use only exposed tools, respect workspace boundaries, report faithfully and concisely, ask only when blocked); do not restate them.\n\
 For an enhancement, preserve the original intent and useful constraints while removing repetition and ambiguity. Do not mention this generation request, a provider, or a model, and do not leave placeholders.";
 
 const AGENT_COLUMNS: &str = "id, owner_id, workspace_id, \
@@ -328,7 +326,7 @@ pub async fn generate_system_prompt(
     headers: HeaderMap,
     Json(body): Json<GenerateSystemPromptRequest>,
 ) -> Result<Json<GenerateSystemPromptResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let provider_id =
         validate_provider(state.db.pool(), body.llm_provider_id.trim(), &owner_id).await?;
     let provider_row: PromptProviderRow = sqlx::query_as(
@@ -446,7 +444,7 @@ pub async fn acp_runtime_versions(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<AcpRuntimeVersionListResponse>, ApiError> {
-    let _owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let _owner_id = current_user_id(&headers, &state).await?;
     let mut presets = Vec::new();
     for preset in ACP_RUNTIME_VERSION_PRESETS {
         presets.push(runtime_version_status(preset).await);
@@ -460,7 +458,7 @@ pub async fn install_acp_runtime_version(
     Path(preset_id): Path<String>,
     Json(body): Json<AcpRuntimeInstallRequest>,
 ) -> Result<Json<AcpRuntimeInstallResponse>, ApiError> {
-    let _owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let _owner_id = current_user_id(&headers, &state).await?;
     let preset = acp_runtime_version_preset(&preset_id)
         .ok_or_else(|| ApiError::not_found("ACP runtime preset not found"))?;
     let package_spec = resolve_install_package_spec(preset, body.package_spec.as_deref())?;
@@ -515,7 +513,7 @@ pub async fn acp_runtime_capabilities(
     headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<AcpRuntimeCapabilities>), ApiError> {
-    let _owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let _owner_id = current_user_id(&headers, &state).await?;
 
     let mut config = match normalize_acp_runtime(Some(&body)) {
         Ok(config) => config,
@@ -566,7 +564,7 @@ pub async fn create(
     headers: HeaderMap,
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<AgentResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok((
         StatusCode::CREATED,
         Json(create_inner(&state, &owner_id, body).await?),
@@ -603,13 +601,23 @@ pub(crate) async fn create_inner(
     let model_config_json = json_to_db_string(body.llm_config.as_ref());
     let tool_config_json = json_to_db_string(body.tool_config.as_ref());
 
-    // Runtime-specific binding: ACP agents store their runtime blob and never a
-    // provider; LLM chat agents store an optional provider and never a runtime.
+    // Note: OpenCode may bind an API provider for computer execution. Its local
+    // launch remains unchanged; credentials are resolved only by the proxy.
     let (provider_id, external_runtime_json) = if runtime_kind == RUNTIME_ACP {
-        (
-            None,
-            canonicalized_acp_runtime_db_json(body.acp_runtime.as_ref())?,
-        )
+        let runtime = canonicalized_acp_runtime_db_json(body.acp_runtime.as_ref())?;
+        let opencode = runtime
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .is_some_and(|v| v["profile"] == "opencode");
+        let provider = if opencode {
+            match body.llm_provider_id.as_deref() {
+                Some(raw) => Some(validate_provider(state.db.pool(), raw, &owner_id).await?),
+                None => None,
+            }
+        } else {
+            None
+        };
+        (provider, runtime)
     } else {
         let provider = match body.llm_provider_id.as_deref() {
             Some(raw) => Some(validate_provider(state.db.pool(), raw, &owner_id).await?),
@@ -675,7 +683,7 @@ pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<AgentResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
 
     // System agents (the built-in Assistant) are reached through their own
     // route, not the library. Listing them would offer the user edit and delete
@@ -699,7 +707,7 @@ pub async fn get(
     headers: HeaderMap,
     Path(agent_id): Path<String>,
 ) -> Result<Json<AgentResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let agent_id = validate_uuid(&agent_id, "agent id")?;
 
     let row = load_active_owned(state.db.pool(), &agent_id, &owner_id).await?;
@@ -712,7 +720,7 @@ pub async fn update(
     Path(agent_id): Path<String>,
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<AgentResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok(Json(
         update_inner(&state, &owner_id, &agent_id, body).await?,
     ))
@@ -784,7 +792,20 @@ pub(crate) async fn update_inner(
             Some(ref value) => canonicalized_acp_runtime_db_json(value.as_ref())?,
             None => existing.external_runtime_json.clone(),
         };
-        (None, runtime)
+        let opencode = runtime
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .is_some_and(|v| v["profile"] == "opencode");
+        let provider = if opencode {
+            match body.llm_provider_id.as_ref() {
+                Some(Some(raw)) => Some(validate_provider(state.db.pool(), raw, &owner_id).await?),
+                Some(None) => None,
+                None => existing.provider_id.clone(),
+            }
+        } else {
+            None
+        };
+        (provider, runtime)
     } else {
         let provider = match body.llm_provider_id {
             Some(ref value) => match value.as_deref() {
@@ -861,7 +882,7 @@ pub async fn delete(
     headers: HeaderMap,
     Path(agent_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let agent_id = validate_uuid(&agent_id, "agent id")?;
 
     // Confirms existence/ownership (and that it is not already deleted) first.

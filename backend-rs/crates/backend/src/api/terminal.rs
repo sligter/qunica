@@ -1,19 +1,21 @@
 //! HTTP surface for server-owned terminal sessions.
 //!
-//! The desktop shell talks to its own PTY over Tauri commands; a browser
-//! cannot, so these routes give the web build the same capability. Output is a
-//! one-way SSE stream, input and resizing are ordinary requests.
+//! Local desktop mode uses Tauri PTYs. Remote clients use the separate terminal
+//! WebSocket; paired clients retain SSE output and HTTP input under a lease.
 //!
-//! Every session belongs to the account that created it and may only start
-//! inside that account's workspaces, so a terminal never reaches further into
-//! the host than the file tools already do.
+//! Every session belongs to its creating account and starts inside an owned
+//! workspace. Its shell has the server process's OS permissions; a workspace
+//! start directory is not an execution sandbox.
 
 use std::{collections::VecDeque, convert::Infallible, path::PathBuf, sync::Arc, time::Duration};
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    response::sse::{Event, KeepAlive, Sse},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     Json,
 };
 use futures_util::stream::{self, BoxStream, StreamExt};
@@ -56,19 +58,136 @@ pub struct ResizeRequest {
     rows: u16,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LeaseRequest {
+    client_id: String,
+    action: String,
+    generation: Option<u64>,
+    stream: Option<String>,
+}
+
+pub async fn lease(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(body): Json<LeaseRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = super::auth::current_session(&headers, &state).await?;
+    let session = require_session(&state, &session_id, &auth.owner_id)?;
+    let client_id = uuid::Uuid::parse_str(&body.client_id)
+        .map_err(|_| ApiError::invalid_input("invalid terminal client_id"))?;
+    let holder = format!("{}:{client_id}", auth.session_id);
+    let generation = match body.action.as_str() {
+        "acquire" => {
+            if let Some(stream) = body.stream {
+                uuid::Uuid::parse_str(&stream)
+                    .map_err(|_| ApiError::invalid_input("invalid terminal stream"))?;
+                session.acquire_stream_input(&holder, &stream)
+            } else {
+                session.acquire_input(&holder)
+            }
+        }
+        "renew" => {
+            if !session.input_lease_valid(&holder, body.generation.unwrap_or(0)) {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "terminal.lease_required",
+                    "Terminal input lease is unavailable.",
+                ));
+            }
+            session.acquire_input(&holder)
+        }
+        "release" => {
+            tokio::task::spawn_blocking(move || session.release_input(&holder))
+                .await
+                .map_err(|_| ApiError::internal("terminal lease release failed"))?;
+            None
+        }
+        _ => return Err(ApiError::invalid_input("invalid terminal lease action")),
+    };
+    Ok(Json(
+        serde_json::json!({"generation":generation,"lease_ms":15000}),
+    ))
+}
+
+fn lease_identity(headers: &HeaderMap, auth_session_id: &str) -> Result<(String, u64), ApiError> {
+    let client_id = headers
+        .get("x-terminal-client")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "terminal.lease_required",
+                "Acquire terminal input before typing.",
+            )
+        })?;
+    let generation = headers
+        .get("x-terminal-generation")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+    Ok((format!("{auth_session_id}:{client_id}"), generation))
+}
+
 #[derive(Debug, Serialize)]
 pub struct ClosedResponse {
     closed: usize,
 }
 
-type SseResponse = Sse<BoxStream<'static, Result<Event, Infallible>>>;
+struct StreamLease {
+    session: Arc<TerminalSession>,
+    holder: String,
+    stream: String,
+}
+
+#[derive(Deserialize)]
+pub struct ListQuery {
+    conversation_id: String,
+}
+#[derive(Deserialize)]
+pub struct EventsQuery {
+    #[serde(default)]
+    repaint: bool,
+}
+pub async fn list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Vec<TerminalDescriptor>>, ApiError> {
+    let owner = current_user_id(&headers, &state).await?;
+    Ok(Json(
+        state.terminals.list_owned(&owner, &query.conversation_id),
+    ))
+}
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<TerminalDescriptor>, ApiError> {
+    let owner = current_user_id(&headers, &state).await?;
+    let session = require_session(&state, &id, &owner)?;
+    Ok(Json(TerminalDescriptor {
+        session_id: session.id.clone(),
+        shell_name: session.shell_name.clone(),
+        cwd: session.cwd.clone(),
+    }))
+}
+impl Drop for StreamLease {
+    fn drop(&mut self) {
+        let session = self.session.clone();
+        let holder = self.holder.clone();
+        let stream = self.stream.clone();
+        tokio::task::spawn_blocking(move || session.release_stream_input(&holder, &stream));
+    }
+}
 
 pub async fn create(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<TerminalDescriptor>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let cwd = authorize_cwd(&state, &owner_id, &body.cwd).await?;
     let shell = match body
         .shell
@@ -110,24 +229,62 @@ pub async fn events(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(session_id): Path<String>,
-) -> Result<SseResponse, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let session = require_session(&state, &session_id, &owner_id)?;
+    Query(query): Query<EventsQuery>,
+) -> Result<Response, ApiError> {
+    let auth = super::auth::current_session(&headers, &state).await?;
+    let session = require_session(&state, &session_id, &auth.owner_id)?;
+    let mut generation = None;
+    let lease = if headers.contains_key("x-terminal-client") {
+        let (holder, _) = lease_identity(&headers, &auth.session_id)?;
+        let stream = uuid::Uuid::new_v4().to_string();
+        if headers
+            .get("x-terminal-observe")
+            .and_then(|v| v.to_str().ok())
+            != Some("true")
+        {
+            generation = session.acquire_stream_input(&holder, &stream);
+        }
+        Some(StreamLease {
+            session: session.clone(),
+            holder,
+            stream,
+        })
+    } else {
+        None
+    };
+    let stream_id = lease.as_ref().map(|lease| lease.stream.clone());
     // A reconnecting client sends back the last frame id it rendered, so the
     // replay buffer repaints only the gap instead of the whole scrollback.
-    let resume_after = headers
+    let mut resume_after = headers
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(0);
+    if query.repaint {
+        resume_after = session.replay_start();
+    }
     let (receiver, replay) = session.subscribe();
-    Ok(
-        Sse::new(frame_stream(session, receiver, replay, resume_after)).keep_alive(
+    let mut response = Sse::new(frame_stream(session, receiver, replay, resume_after, lease))
+        .keep_alive(
             KeepAlive::new()
                 .interval(KEEP_ALIVE_INTERVAL)
                 .text("keep-alive"),
-        ),
-    )
+        )
+        .into_response();
+    response.headers_mut().insert(
+        "x-terminal-generation",
+        generation.unwrap_or(0).to_string().parse().unwrap(),
+    );
+    response.headers_mut().insert(
+        "x-terminal-cursor",
+        resume_after.to_string().parse().unwrap(),
+    );
+    if let Some(stream_id) = stream_id {
+        response
+            .headers_mut()
+            .insert("x-terminal-stream", stream_id.parse().unwrap());
+    }
+    Ok(response)
 }
 
 pub async fn input(
@@ -136,18 +293,23 @@ pub async fn input(
     Path(session_id): Path<String>,
     Json(body): Json<InputRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let session = require_session(&state, &session_id, &owner_id)?;
+    let auth = super::auth::current_session(&headers, &state).await?;
+    let session = require_session(&state, &session_id, &auth.owner_id)?;
+    let (holder, generation) = lease_identity(&headers, &auth.session_id)?;
     if body.data.len() > MAX_INPUT_BYTES {
         return Err(ApiError::invalid_input("terminal input chunk is too large"));
     }
 
     // The PTY writer blocks when the shell stops draining, so it never runs on
     // a runtime worker.
-    tokio::task::spawn_blocking(move || session.write_input(body.data.as_bytes()))
-        .await
-        .map_err(|_| ApiError::internal("terminal write failed"))?
-        .map_err(terminal_error)?;
+    tokio::task::spawn_blocking(move || {
+        session.with_input_lease(&holder, generation, || {
+            session.write_input(body.data.as_bytes())
+        })
+    })
+    .await
+    .map_err(|_| ApiError::internal("terminal write failed"))?
+    .map_err(terminal_error)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -157,14 +319,17 @@ pub async fn resize(
     Path(session_id): Path<String>,
     Json(body): Json<ResizeRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
-    let session = require_session(&state, &session_id, &owner_id)?;
+    let auth = super::auth::current_session(&headers, &state).await?;
+    let session = require_session(&state, &session_id, &auth.owner_id)?;
+    let (holder, generation) = lease_identity(&headers, &auth.session_id)?;
     let cols = clamp_dimension(body.cols, 80);
     let rows = clamp_dimension(body.rows, 24);
-    tokio::task::spawn_blocking(move || session.resize(cols, rows))
-        .await
-        .map_err(|_| ApiError::internal("terminal resize failed"))?
-        .map_err(terminal_error)?;
+    tokio::task::spawn_blocking(move || {
+        session.with_input_lease(&holder, generation, || session.resize(cols, rows))
+    })
+    .await
+    .map_err(|_| ApiError::internal("terminal resize failed"))?
+    .map_err(terminal_error)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -173,7 +338,7 @@ pub async fn close(
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     // Closing an already-gone session is the normal result of a reload racing a
     // cleanup, so it is not an error.
     state.terminals.close(&session_id, &owner_id);
@@ -184,21 +349,24 @@ pub async fn close_all(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<ClosedResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok(Json(ClosedResponse {
         closed: state.terminals.close_owned(&owner_id),
     }))
 }
 
-fn require_session(
+pub(crate) fn require_session(
     state: &AppState,
     session_id: &str,
     owner_id: &str,
 ) -> Result<Arc<TerminalSession>, ApiError> {
-    state
-        .terminals
-        .get(session_id, owner_id)
-        .ok_or_else(|| ApiError::not_found("terminal session not found"))
+    state.terminals.get(session_id, owner_id).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            "terminal.session_missing",
+            "Terminal session no longer exists. Open a new terminal.",
+        )
+    })
 }
 
 fn clamp_dimension(value: u16, fallback: u16) -> u16 {
@@ -213,6 +381,7 @@ fn terminal_error(error: TerminalError) -> ApiError {
     let status = match error.code {
         "terminal.too_many_sessions" => StatusCode::TOO_MANY_REQUESTS,
         "terminal.shell_spawn_failed" => StatusCode::BAD_REQUEST,
+        "terminal.lease_required" => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     ApiError::new(status, error.code, error.message)
@@ -276,12 +445,14 @@ fn frame_stream(
     receiver: Receiver<TerminalFrame>,
     replay: Vec<TerminalFrame>,
     resume_after: u64,
+    lease: Option<StreamLease>,
 ) -> BoxStream<'static, Result<Event, Infallible>> {
     struct StreamState {
         session: Arc<TerminalSession>,
         receiver: Receiver<TerminalFrame>,
         pending: VecDeque<TerminalFrame>,
         last_seq: u64,
+        _lease: Option<StreamLease>,
     }
 
     stream::unfold(
@@ -290,6 +461,7 @@ fn frame_stream(
             receiver,
             pending: replay.into(),
             last_seq: resume_after,
+            _lease: lease,
         }),
         |state| async move {
             let mut state = state?;

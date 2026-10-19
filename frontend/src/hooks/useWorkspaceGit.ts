@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { conversationWorkspaceFilesQueryKey } from '@/hooks/useConversationWorkspaceFiles'
 import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
+import { useAccountSyncStore } from '@/stores/accountSyncStore'
 import type {
   ConversationScope,
   GroupWorkspaceGitBranchCreateRequest,
@@ -105,7 +106,7 @@ export function useGroupWorkspaceGitStatus(groupId: string | undefined, threadId
         token,
       }),
     enabled: token !== null && !!groupId,
-    refetchInterval: 10_000,
+    refetchInterval: () => useAccountSyncStore.getState().status === 'connected' ? 60_000 : 10_000,
   })
 }
 

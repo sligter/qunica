@@ -62,6 +62,33 @@ fn backend_base_url() -> &'static str {
     BACKEND_BASE_URL
 }
 
+/// Note: remote mode opens the shell without binding a port or opening a local DB.
+/// All windows share this lock so concurrent local startup requests boot only once.
+#[tauri::command]
+async fn backend_start(app: tauri::AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<BackendShutdown>();
+        let mut shutdown = state.0.lock().map_err(|error| error.to_string())?;
+        if shutdown.is_some() {
+            return Ok(());
+        }
+        let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+        let log_dir = app_data_dir.join("logs");
+        clear_backend_port(&log_dir, BACKEND_PORT);
+        let assets = app.asset_resolver();
+        let spa: server::SpaAssetLookup = Arc::new(move |path: &str| {
+            assets.get(path.to_string()).map(|asset| server::SpaAsset {
+                bytes: asset.bytes,
+                mime_type: asset.mime_type,
+            })
+        });
+        *shutdown = Some(start_in_process_backend(&app, app_data_dir, log_dir, spa)?);
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn pick_workspace_folder(app: tauri::AppHandle) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1068,6 +1095,7 @@ fn main() {
             mobile_link::mobile_link_stop,
             mobile_link::mobile_link_revoke,
             backend_base_url,
+            backend_start,
             pick_workspace_folder,
             reveal_in_file_manager,
             save_file,
@@ -1107,21 +1135,6 @@ fn main() {
             // deliberately left untouched.
             #[cfg(target_os = "windows")]
             clipboard_history::start();
-            clear_backend_port(&log_dir, BACKEND_PORT);
-            // Resolved lazily per request: the assets live in this executable,
-            // so there is no directory to point the backend at.
-            let assets = app.asset_resolver();
-            let spa: server::SpaAssetLookup = std::sync::Arc::new(move |path: &str| {
-                assets
-                    .get(path.to_string())
-                    .map(|asset| server::SpaAsset {
-                        bytes: asset.bytes,
-                        mime_type: asset.mime_type,
-                    })
-            });
-            let shutdown = start_in_process_backend(app.handle(), app_data_dir, log_dir.clone(), spa)?;
-            let state = app.state::<BackendShutdown>();
-            *state.0.lock().expect("backend shutdown mutex poisoned") = Some(shutdown);
             create_main_window(app)?;
             Ok(())
         })

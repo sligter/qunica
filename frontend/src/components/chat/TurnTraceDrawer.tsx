@@ -1,12 +1,14 @@
 import type { RefObject } from 'react'
+import { useState } from 'react'
 import { AlertTriangle, Ban, CircleDollarSign, Coins, Footprints, RefreshCcw, Route } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { DispatchDag } from '@/components/chat/DispatchDag'
 import { Button } from '@/components/ui/button'
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from '@/components/ui/alert-dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
-import { useCancelGroupTurn, useGroupTurnTrace } from '@/hooks/useGroupTurnTrace'
+import { useAcknowledgeStoppedTurn, useCancelGroupTurn, useGroupTurnTrace } from '@/hooks/useGroupTurnTrace'
 import { cn } from '@/lib/utils'
 import { formatNumber } from '@/lib/format'
 import { normalizeLanguage } from '@/i18n'
@@ -22,9 +24,10 @@ interface TurnTraceDrawerProps {
   agents?: GroupAgentRead[]
 }
 
-const activeStatuses = new Set<GroupTurnStatus>(['pending', 'running', 'waiting_for_user'])
+const activeStatuses = new Set<GroupTurnStatus>(['queued', 'pending', 'running', 'waiting_for_user'])
 
 const turnStatusKeys = {
+  queued: 'trace.statuses.queued',
   pending: 'trace.statuses.pending',
   running: 'trace.statuses.running',
   waiting_for_user: 'trace.statuses.waiting_for_user',
@@ -79,6 +82,8 @@ export function TurnTraceDrawer({
   agents = [],
 }: TurnTraceDrawerProps) {
   const { t, i18n } = useTranslation('chat')
+  const acknowledge = useAcknowledgeStoppedTurn()
+  const [confirming, setConfirming] = useState(false)
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const trace = useGroupTurnTrace(groupId, turnId)
   const cancelTurn = useCancelGroupTurn()
@@ -157,6 +162,33 @@ export function TurnTraceDrawer({
                 ) : null}
               </div>
               {cancelTurn.isError ? <p className="text-xs text-destructive" role="alert">{cancelTurn.error.message}</p> : null}
+              {data.stop_confirmation_required ? (
+                <div className="space-y-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3" role="status">
+                  <p className="flex items-center gap-2 text-sm font-medium"><AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />{t('trace.stopConfirmation.title')}</p>
+                  <p className="text-xs leading-relaxed text-muted-foreground">{t('trace.stopConfirmation.description')}</p>
+                  <Button size="sm" variant="outline" disabled={acknowledge.isPending} onClick={() => setConfirming(true)}>{t('trace.stopConfirmation.open')}</Button>
+                  <AlertDialog open={confirming} onOpenChange={setConfirming}>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>{t('trace.stopConfirmation.title')}</AlertDialogTitle>
+                        <AlertDialogDescription>{t('trace.stopConfirmation.confirmDescription')}</AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>{t('common:actions.cancel')}</AlertDialogCancel>
+                        <AlertDialogAction onClick={() => { if (groupId && turnId) acknowledge.mutate({ groupId, turnId }) }}>{t('trace.stopConfirmation.confirm')}</AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                </div>
+              ) : null}
+              {acknowledge.isError ? <p className="text-xs text-destructive" role="alert">{acknowledge.error.message}</p> : null}
+              {data.execution_locations?.map((location) => (
+                <div key={`${location.agent_id}:${location.computer_id}:${location.generation}`} className="rounded-md border border-border p-3 text-xs">
+                  <p className="font-medium">{t('computers:title')} · {location.computer_name}</p>
+                  <p className="mt-1 text-muted-foreground">{agentName(location.agent_id)} · {t('computers:generation')} {location.generation}</p>
+                  <p className="mt-1 truncate font-mono text-2xs text-muted-foreground" title={location.computer_id}>{location.computer_id}</p>
+                </div>
+              ))}
 
               <div className="grid grid-cols-2 gap-x-3 gap-y-4 border-y border-border py-3 sm:grid-cols-4" aria-label={t('trace.usage')}>
                 <Metric icon={Footprints} label={t('trace.steps')} value={formatNumber(data.budget.agent_steps, language)} />

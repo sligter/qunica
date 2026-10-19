@@ -293,7 +293,7 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<SettingsResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let mut row = get_or_create(state.db.pool(), &owner_id).await?;
     if row.onboarding_completed == 0 && row.group_workspace_root.is_none() {
         if let Some(root) = state.default_group_workspace_root.as_deref() {
@@ -321,7 +321,7 @@ pub async fn update(
     headers: HeaderMap,
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<SettingsResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let existing = get_or_create(state.db.pool(), &owner_id).await?;
 
     let appearance = match body.appearance {
@@ -548,7 +548,7 @@ pub async fn test_decision(
     headers: HeaderMap,
     body: Option<Json<DecisionTestRequest>>,
 ) -> Result<Json<DecisionTestResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let body = body.map(|Json(body)| body).unwrap_or_default();
     let saved = get_or_create(state.db.pool(), &owner_id).await?;
     let endpoint = match body.endpoint {

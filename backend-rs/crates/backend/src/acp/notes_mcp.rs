@@ -153,6 +153,21 @@ async fn handle(
     let Some(active) = active.filter(|a| a.active.load(Ordering::SeqCst)) else {
         return StatusCode::FORBIDDEN.into_response();
     };
+    handle_active(active, request).await
+}
+
+pub(crate) async fn remote_call(context: NotesContext, request: Value) -> Response {
+    handle_active(
+        ActiveContext {
+            context,
+            active: Arc::new(AtomicBool::new(true)),
+        },
+        request,
+    )
+    .await
+}
+
+async fn handle_active(active: ActiveContext, request: Value) -> Response {
     let id = request.get("id").cloned();
     let Some(method) = request
         .get("method")

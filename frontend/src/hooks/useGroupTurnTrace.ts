@@ -4,6 +4,7 @@ import { fetchJson } from '@/lib/api-v2/client'
 import { parseGroupTurnTrace } from '@/lib/api-v2/schemas'
 import type { GroupTurnTraceResponse } from '@/lib/api-v2/types'
 import { useAuthStore } from '@/stores/authStore'
+import { realtimeClient } from '@/lib/realtime/client'
 
 export function groupTurnTraceQueryKey(
   groupId: string | undefined,
@@ -32,11 +33,30 @@ export function useGroupTurnTrace(groupId: string | undefined, turnId: string | 
     enabled: token !== null && groupId !== undefined && turnId !== null,
     refetchInterval: (query) => {
       const status = query.state.data?.turn.status
-      return status === 'pending' || status === 'running' || status === 'waiting_for_user'
+      return status === 'queued' || status === 'pending' || status === 'running' || status === 'waiting_for_user' || query.state.data?.stop_confirmation_required
         ? 2_000
         : false
     },
     refetchIntervalInBackground: false,
+  })
+}
+
+export function useAcknowledgeStoppedTurn() {
+  const token = useAuthStore((state) => state.token)
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ groupId, turnId }: CancelGroupTurnTarget) => {
+      if (!token) throw new Error('Sign in again to confirm stopped work')
+      await realtimeClient(token).command({
+        request_id: crypto.randomUUID(), name: 'turn.acknowledge_stopped',
+        target: { turn_id: turnId }, payload: {},
+      })
+      return { groupId, turnId }
+    },
+    onSuccess: ({ groupId, turnId }) => {
+      void queryClient.invalidateQueries({ queryKey: groupTurnTraceQueryKey(groupId, turnId) })
+      void queryClient.invalidateQueries({ queryKey: ['groups', groupId] })
+    },
   })
 }
 

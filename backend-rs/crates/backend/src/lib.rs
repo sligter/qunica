@@ -1,5 +1,6 @@
 pub mod acp;
 pub mod api;
+pub mod computers;
 pub mod config;
 pub mod db;
 pub mod decision;

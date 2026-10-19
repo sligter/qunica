@@ -923,6 +923,8 @@ export interface TodoItem {
 
 export interface Message {
   id: string
+  /** Server-assigned order; absent only on a local optimistic/legacy message. */
+  seq?: string
   group_id: string
   thread_id: string | null
   sender_type: SenderType
@@ -1222,4 +1224,116 @@ export interface GroupNoteCreate {
 export interface GroupNoteUpdate {
   title?: string
   content?: string
+}
+
+export type AutomationTrigger =
+  | { kind: 'once'; at: string }
+  | { kind: 'cron'; expression: string }
+  | { kind: 'webhook' }
+  | { kind: 'github'; events: string[] }
+
+export type AutomationMissedPolicy = 'coalesce_latest' | 'skip'
+
+export interface AutomationBudget {
+  max_agent_steps: number
+  max_total_tokens: number
+  turn_timeout_seconds: number
+}
+
+export type AutomationRunStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting_for_user'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+  | 'skipped'
+
+export interface AutomationLatestRun {
+  occurrence_id: string
+  job_id: string | null
+  status: AutomationRunStatus | null
+  error: string | null
+}
+
+export interface AutomationPermission {
+  agent_id: string
+  name: string
+  bypass_approvals: boolean
+}
+
+export interface AutomationRead {
+  id: string
+  group_id: string
+  name: string
+  prompt: string
+  trigger: AutomationTrigger
+  timezone: string
+  missed_policy: AutomationMissedPolicy
+  budget: AutomationBudget
+  enabled: boolean
+  version: number
+  next_run_at: number | null
+  preview: string[]
+  hook_id: string
+  hook_configured: boolean
+  latest: AutomationLatestRun | null
+  permissions: AutomationPermission[]
+  created_at: string
+  updated_at: string
+}
+
+export interface AutomationList {
+  items: AutomationRead[]
+}
+
+export interface AutomationConfigInput {
+  group_id: string
+  name: string
+  prompt: string
+  trigger: AutomationTrigger
+  timezone: string
+  missed_policy: AutomationMissedPolicy
+  budget: AutomationBudget
+  enabled: boolean
+  expected_version: number | null
+}
+
+export interface AutomationPreviewInput {
+  trigger: AutomationTrigger
+  timezone: string
+}
+
+export interface AutomationPreview {
+  preview: string[]
+}
+
+export type AutomationSource = 'timer' | 'webhook' | 'skipped'
+
+export interface AutomationHistoryItem {
+  id: string
+  version: number
+  source: AutomationSource
+  scheduled_at: number | null
+  job_id: string | null
+  thread_id: string | null
+  status: AutomationRunStatus
+  error: string | null
+  created_at: string
+}
+
+export interface AutomationHistory {
+  items: AutomationHistoryItem[]
+}
+
+export interface AutomationSecretResponse {
+  hook_id: string
+  secret: string | null
+  version: number
+}
+
+export interface AutomationToggleInput {
+  enabled: boolean
+  expected_version: number
 }

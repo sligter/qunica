@@ -1,9 +1,13 @@
 use anyhow::{anyhow, Context};
 use axum::{
-    extract::State,
+    body::Body,
+    extract::{Path, Request, State},
     http::{HeaderMap, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
     Json,
 };
+use futures_util::StreamExt;
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -28,6 +32,29 @@ pub struct RegisterRequest {
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
+    #[serde(default)]
+    pub device_label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSessionRequest {
+    pub device_label: String,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct SessionResponse {
+    pub id: String,
+    pub device_label: String,
+    pub created_at: String,
+    pub revoked_at: Option<String>,
+    pub current: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthenticatedSession {
+    pub owner_id: String,
+    pub session_id: String,
+    pub(crate) credential_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +88,10 @@ pub struct PublicAuthConfig {
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
     sub: String,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    jti: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -208,18 +239,82 @@ pub async fn login(
         .filter(|u| verify_password(&body.password, &u.password_hash))
         .ok_or_else(|| ApiError::permission_denied("invalid credentials"))?;
 
-    let access_token = create_access_token(&user.id, &state.auth.secret_key)?;
-    Ok(Json(TokenResponse {
-        access_token,
-        token_type: "bearer".to_string(),
-    }))
+    let label = normalize_device_label(body.device_label.as_deref().unwrap_or("Device"))?;
+    Ok(Json(issue_session(&state, &user.id, &label, None).await?))
+}
+
+pub async fn list_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<SessionResponse>>, ApiError> {
+    let session = current_session(&headers, &state).await?;
+    let sessions = sqlx::query_as(
+        "SELECT id, device_label, created_at, revoked_at, id = ? AS current \
+         FROM auth_sessions WHERE owner_id = ? ORDER BY created_at DESC, id",
+    )
+    .bind(&session.session_id)
+    .bind(&session.owner_id)
+    .fetch_all(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    Ok(Json(sessions))
+}
+
+/// Issue an independent device credential after an authenticated pairing claim.
+pub async fn create_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateSessionRequest>,
+) -> Result<Json<TokenResponse>, ApiError> {
+    let parent = current_session(&headers, &state).await?;
+    let label = normalize_device_label(&body.device_label)?;
+    Ok(Json(
+        issue_session(&state, &parent.owner_id, &label, Some(&parent)).await?,
+    ))
+}
+
+pub async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let session = current_session(&headers, &state).await?;
+    revoke_owned_session(&state, &session.owner_id, &session.session_id).await
+}
+
+pub async fn revoke_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let session = current_session(&headers, &state).await?;
+    revoke_owned_session(&state, &session.owner_id, &session_id).await
+}
+
+async fn revoke_owned_session(
+    state: &AppState,
+    owner_id: &str,
+    session_id: &str,
+) -> Result<StatusCode, ApiError> {
+    let result = sqlx::query(
+        "UPDATE auth_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ? AND owner_id = ?",
+    )
+    .bind(now_rfc3339())
+    .bind(session_id)
+    .bind(owner_id)
+    .execute(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    if result.rows_affected() == 0 {
+        return Err(ApiError::not_found("device session not found"));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn me(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<UserResponse>, ApiError> {
-    let user_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let user_id = current_user_id(&headers, &state).await?;
     let user = find_user_by_id(state.db.pool(), &user_id)
         .await?
         .ok_or_else(|| ApiError::unauthorized("invalid token"))?;
@@ -231,7 +326,7 @@ pub async fn update_me(
     headers: HeaderMap,
     Json(body): Json<UpdateMeRequest>,
 ) -> Result<Json<UserResponse>, ApiError> {
-    let user_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let user_id = current_user_id(&headers, &state).await?;
     let name = body.name.as_deref().map(normalize_name).transpose()?;
     let avatar_url = body
         .avatar_url
@@ -265,14 +360,117 @@ pub async fn update_me(
 
 /// Resolve the authenticated user id from an `Authorization: Bearer <jwt>` header.
 ///
-/// Reusable by later API v2 routes that need the current user. Any missing or
-/// invalid token surfaces as a `401 unauthorized`.
-pub fn current_user_id(headers: &HeaderMap, secret: &str) -> Result<String, ApiError> {
+/// Database validation belongs here so HTTP handlers and future transports share
+/// revocation semantics even when invoked without the HTTP router middleware.
+pub async fn current_user_id(headers: &HeaderMap, state: &AppState) -> Result<String, ApiError> {
+    Ok(current_session(headers, state).await?.owner_id)
+}
+
+pub async fn current_session(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<AuthenticatedSession, ApiError> {
     let token =
         bearer_token(headers).ok_or_else(|| ApiError::unauthorized("missing bearer token"))?;
-    let claims =
-        decode_token(token, secret).ok_or_else(|| ApiError::unauthorized("invalid token"))?;
-    Ok(claims.sub)
+    let claims = decode_token(token, &state.auth.secret_key)
+        .ok_or_else(|| ApiError::unauthorized("invalid token"))?;
+    let session_id = claims.session_id.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "session_upgrade_required",
+            "Sign in again to create a device session; paired devices can scan a new pairing code",
+        )
+    })?;
+    let session = AuthenticatedSession {
+        owner_id: claims.sub,
+        session_id,
+        credential_id: claims
+            .jti
+            .ok_or_else(|| ApiError::unauthorized("invalid token"))?,
+    };
+    if !session_is_active(state.db.pool(), &session).await? {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "session_revoked",
+            "Device session was revoked. Sign in again",
+        ));
+    }
+    Ok(session)
+}
+
+pub(crate) async fn session_is_active(
+    pool: &SqlitePool,
+    session: &AuthenticatedSession,
+) -> Result<bool, ApiError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM auth_sessions s JOIN users u ON u.id = s.owner_id \
+         WHERE s.id = ? AND s.owner_id = ? AND s.credential_id = ? AND s.revoked_at IS NULL)",
+    )
+    .bind(&session.session_id)
+    .bind(&session.owner_id)
+    .bind(&session.credential_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|_| ApiError::internal("database error"))
+}
+
+/// Note: checking only request headers leaves an already-open SSE authenticated
+/// forever. End its body on revocation without cancelling the server-side job.
+pub async fn guard_session_stream(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let headers = request.headers().clone();
+    let response = next.run(request).await;
+    if !response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"))
+    {
+        return response;
+    }
+    let session = match current_session(&headers, &state).await {
+        Ok(session) => session,
+        Err(error) => return error.into_response(),
+    };
+    let (parts, body) = response.into_parts();
+    let (mut revoked_tx, revoked_rx) = tokio::sync::oneshot::channel::<()>();
+    // Note: a future stored in the body is polled only while the client reads.
+    // Run database checks independently so backpressure cannot park a query
+    // holding a pool connection. Dropping the body closes the receiver and
+    // releases the monitor once its current short database read completes.
+    tokio::spawn(async move {
+        loop {
+            // Database reads also cover revocations made by another router or
+            // after restart; no process-local notification is a source of truth.
+            if revoked_tx.is_closed() {
+                return;
+            }
+            // Complete an acquired SQLite read before stopping the monitor.
+            // Cancelling a SQLx future can retire its connection; for a pinned
+            // in-memory database that also destroys the entire database.
+            let active = session_is_active(state.db.pool(), &session)
+                .await
+                .unwrap_or(false);
+            if !active {
+                let _ = revoked_tx.send(());
+                return;
+            }
+            tokio::select! {
+                _ = revoked_tx.closed() => return,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {},
+            }
+        }
+    });
+    let revoked = async move {
+        let _ = revoked_rx.await;
+    };
+    Response::from_parts(
+        parts,
+        Body::from_stream(body.into_data_stream().take_until(revoked)),
+    )
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -320,24 +518,73 @@ fn verify_password(password: &str, hashed: &str) -> bool {
     bcrypt::verify(password, hashed).unwrap_or(false)
 }
 
-fn create_access_token(user_id: &str, secret: &str) -> Result<String, ApiError> {
+async fn issue_session(
+    state: &AppState,
+    user_id: &str,
+    device_label: &str,
+    parent: Option<&AuthenticatedSession>,
+) -> Result<TokenResponse, ApiError> {
+    let session_id = Uuid::new_v4().to_string();
+    let credential_id = Uuid::new_v4().to_string();
     // Note: login persists until the user signs out; a large finite expiry
     // would only postpone automatic logout. See docs/guide/settings.md.
     let claims = Claims {
         sub: user_id.to_string(),
+        session_id: Some(session_id.clone()),
+        jti: Some(credential_id.clone()),
     };
-    encode(
+    let access_token = encode(
         &Header::new(Algorithm::HS256),
         &claims,
-        &EncodingKey::from_secret(secret.as_bytes()),
+        &EncodingKey::from_secret(state.auth.secret_key.as_bytes()),
     )
-    .map_err(|_| ApiError::internal("failed to sign token"))
+    .map_err(|_| ApiError::internal("failed to sign token"))?;
+    let mut tx = state
+        .db
+        .begin_write()
+        .await
+        .map_err(|_| ApiError::internal("database error"))?;
+    if let Some(parent) = parent {
+        let active: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM auth_sessions WHERE id = ? AND owner_id = ? \
+             AND credential_id = ? AND revoked_at IS NULL)",
+        )
+        .bind(&parent.session_id)
+        .bind(&parent.owner_id)
+        .bind(&parent.credential_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal("database error"))?;
+        if !active {
+            return Err(ApiError::unauthorized("device session was revoked"));
+        }
+    }
+    sqlx::query("INSERT INTO auth_sessions (id, owner_id, credential_id, device_label, created_at) VALUES (?, ?, ?, ?, ?)")
+        .bind(session_id).bind(user_id).bind(credential_id).bind(device_label).bind(now_rfc3339())
+        .execute(&mut *tx).await.map_err(|_| ApiError::internal("database error"))?;
+    tx.commit()
+        .await
+        .map_err(|_| ApiError::internal("database error"))?;
+    Ok(TokenResponse {
+        access_token,
+        token_type: "bearer".to_string(),
+    })
+}
+
+fn normalize_device_label(raw: &str) -> Result<String, ApiError> {
+    let label = raw.trim();
+    if label.is_empty() || label.chars().count() > 100 || label.chars().any(char::is_control) {
+        return Err(ApiError::invalid_input(
+            "device_label must be 1 to 100 printable characters",
+        ));
+    }
+    Ok(label.to_string())
 }
 
 fn decode_token(token: &str, secret: &str) -> Option<Claims> {
     let mut validation = Validation::new(Algorithm::HS256);
-    // Note: pre-upgrade logins carry exp. Ignore that legacy deadline too,
-    // while continuing to require the subject and verify the HS256 signature.
+    // Note: sessions have no automatic deadline. Legacy JWTs are decoded only
+    // to return session_upgrade_required; they never create sessions implicitly.
     validation.set_required_spec_claims(&["sub"]);
     validation.validate_exp = false;
     decode::<Claims>(

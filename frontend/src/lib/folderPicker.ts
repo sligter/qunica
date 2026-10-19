@@ -9,7 +9,7 @@
  * asks the server what it has instead; see `ServerFolderPicker`.
  */
 
-import { isDesktopRuntime } from '@/lib/runtime'
+import { usesLocalDesktop } from '@/lib/runtime'
 
 export type FolderPickResult =
   | { kind: 'native'; name: string; path?: string }
@@ -34,7 +34,7 @@ export function normalizeWindowsPath(path: string): string {
 }
 
 export async function pickFolder(): Promise<FolderPickResult> {
-  if (!isDesktopRuntime()) {
+  if (!usesLocalDesktop()) {
     return { kind: 'serverBrowse' }
   }
   const tauriPath = await pickTauriFolder()

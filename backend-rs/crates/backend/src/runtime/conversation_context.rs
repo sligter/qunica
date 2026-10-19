@@ -198,7 +198,8 @@ async fn load_conversation_rows(
            ON ga.group_id = m.group_id AND ga.agent_id = m.sender_id \
          LEFT JOIN users u \
            ON m.sender_type != 'agent' AND u.id = m.sender_id \
-         WHERE m.thread_id = ? AND (m.status = 'visible' OR m.id = ?) \
+         WHERE m.thread_id = ? AND m.context_admitted = 1 \
+           AND (m.status = 'visible' OR m.id = ?) \
            AND m.seq > ? \
          ORDER BY m.seq ASC",
     )

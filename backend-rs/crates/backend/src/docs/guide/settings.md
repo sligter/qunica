@@ -78,10 +78,28 @@ Jev reads instructions literally, does no arithmetic, and is trained mainly on E
 %APPDATA%\qunica.desktop\desktop-secret.key
 ```
 
+## Login and device sessions
+
 Login has no time limit and persists across app restarts until you sign out.
-This also applies to previously issued tokens with an expiry date. Signing out
-clears the saved login and private client state; it does not revoke server-side
-copies of the token. `ACCESS_TOKEN_EXPIRE_MINUTES` no longer controls login.
+Each login has an independent server-side device session. Signing out revokes
+that session before clearing the saved login and private client state. Other
+devices stay signed in. If the server cannot confirm revocation, the app keeps
+the login and offers a retry. Existing SSE subscriptions end within the session
+check interval (250 ms, plus database latency) after revocation.
+
+Tokens issued before device sessions require one fresh login. The server returns
+`401 session_upgrade_required`; the app clears the old token and explains the
+migration. Paired phones can sign in or scan a new pairing code; each new pairing
+receives an independent device session. Pairing records are retained.
+`ACCESS_TOKEN_EXPIRE_MINUTES` no longer controls login.
+
+Device-session API: `GET /api/v2/auth/sessions` lists the current account's
+sessions without credentials; `DELETE /api/v2/auth/sessions/:id` revokes one;
+`POST /api/v2/auth/logout` revokes the current session. Authenticated
+`POST /api/v2/auth/sessions` with a `device_label` issues an independent device
+credential for the encrypted pairing handoff. Session checks apply to HTTP
+and SSE; [WebSocket synchronization](realtime.md) uses the same sessions.
+The device-management UI belongs to the client migration.
 
 `desktop-secret.key` signs login tokens. Deleting it invalidates existing sessions; logging in again is enough to recover.
 

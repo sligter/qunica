@@ -43,11 +43,11 @@ export function TerminalPane({ tab, transformInput }: TerminalPaneProps) {
   const transformInputRef = useRef(transformInput)
   transformInputRef.current = transformInput
   const containerRef = useRef<HTMLDivElement>(null)
-  const sessionRef = useRef({ sessionId: tab.sessionId, status: tab.status })
+  const sessionRef = useRef({ sessionId: tab.sessionId, status: tab.status, inputEnabled: tab.inputEnabled })
   const resetResizeRef = useRef<(() => void) | null>(null)
   const { subscribeOutput, write, resize } = useTerminalRuntime()
 
-  sessionRef.current = { sessionId: tab.sessionId, status: tab.status }
+  sessionRef.current = { sessionId: tab.sessionId, status: tab.status, inputEnabled: tab.inputEnabled }
 
   useEffect(() => {
     const container = containerRef.current
@@ -149,6 +149,7 @@ export function TerminalPane({ tab, transformInput }: TerminalPaneProps) {
     const input = terminal.onData((data) => {
       if (
         sessionRef.current.status !== 'running' ||
+        sessionRef.current.inputEnabled === false ||
         sessionRef.current.sessionId === null
       ) {
         return
@@ -186,7 +187,7 @@ export function TerminalPane({ tab, transformInput }: TerminalPaneProps) {
 
   useEffect(() => {
     resetResizeRef.current?.()
-  }, [tab.sessionId])
+  }, [tab.sessionId, tab.inputEnabled])
 
   return (
     <div

@@ -1,0 +1,53 @@
+# Optional computers: Chromium, desktop, constrained egress and proxied ACP.
+# Build the computer AND egress images first. Explicit execution binding is required.
+services:
+  qunica:
+    environment:
+      QUNICA_SUPERVISOR_URL: http://qunica-supervisor:9000
+      QUNICA_SUPERVISOR_TOKEN_FILE: /run/secrets/computer-supervisor-token
+      QUNICA_COMPUTER_PROXY_LISTEN: 0.0.0.0:8766
+    secrets:
+      - computer-supervisor-token
+    networks:
+      - default
+      - computer-control
+      - computer-egress
+  qunica-supervisor:
+    build:
+      context: .
+      dockerfile: docker/supervisor.Dockerfile
+    image: qunica-supervisor:local
+    restart: unless-stopped
+    environment:
+      QUNICA_SUPERVISOR_TOKEN_FILE: /run/secrets/computer-supervisor-token
+      QUNICA_COMPUTER_IMAGE: qunica-computer:local
+      QUNICA_COMPUTER_SERVICES: "true"
+      QUNICA_EGRESS_NETWORK: qunica-computer-egress
+      QUNICA_PROXY_BACKEND: http://qunica:8766
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - qunica-computer-state:/state
+    secrets:
+      - computer-supervisor-token
+    networks:
+      - computer-control
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,nosuid,nodev
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+
+secrets:
+  computer-supervisor-token:
+    file: ./.qunica/computer-supervisor.token
+
+volumes:
+  qunica-computer-state:
+
+networks:
+  computer-control:
+    internal: true
+  computer-egress:
+    name: qunica-computer-egress

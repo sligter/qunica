@@ -193,7 +193,7 @@ pub async fn create(
     headers: HeaderMap,
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<ProviderResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
 
     let name = validate_name(&body.name)?;
     let kind = validate_kind(&body.kind)?;
@@ -269,7 +269,7 @@ pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<ProviderResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let sql = format!(
         "SELECT {PROVIDER_COLUMNS} FROM llm_providers \
          WHERE owner_id = ? AND status = 'active' \
@@ -289,7 +289,7 @@ pub async fn get(
     headers: HeaderMap,
     Path(provider_id): Path<String>,
 ) -> Result<Json<ProviderResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let provider_id = validate_uuid(&provider_id, "provider id")?;
     let row = load_active_owned(state.db.pool(), &provider_id, &owner_id).await?;
     Ok(Json(row.into()))
@@ -301,7 +301,7 @@ pub async fn update(
     Path(provider_id): Path<String>,
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<ProviderResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let provider_id = validate_uuid(&provider_id, "provider id")?;
     let existing = load_active_owned(state.db.pool(), &provider_id, &owner_id).await?;
 
@@ -434,7 +434,7 @@ pub async fn delete(
     headers: HeaderMap,
     Path(provider_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let provider_id = validate_uuid(&provider_id, "provider id")?;
     load_active_owned(state.db.pool(), &provider_id, &owner_id).await?;
 
@@ -458,7 +458,7 @@ pub async fn models(
     headers: HeaderMap,
     Path(provider_id): Path<String>,
 ) -> Result<Json<Vec<ModelInfo>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let provider_id = validate_uuid(&provider_id, "provider id")?;
     let provider = load_active_owned(state.db.pool(), &provider_id, &owner_id).await?;
     let custom_headers = stored_headers(&provider);
@@ -481,7 +481,7 @@ pub async fn discover(
     headers: HeaderMap,
     Json(body): Json<DiscoverRequest>,
 ) -> Result<Json<Vec<ModelInfo>>, ApiError> {
-    current_user_id(&headers, &state.auth.secret_key)?;
+    current_user_id(&headers, &state).await?;
     let config = ProviderConfig {
         kind: validate_kind(&body.kind)?,
         base_url: normalize_nullable_text(body.base_url.as_deref()),
@@ -506,7 +506,7 @@ pub async fn test_model(
     headers: HeaderMap,
     Json(body): Json<TestModelRequest>,
 ) -> Result<Json<TestModelResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let stored_provider = match body.provider_id.as_deref() {
         Some(provider_id) => {
             let provider_id = validate_uuid(provider_id, "provider id")?;

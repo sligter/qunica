@@ -100,6 +100,7 @@ export interface GroupDecisionConfig {
 }
 
 export type GroupTurnStatus =
+  | 'queued'
   | 'pending'
   | 'running'
   | 'waiting_for_user'
@@ -228,6 +229,8 @@ export interface EstimatedCost {
 export type CostEstimationStatus = 'unavailable'
 
 export interface GroupTurnTraceResponse {
+  execution_locations?: { agent_id: string; computer_id: string; computer_name: string; generation: string }[]
+  stop_confirmation_required?: boolean
   turn: GroupTurnSummary
   budget: GroupTurnBudgetUsage
   dispatches: AgentDispatchTrace[]

@@ -14,6 +14,9 @@ import { useQueuedMessagesStore } from '@/stores/queuedMessagesStore'
 import { useMessageStore } from '@/stores/messageStore'
 import { useConversationActivityStore } from '@/stores/conversationActivityStore'
 import { useFileNavStore } from '@/stores/fileNavStore'
+import { useAccountSyncStore } from '@/stores/accountSyncStore'
+import { clearTerminalMetadata } from '@/terminal/metadataStore'
+import { apiOrigin } from '@/lib/runtime'
 import type { UserRead } from '@/types/api'
 
 const STORAGE_KEY = 'qunica:auth:v1'
@@ -85,45 +88,69 @@ function parseSyncedUser(raw: string | null): UserRead | null {
   }
 }
 
+function clearPrivateState(): void {
+  queryClient.clear()
+  clearComposerDrafts()
+  useQueuedMessagesStore.getState().clearAll()
+  useMessageStore.setState(useMessageStore.getInitialState(), true)
+  useConversationActivityStore.setState(useConversationActivityStore.getInitialState(), true)
+  useFileNavStore.setState(useFileNavStore.getInitialState(), true)
+  useAccountSyncStore.setState(useAccountSyncStore.getInitialState(), true)
+  clearTerminalMetadata()
+  try {
+    for (let index = localStorage.length - 1; index >= 0; index--) {
+      const key = localStorage.key(index)
+      if (key && ['qunica:groups:selected-thread:', 'qunica:groups:message-scroll:', 'qunica/picker-prefix:'].some(prefix => key.startsWith(prefix))) localStorage.removeItem(key)
+    }
+  } catch { /* Storage can be disabled. In-memory state is already cleared. */ }
+}
+
 interface AuthState {
   token: string | null
   user: UserRead | null
   hydrated: boolean
+  loginNotice: 'session_upgrade_required' | 'session_revoked' | null
   setToken: (token: string) => void | Promise<void>
   setUser: (user: UserRead | null) => void
   setHydrated: (value: boolean) => void
-  logout: () => void
+  logout: (notice?: AuthState['loginNotice']) => void
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
   token: loadFromStorage().token,
   user: null,
   hydrated: false,
+  loginNotice: null,
   setToken: (token) => {
     const version = ++authVersion
     if (isAndroidRuntime()) return saveAndroidToken(token).then(() => {
-      if (version === authVersion) set({ token })
+      if (version === authVersion) set({ token, loginNotice: null })
     })
     saveToStorage({ token })
-    set({ token })
+    set({ token, loginNotice: null })
   },
   setUser: (user) => {
     set({ user })
     if (user) publishUser(user)
   },
   setHydrated: (value) => set({ hydrated: value }),
-  logout: () => {
+  logout: (notice = null) => {
     authVersion += 1
     clearStorage()
-    set({ token: null, user: null, hydrated: true })
-    queryClient.clear()
-    clearComposerDrafts()
-    useQueuedMessagesStore.getState().clearAll()
-    useMessageStore.setState(useMessageStore.getInitialState(), true)
-    useConversationActivityStore.setState(useConversationActivityStore.getInitialState(), true)
-    useFileNavStore.setState(useFileNavStore.getInitialState(), true)
+    set({ token: null, user: null, hydrated: true, loginNotice: notice })
+    clearPrivateState()
   },
 }))
+
+const tokenOrigins = new Map<string, string>()
+function rememberOrigin(token: string | null) {
+  if (!token || tokenOrigins.has(token)) return
+  try { tokenOrigins.set(token, new URL(apiOrigin() || window.location.href).origin) }
+  catch { /* Android has no destination until secure-session restoration. */ }
+}
+rememberOrigin(useAuthStore.getState().token)
+useAuthStore.subscribe(state => rememberOrigin(state.token))
+export const authTokenOrigin = (token: string): string | undefined => tokenOrigins.get(token)
 
 // Tauri auxiliary windows and ordinary browser tabs have separate Zustand
 // instances but share localStorage. Mirror auth changes so logging out in the
@@ -145,17 +172,13 @@ if (typeof window !== 'undefined' && !isAndroidRuntime()) {
     }
     if (event.key !== STORAGE_KEY) return
     const { token } = parsePersistedAuth(event.newValue)
-    queryClient.clear()
-    clearComposerDrafts()
-    useQueuedMessagesStore.getState().clearAll()
+    clearPrivateState()
     useAuthStore.setState({
       token,
       user: null,
       hydrated: token === null,
+      loginNotice: null,
     })
-    useMessageStore.setState(useMessageStore.getInitialState(), true)
-    useConversationActivityStore.setState(useConversationActivityStore.getInitialState(), true)
-    useFileNavStore.setState(useFileNavStore.getInitialState(), true)
   }
   window.addEventListener('storage', syncAuthFromStorage)
   import.meta.hot?.dispose(() => window.removeEventListener('storage', syncAuthFromStorage))

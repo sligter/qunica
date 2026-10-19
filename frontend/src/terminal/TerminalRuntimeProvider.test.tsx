@@ -109,6 +109,21 @@ describe('TerminalRuntimeProvider', () => {
     vi.restoreAllMocks()
   })
 
+  it('restores an existing server PTY and keeps a missing session explicit until restart', async () => {
+    const sessionId='96598a90-36d4-45c2-bbf9-3d5621e379a3'
+    const transport = Object.assign(new FakeTransport(), { canAttach: true })
+    seedMetadata({height:240,conversations:{'chat-a':{open:true,activeTabId:'tab',tabs:[{id:'tab',label:'Server shell',launchDirectory:'D:/a',serverSessionId:sessionId}]}}})
+    transport.create.mockRejectedValueOnce(new TerminalTransportError('terminal.session_missing','Terminal session no longer exists.'))
+    render(<Harness transport={transport} target={ready('chat-a','D:/a')} />)
+    await waitFor(()=>expect(runtime.activeTabs[0]?.error?.code).toBe('terminal.session_missing'))
+    expect(transport.create).toHaveBeenCalledTimes(1)
+    expect(transport.create.mock.calls[0][0].existingSessionId).toBe(sessionId)
+    const tab=runtime.activeTabs[0]
+    await act(async()=>runtime.restartTab(tab.tabId))
+    expect(transport.create).toHaveBeenCalledTimes(2)
+    expect(transport.create.mock.calls[1][0].existingSessionId).toBeUndefined()
+  })
+
   it('keeps one conversation running while another becomes active', async () => {
     const transport = new FakeTransport()
     const { rerender } = render(

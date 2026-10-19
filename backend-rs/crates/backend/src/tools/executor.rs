@@ -160,6 +160,7 @@ impl McpMount {
 /// Executes workspace, network and MCP tools by name with JSON arguments.
 #[derive(Clone)]
 pub struct ToolExecutor {
+    computer: Option<crate::computers::ComputerExecution>,
     /// The bound workspace, or `None` when no local workspace is configured.
     workspace: Option<WorkspaceTools>,
     /// Shared group-note directory, exposed through note-only tools.
@@ -241,6 +242,7 @@ impl ToolExecutor {
             None => None,
         };
         Ok(Self {
+            computer: None,
             workspace,
             group_notes: None,
             mounted_skills,
@@ -263,6 +265,7 @@ impl ToolExecutor {
     /// Build an executor with no local workspace and the given mounted skills.
     pub fn without_workspace_with_skills(mounted_skills: Vec<MountedSkill>) -> Self {
         Self {
+            computer: None,
             workspace: None,
             group_notes: None,
             mounted_skills,
@@ -372,6 +375,29 @@ impl ToolExecutor {
         self.workspace.as_ref().map(WorkspaceTools::root)
     }
 
+    pub fn with_computer(mut self, computer: crate::computers::ComputerExecution) -> Self {
+        self.computer = Some(computer);
+        self.workspace = None;
+        // Note: dedicated group-note tools are backend resources, never a
+        // computer mount or a fallback for ordinary file tools.
+        self.mounted_skills.clear();
+        self.mcp_mount = McpMount::default();
+        self.mcp_manager = None;
+        self
+    }
+
+    pub fn computer(&self) -> Option<&crate::computers::ComputerExecution> {
+        self.computer.as_ref()
+    }
+
+    pub fn tool_dialect(&self) -> super::shell::resolve::ShellDialect {
+        if self.computer.is_some() {
+            super::shell::resolve::ShellDialect::Posix
+        } else {
+            self.shell.dialect
+        }
+    }
+
     /// The named mounts retained alongside the primary root.
     pub fn workspace_mounts(&self) -> &[WorkspaceMount] {
         self.workspace
@@ -393,6 +419,65 @@ impl ToolExecutor {
     /// Route a single tool call, surfacing argument/execution errors as
     /// [`ToolError`] for [`execute`](Self::execute) to render.
     async fn dispatch(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
+        if let Some(computer) = &self.computer {
+            if matches!(name, "ComputerBrowser" | "ComputerScreen" | "ComputerInput") {
+                let request = match name {
+                    "ComputerBrowser" => {
+                        serde_json::json!({"op":"browser","tool":args["tool"],"args":args.get("args").cloned().unwrap_or(serde_json::json!({})),"expected_page":args["expected_page"]})
+                    }
+                    "ComputerScreen" => serde_json::json!({"op":"screen"}),
+                    _ => {
+                        let mut value = args.clone();
+                        value["op"] = serde_json::json!("input");
+                        value
+                    }
+                };
+                return match computer.call(request).await {
+                    Ok(value) => Ok(ToolResult {
+                        status: if value["result"]["isError"]==true {ToolStatus::Failed}else{ToolStatus::Completed},
+                        output: value.to_string(),
+                    }),
+                    Err(error) if error.code()=="computer_control_held" => Ok(controlled::ask_user("The computer is under human control. Release it, return control to the agent, then continue this task.",true,&[])),
+                    Err(error) if error.code()=="computer_action_repeat" => Ok(controlled::ask_user("Repeated browser action has no effect. Inspect the computer, choose another action or take control before continuing.",true,&[])),
+                    Err(error) => Ok(ToolResult {
+                        status: ToolStatus::Failed,
+                        output: error.message_text(),
+                    }),
+                };
+            }
+            if name == "RequestComputerTakeover" {
+                return Ok(controlled::ask_user("Open Settings → Computers to take control of this computer. Release control, explicitly return it to the agent, then continue this task.",true,&[]));
+            }
+            if matches!(
+                name,
+                "Read"
+                    | "Write"
+                    | "Edit"
+                    | "DeleteFile"
+                    | "Glob"
+                    | "Grep"
+                    | "Bash"
+                    | "Pwsh"
+                    | "Cmd"
+                    | "Shell"
+                    | "ShellOutput"
+                    | "ShellKill"
+                    | "ShellJobs"
+            ) {
+                return self.run_computer_tool(computer, name, args).await;
+            }
+            if !matches!(
+                name,
+                "AskUser"
+                    | "TodoWrite"
+                    | "ExitPlanMode"
+                    | "SkillManager"
+                    | "ReadGroupNotes"
+                    | "EditGroupNote"
+            ) {
+                return Ok(controlled::setup_required(name,"This capability has no adapter for the selected computer; host fallback is disabled."));
+            }
+        }
         match name {
             "ReadGroupNotes" | "EditGroupNote" => {
                 let Some(notes) = self.group_notes.clone() else {
@@ -627,6 +712,69 @@ impl ToolExecutor {
             // `dispatch` only routes the names above here.
             other => Ok(unknown_tool(other)),
         }
+    }
+
+    async fn run_computer_tool(
+        &self,
+        computer: &crate::computers::ComputerExecution,
+        name: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let is_shell = matches!(name, "Bash" | "Pwsh" | "Cmd" | "Shell");
+        let timeout = args
+            .get("timeout_seconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(60)
+            .clamp(1, 300);
+        let argv = if is_shell {
+            let command = arg_str(&args, "command")?;
+            if command.is_empty() || command.len() > shell::MAX_COMMAND_CHARS {
+                return Err(ToolError::invalid("command must contain 1–8000 bytes"));
+            }
+            if arg_bool(&args, "run_in_background", false) {
+                return Ok(controlled::setup_required(
+                    name,
+                    "Computer background jobs are not supported; use a bounded foreground command.",
+                ));
+            }
+            let rule = format!("computer-shell:{}:{}", computer.id, computer.generation);
+            if !self.approvals.contains(&rule) {
+                return Ok(controlled::approval_required(super::ApprovalRequest {
+                    rule,
+                    capability: "execute a command on the bound computer".into(),
+                    reason: format!(
+                        "Computer {} generation {} executes this command in its persistent home.",
+                        computer.id, computer.generation
+                    ),
+                    tool_name: name.into(),
+                    subject: command.into(),
+                }));
+            }
+            vec!["/bin/sh".into(), "-c".into(), command.into()]
+        } else {
+            if matches!(name, "ShellOutput" | "ShellKill" | "ShellJobs") {
+                return Ok(controlled::setup_required(
+                    name,
+                    "Computer background jobs are not supported.",
+                ));
+            }
+            let input = serde_json::json!({"tool":name,"args":args}).to_string();
+            if input.len() > 32 * 1024 {
+                return Err(ToolError::invalid("computer file request exceeds 32 KiB"));
+            }
+            vec![
+                "python3".into(),
+                "-c".into(),
+                include_str!("computer_tools.py").into(),
+                input,
+            ]
+        };
+        let result=match computer.execute(argv,timeout).await {
+            Ok(value)=>value,
+            Err(error) if error.code()=="computer_control_held"=>return Ok(controlled::ask_user("The computer is under human control. Release it, return control to the agent, then continue this task.",true,&[])),
+            Err(error)=>return Err(ToolError::invalid(format!("{}: {}",error.code(),error.message_text()))),
+        };
+        Ok(ToolResult {status:if result["exit_code"]==0 {super::ToolStatus::Completed}else{super::ToolStatus::Failed},output:serde_json::json!({"computer_id":computer.id,"generation":computer.generation,"execution_location":"computer","result":result}).to_string()})
     }
 }
 

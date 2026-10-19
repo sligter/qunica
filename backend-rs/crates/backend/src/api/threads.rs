@@ -11,12 +11,9 @@ use axum::{
     http::{HeaderMap, StatusCode},
     Json,
 };
-use futures_util::StreamExt;
-use qunica_domain::events::StreamEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
@@ -31,14 +28,8 @@ use crate::{
         AppState,
     },
     git::{self as workspace_git, TaskWorktree},
-    runtime::{
-        group::{run_thread_resume, ResumeRequest},
-        RuntimeServices,
-    },
     tools::ApprovalDecision,
 };
-
-const CHANNEL_CAPACITY: usize = 64;
 
 #[derive(Debug, Serialize)]
 pub struct ThreadResponse {
@@ -101,13 +92,12 @@ struct InterruptedMessageRow {
     content_json: Option<String>,
 }
 
-struct ResumeTarget {
-    group_id: String,
-    thread_id: String,
-    agent_id: String,
-    message_id: String,
-    existing_content: String,
-    content_json: Option<String>,
+pub(crate) struct ResumeTarget {
+    pub(crate) group_id: String,
+    pub(crate) agent_id: String,
+    pub(crate) message_id: String,
+    pub(crate) existing_content: String,
+    pub(crate) content_json: Option<String>,
 }
 
 impl From<ThreadAccessRow> for ThreadResponse {
@@ -142,7 +132,7 @@ pub async fn get(
     headers: HeaderMap,
     Path(thread_id): Path<String>,
 ) -> Result<Json<ThreadResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let thread_id = validate_uuid(&thread_id, "thread id")?;
     let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
     Ok(Json(ThreadResponse::from(thread)))
@@ -153,7 +143,7 @@ pub async fn list_group(
     headers: HeaderMap,
     Path(group_id): Path<String>,
 ) -> Result<Json<Vec<ThreadResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     ensure_active_owned_conversation(
         state.db.pool(),
@@ -187,7 +177,7 @@ pub async fn create_group(
     Path(group_id): Path<String>,
     Json(body): Json<CreateTaskThreadRequest>,
 ) -> Result<(StatusCode, Json<ThreadResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let title = validate_title(&body.title)?;
     let requested_branch = body
@@ -204,7 +194,18 @@ pub async fn create_group(
     .await?;
 
     let id = Uuid::new_v4().to_string();
-    let provisioned = if let Some(requested_branch) = requested_branch {
+    let remote: bool = sqlx::query_scalar(
+        "SELECT execution_environment_id IS NOT NULL FROM groups WHERE id=? AND owner_id=?",
+    )
+    .bind(&group_id)
+    .bind(&owner_id)
+    .fetch_one(state.db.pool())
+    .await
+    .map_err(|_| ApiError::internal("database error"))?;
+    if let Some(branch) = requested_branch {
+        if remote && !valid_computer_branch(branch) {
+            return Err(ApiError::invalid_input("invalid task branch name"));
+        }
         let already_bound: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM threads \
              WHERE group_id = ? AND agent_id IS NULL AND git_branch = ?)",
@@ -219,7 +220,11 @@ pub async fn create_group(
                 "branch is already bound to another task",
             ));
         }
-
+    }
+    // Note: a computer task carries a branch, never a host mount. Provisioning
+    // waits until Runtime owns the turn reservation; see docs/guide/computers.md.
+    let remote_branch = requested_branch.filter(|_| remote);
+    let provisioned = if let Some(requested_branch) = requested_branch.filter(|_| !remote) {
         let workspace = workspace_files::load_owned_local_workspace(
             state.db.pool(),
             ConversationRoot::conversation(ConversationScope::Groups, &group_id, &owner_id),
@@ -250,11 +255,12 @@ pub async fn create_group(
     .bind(&id)
     .bind(&group_id)
     .bind(title)
-    .bind(provisioned.as_ref().map(|(_, _, binding)| &binding.branch))
+    .bind(provisioned.as_ref().map(|(_, _, binding)| binding.branch.as_str()).or(remote_branch))
     .bind(
         provisioned
             .as_ref()
-            .map(|(_, path, _)| path.to_string_lossy().into_owned()),
+            .map(|(_, path, _)| path.to_string_lossy().into_owned())
+            .or_else(|| remote_branch.map(|_| format!("computer:.worktrees/{group_id}/{id}"))),
     )
     .bind(&now)
     .bind(&now)
@@ -277,7 +283,7 @@ pub async fn rename(
     Path(thread_id): Path<String>,
     Json(body): Json<RenameTaskThreadRequest>,
 ) -> Result<Json<ThreadResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let thread_id = validate_uuid(&thread_id, "thread id")?;
     let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
     ensure_task_thread(&thread)?;
@@ -307,7 +313,7 @@ pub async fn archive(
     headers: HeaderMap,
     Path(thread_id): Path<String>,
 ) -> Result<Json<ThreadResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let thread_id = validate_uuid(&thread_id, "thread id")?;
     let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
     ensure_task_thread(&thread)?;
@@ -353,7 +359,7 @@ pub async fn unarchive(
     headers: HeaderMap,
     Path(thread_id): Path<String>,
 ) -> Result<Json<ThreadResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let thread_id = validate_uuid(&thread_id, "thread id")?;
     let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
     ensure_task_thread(&thread)?;
@@ -384,7 +390,7 @@ pub async fn clear_messages(
     headers: HeaderMap,
     Path(thread_id): Path<String>,
 ) -> Result<Json<ClearTaskMessagesResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let thread_id = validate_uuid(&thread_id, "thread id")?;
     let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
     ensure_task_thread(&thread)?;
@@ -430,7 +436,7 @@ pub async fn delete(
     headers: HeaderMap,
     Path(thread_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let thread_id = validate_uuid(&thread_id, "thread id")?;
     let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
     ensure_task_thread(&thread)?;
@@ -493,10 +499,30 @@ pub async fn cancel(
     headers: HeaderMap,
     Path(thread_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let thread_id = validate_uuid(&thread_id, "thread id")?;
     let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
-    state.active_turns.cancel_thread(&thread.id).await;
+    let active:Option<String>=sqlx::query_scalar("SELECT id FROM group_turns WHERE thread_id=? AND status IN ('pending','running','waiting_for_user') ORDER BY created_at DESC LIMIT 1")
+        .bind(&thread.id).fetch_optional(state.db.pool()).await.map_err(|_|ApiError::internal("database error"))?;
+    if let Some(turn) = active {
+        super::commands::accept(
+            &state,
+            &owner_id,
+            super::commands::Command {
+                request_id: headers
+                    .get("x-request-id")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| Uuid::new_v4().to_string()),
+                name: "turn.cancel".into(),
+                target: serde_json::json!({"turn_id":turn}),
+                payload: serde_json::json!({}),
+            },
+        )
+        .await?;
+    } else {
+        state.active_turns.cancel_thread(&thread.id).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -510,6 +536,9 @@ pub async fn cancel(
 #[serde(default)]
 pub struct ResumeBody {
     approval: Option<ApprovalDecision>,
+    request_id: Option<String>,
+    expected_version: Option<i64>,
+    action_hash: Option<String>,
 }
 
 pub async fn resume(
@@ -518,7 +547,7 @@ pub async fn resume(
     Path(thread_id): Path<String>,
     body: Option<Json<ResumeBody>>,
 ) -> Result<SseResponse, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let thread_id = validate_uuid(&thread_id, "thread id")?;
     let thread = fetch_owned_thread(state.db.pool(), &thread_id, &owner_id).await?;
 
@@ -530,7 +559,8 @@ pub async fn resume(
         return Ok(sse_response(body));
     }
 
-    let approval = body.and_then(|Json(body)| body.approval);
+    let body = body.map(|Json(body)| body).unwrap_or_default();
+    let approval = body.approval;
     if let Some(decision) = approval.as_ref() {
         if decision.tool_call_id.trim().is_empty() {
             return Err(ApiError::invalid_input(
@@ -540,32 +570,49 @@ pub async fn resume(
     }
 
     let target = resolve_resume_target(state.db.pool(), &thread_id, &owner_id).await?;
-    let (tx, rx) = mpsc::channel::<StreamEvent<Value>>(CHANNEL_CAPACITY);
-    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
-        .with_active_turn_registry(state.active_turns.clone());
-    let request = ResumeRequest {
-        group_id: target.group_id,
-        thread_id: target.thread_id,
-        agent_id: target.agent_id,
-        message_id: target.message_id,
-        existing_content: target.existing_content,
-        content_json: target.content_json,
-        approval,
+    crate::runtime::approval::ensure_pending(
+        state.db.pool(),
+        &thread_id,
+        target.content_json.as_deref(),
+    )
+    .await
+    .map_err(|_| ApiError::conflict("invalid approval checkpoint"))?;
+    let mut payload = serde_json::to_value(&approval).unwrap_or(Value::Null);
+    let name = if approval.is_some() {
+        "approval.resolve"
+    } else {
+        "thread.resume"
     };
-    tokio::spawn(async move {
-        run_thread_resume(services, request, tx).await;
-    });
-
-    let body = futures_util::stream::unfold(rx, |mut rx| async move {
-        let event = rx.recv().await?;
-        Some((event, rx))
-    })
-    .boxed();
-
-    Ok(sse_response(body))
+    if let Some(decision) = approval.as_ref() {
+        let row:Option<(i64,String)>=sqlx::query_as("SELECT version,action_hash FROM pending_approvals WHERE thread_id=? AND tool_call_id=? AND status='pending'")
+            .bind(&thread_id).bind(&decision.tool_call_id).fetch_optional(state.db.pool()).await.map_err(|_|ApiError::internal("database error"))?;
+        let (version, hash) =
+            row.ok_or_else(|| ApiError::conflict("no matching pending approval"))?;
+        payload["expected_version"] = serde_json::json!(body.expected_version.unwrap_or(version));
+        payload["action_hash"] = serde_json::json!(body.action_hash.unwrap_or(hash));
+    }
+    let response = super::commands::accept(
+        &state,
+        &owner_id,
+        super::commands::Command {
+            request_id: body
+                .request_id
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            name: name.into(),
+            target: serde_json::json!({"thread_id":thread_id}),
+            payload,
+        },
+    )
+    .await?;
+    let stream = Uuid::parse_str(response["stream_id"].as_str().unwrap()).unwrap();
+    Ok(sse_response(super::sse_replay::follow_new_stream(
+        state.db.pool().clone(),
+        thread.group_id,
+        stream,
+    )))
 }
 
-async fn resolve_resume_target(
+pub(crate) async fn resolve_resume_target(
     pool: &sqlx::SqlitePool,
     thread_id: &str,
     owner_id: &str,
@@ -589,7 +636,6 @@ async fn resolve_resume_target(
 
     Ok(ResumeTarget {
         group_id: thread.group_id,
-        thread_id: thread.id,
         agent_id,
         message_id: interrupted.id,
         existing_content: interrupted.content.unwrap_or_default(),
@@ -655,6 +701,10 @@ async fn remove_thread_worktree(
     owner_id: &str,
     worktree_path: &str,
 ) {
+    // Remote home survives task deletion. Never pass its logical path to host Git.
+    if worktree_path.starts_with("computer:") {
+        return;
+    }
     let workspace = workspace_files::load_owned_local_workspace(
         state.db.pool(),
         ConversationRoot::conversation(ConversationScope::Groups, group_id, owner_id),
@@ -673,6 +723,21 @@ async fn remove_thread_worktree(
     {
         tracing::warn!(%error, path = worktree_path, "failed to remove deleted task worktree");
     }
+}
+
+fn valid_computer_branch(branch: &str) -> bool {
+    !branch.is_empty()
+        && branch.len() <= 240
+        && !matches!(branch, "HEAD" | "@")
+        && !branch.starts_with('-')
+        && !branch.ends_with('.')
+        && !["..", "@{", "//"].iter().any(|part| branch.contains(part))
+        && !branch
+            .chars()
+            .any(|ch| ch.is_control() || " ~^:?*[\\".contains(ch))
+        && branch
+            .split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
 }
 
 fn ensure_task_thread(thread: &ThreadAccessRow) -> Result<(), ApiError> {

@@ -43,7 +43,7 @@ describe('AuthCard', () => {
     expect(screen.getByText('Your machine, your tools')).toBeInTheDocument()
     expect(screen.getByText('release-room')).toBeInTheDocument()
     expect(screen.getByText('Pick your project rooms back up.')).toBeInTheDocument()
-    expect(screen.getByText(/not a hosted Qunica cloud account/)).toBeInTheDocument()
+    expect(screen.getByText(/Qunica instance you are connected to/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeInTheDocument()
   })
 

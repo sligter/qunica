@@ -20,6 +20,7 @@ pub use state::{
     validate_dispatch_transition, validate_turn_transition, DispatchStatus, SchedulerStateError,
     TurnStatus,
 };
+pub(crate) use store::supersede_active_turn_in_tx;
 pub use store::{SchedulerStore, SchedulerStoreError};
 pub use topology::{allows_agent_edge, validate_topology, TopologyError, TopologySnapshot};
 

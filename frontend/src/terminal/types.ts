@@ -9,6 +9,7 @@ export type TerminalConversationTarget =
   | { conversationId: string; availability: 'pathRequired' }
 
 export interface CreateTerminalRequest {
+  existingSessionId?: string
   conversationId: string
   cwd: string
   cols: number
@@ -24,6 +25,7 @@ export interface TerminalDescriptor {
 }
 
 export type TerminalEvent =
+  | { event: 'control'; data: { writable: boolean } }
   | { event: 'output'; data: { bytes: Uint8Array } }
   | { event: 'exit'; data: { code: number | null; signal: string | null } }
   | { event: 'error'; data: { code: string; message: string } }

@@ -100,7 +100,8 @@ pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         .await
         .context("failed to recover incomplete scheduler turns")?;
 
-    Ok(AppState {
+    let state = AppState {
+        computers: crate::computers::SupervisorClient::from_env()?,
         db,
         auth: AuthSettings {
             secret_key: config.secret_key.clone(),
@@ -114,7 +115,54 @@ pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         // connection a turn would otherwise reuse.
         mcp: McpManager::shared(),
         terminals: TerminalManager::shared(),
-    })
+    };
+    // Note: model/notes grants are accepted only on the private execution
+    // listener, never on the public API or its SPA fallback.
+    if let Ok(address) = std::env::var("QUNICA_COMPUTER_PROXY_LISTEN") {
+        let listener = TcpListener::bind(&address)
+            .await
+            .context("failed to bind computer proxy listener")?;
+        let router = api::computer_proxy::router(state.clone());
+        tokio::spawn(async move {
+            if let Err(error) = axum::serve(listener, router).await {
+                tracing::error!(%error,"computer proxy listener stopped");
+            }
+        });
+    }
+    api::workspace_events::recover(state.db.pool()).await?;
+    api::computer_proxy::recover(state.db.pool()).await?;
+    api::commands::recover(&state)
+        .await
+        .context("failed to recover durable jobs")?;
+    api::commands::launch(state.clone());
+    // Note: the clock is server-side and injected here, never derived from a
+    // connected client. Startup uses recovery semantics so downtime coalesces
+    // missed runs instead of replaying every historical occurrence.
+    if let Err(error) = api::automations::tick(&state, chrono::Utc::now(), true).await {
+        tracing::error!(?error, "automation recovery tick failed");
+    }
+    api::commands::launch(state.clone());
+    let background = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        let mut cleanup_ticks = 0u32;
+        loop {
+            interval.tick().await;
+            if let Err(error) = api::automations::tick(&background, chrono::Utc::now(), false).await
+            {
+                tracing::warn!(?error, "automation timer tick failed");
+            }
+            api::commands::launch(background.clone());
+            cleanup_ticks += 1;
+            if cleanup_ticks >= 12 {
+                cleanup_ticks = 0;
+                if let Err(error) = api::account::prune(background.db.pool()).await {
+                    tracing::warn!(%error,"account event retention failed");
+                }
+            }
+        }
+    });
+    Ok(state)
 }
 
 pub async fn bind_listener(config: &ServerConfig) -> anyhow::Result<(TcpListener, SocketAddr)> {

@@ -11,7 +11,7 @@
   "app": {
     "windows": [{ "label": "main", "title": "Qunica", "useHttpsScheme": true }],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src ipc: http://ipc.localhost https:; worker-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src ipc: http://ipc.localhost https: wss:; worker-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'"
     }
   },
   "bundle": {

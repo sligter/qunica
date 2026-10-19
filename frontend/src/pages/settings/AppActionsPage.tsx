@@ -78,13 +78,14 @@ export function AppActionsPage() {
   const [status, setStatus] = useState<AppActionStatus | typeof ALL_STATUS>(ALL_STATUS)
 
   useEffect(() => {
+    const trimmed = searchInput.trim()
+    if (trimmed === search) return
     const timer = window.setTimeout(() => {
-      const trimmed = searchInput.trim()
-      setSearch((current) => (trimmed === current ? current : trimmed))
+      setSearch(trimmed)
       setPage(0)
     }, 300)
     return () => window.clearTimeout(timer)
-  }, [searchInput])
+  }, [searchInput, search])
 
   const actions = useAppActions({
     limit: APP_ACTIONS_PAGE_SIZE,

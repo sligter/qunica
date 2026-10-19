@@ -148,7 +148,7 @@ pub async fn get(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<AssistantResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok(Json(ensure(&state, &owner_id).await?))
 }
 
@@ -157,7 +157,7 @@ pub async fn update(
     headers: HeaderMap,
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<AssistantResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let existing = ensure(&state, &owner_id).await?;
 
     let provider_id = match body.llm_provider_id.as_deref() {

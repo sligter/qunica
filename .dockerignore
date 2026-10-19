@@ -2,6 +2,7 @@
 .git/
 .github/
 .claude/
+.agents/
 .qunica/
 .ag-swarmer/
 .workbuddy/

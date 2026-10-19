@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ArrowRight, ChevronDown, Sparkles } from 'lucide-react'
 
@@ -7,6 +7,7 @@ import { MessageItem } from '@/components/chat/MessageItem'
 import { StreamTimeline } from '@/components/chat/StreamTimeline'
 import { TurnSummary } from '@/components/chat/TurnSummary'
 import { humanInputRequestFromText } from '@/lib/humanInput'
+import { useAccountSyncStore } from '@/stores/accountSyncStore'
 import { useMessageStore, type StreamRun } from '@/stores/messageStore'
 import type { Message } from '@/types/api'
 import type { GroupAgentRead } from '@/types/api'
@@ -35,6 +36,15 @@ const EMPTY_WARNINGS: readonly string[] = []
 const EMPTY_STREAM_RUNS: Record<string, never> = {}
 const EMPTY_STREAM_RUN_IDS: Record<string, never> = {}
 const BOTTOM_PROXIMITY_PX = 120
+// Note: the list is not virtualized; rows well above the live tail skip layout
+// and paint while offscreen instead, so a long conversation does not make every
+// streamed delta re-lay-out the whole history. The tail stays fully rendered so
+// popovers and the active timeline are never clipped by paint containment.
+const LIVE_TAIL_ROWS = 8
+const OFFSCREEN_ROW_STYLE: CSSProperties = {
+  contentVisibility: 'auto',
+  containIntrinsicSize: 'auto 160px',
+}
 const MESSAGE_SCROLL_KEY_PREFIX = 'qunica:groups:message-scroll:'
 const ASSISTANT_SUGGESTION_KEYS = [
   'messages.assistantSuggestions.inspect',
@@ -190,6 +200,7 @@ export function MessageList({
   moderatorEnabled,
 }: MessageListProps) {
   const { t } = useTranslation('chat')
+  const blockedJobs = useAccountSyncStore((state) => state.snapshot?.blocked_jobs)
   const messages = useMessageStore((s) => s.byGroup[stateId] ?? EMPTY_MESSAGES)
   const warnings = useMessageStore(
     (s) => s.warningsByGroup[stateId] ?? EMPTY_WARNINGS,
@@ -201,6 +212,8 @@ export function MessageList({
     (s) => s.streamRunIdByUserMessageIdByGroup[stateId] ?? EMPTY_STREAM_RUN_IDS,
   )
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const hasStreamRuns = Object.keys(streamRuns).length > 0
   const isNearBottomRef = useRef(true)
   const restoredScrollRef = useRef(false)
   const [showJumpToLatest, setShowJumpToLatest] = useState(false)
@@ -259,7 +272,7 @@ export function MessageList({
   useLayoutEffect(() => {
     // Hidden editor siblings have zero-sized geometry. Never persist or follow it.
     if (!isVisible) return
-    if (messages.length === 0 && Object.keys(streamRuns).length === 0) return
+    if (messages.length === 0 && !hasStreamRuns) return
     const node = scrollRef.current
     if (!node) return
     if (!restoredScrollRef.current) {
@@ -287,7 +300,23 @@ export function MessageList({
     }
     isNearBottomRef.current = false
     setShowJumpToLatest(canScroll)
-  }, [messages, streamRuns, warnings, stateId, isVisible, getScrollState])
+    // Streamed deltas are deliberately absent: the observer below follows them.
+  }, [messages, hasStreamRuns, warnings, stateId, isVisible, getScrollState])
+
+  useLayoutEffect(() => {
+    const content = contentRef.current
+    if (!isVisible || !content) return
+    // Note: following streamed growth from a ResizeObserver, after the browser's
+    // own layout, replaces a layout effect per store update that forced a
+    // synchronous reflow for every delta.
+    const observer = new ResizeObserver(() => {
+      const node = scrollRef.current
+      if (!node || !restoredScrollRef.current || !isNearBottomRef.current) return
+      storeScrollTop(stateId, scrollToLatest(node))
+    })
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [isVisible, stateId])
 
   return (
     <div
@@ -296,7 +325,14 @@ export function MessageList({
       className="chat-message-scrollbar relative flex min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto py-4"
       onScroll={updateNearBottom}
     >
-      <div className="mx-auto flex min-w-0 w-full max-w-6xl flex-1 flex-col">
+      <div ref={contentRef} className="mx-auto flex min-w-0 w-full max-w-6xl flex-1 flex-col">
+        {blockedJobs?.filter((job) => job.group_id === groupId).map((job) => (
+          <div key={job.id} role="status" className="mx-4 mb-4 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
+            <p className="font-medium">{t('trace.stopConfirmation.title')}</p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{t('trace.stopConfirmation.description')}</p>
+            {onViewTurnTrace ? <button type="button" className="mt-2 text-xs font-medium underline underline-offset-4" onClick={(event) => onViewTurnTrace(job.turn_id, event.currentTarget)}>{t('trace.stopConfirmation.open')}</button> : null}
+          </div>
+        ))}
         {!isInitialLoading && messages.length === 0 && Object.keys(streamRuns).length === 0 && (
           agentIsSystem ? (
             <div className="flex flex-1 flex-col items-center justify-center px-5 py-8 text-center">
@@ -346,14 +382,18 @@ export function MessageList({
             </button>
           </div>
         )}
-        {messages.map((m) => {
+        {messages.map((m, index) => {
           if (hiddenMessageIds.has(m.id)) return null
           const runId = streamRunIdsByUserMessageId[m.id] ?? m.id
           const run = m.sender_type === 'user' ? streamRuns[runId] : undefined
           const turnId = m.sender_type === 'user' ? (run?.turn_id ?? m.turn_id) : null
           const schedulerStatus = run?.scheduler_status ?? m.turn_summary?.status ?? null
           return (
-            <Fragment key={m.id}>
+            <div
+              key={m.id}
+              className="flex min-w-0 flex-col"
+              style={index < messages.length - LIVE_TAIL_ROWS ? OFFSCREEN_ROW_STYLE : undefined}
+            >
               <MessageItem
                 message={m}
                 groupId={groupId}
@@ -386,7 +426,7 @@ export function MessageList({
                   scope={scope}
                 />
               ) : null}
-            </Fragment>
+            </div>
           )
         })}
         {latestWarning && Object.keys(streamRuns).length === 0 && (

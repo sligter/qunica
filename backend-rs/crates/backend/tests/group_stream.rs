@@ -3256,6 +3256,113 @@ async fn group_stream_executes_native_tool_and_continues_model() {
 }
 
 #[tokio::test]
+#[ignore = "requires Docker and qunica-computer:local"]
+async fn docker_bound_runtime_writes_reads_and_runs_shell_without_touching_host_workspace() {
+    use qunica_backend::computers::SupervisorClient;
+    use qunica_computer_supervisor::{docker::DockerProvider, Supervisor};
+    let journal = tempfile::tempdir().unwrap();
+    let driver = Arc::new(
+        DockerProvider::connect("qunica-computer:local".into())
+            .await
+            .unwrap(),
+    );
+    let supervisor = Supervisor::open(
+        journal.path().into(),
+        "runtime-docker-fixture-supervisor-secret",
+        driver,
+    )
+    .unwrap()
+    .router();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, supervisor).await.unwrap() });
+    let (_, mut state) = router_with_state_for_tests().await;
+    let client = Arc::new(
+        SupervisorClient::new(
+            &format!("http://{address}"),
+            "runtime-docker-fixture-supervisor-secret".into(),
+        )
+        .unwrap(),
+    );
+    state.computers = Some(client.clone());
+    let app = qunica_backend::api::router(state.clone());
+    let token = register_and_login(&app, "docker-runtime@example.test").await;
+    let owner = owner_id(&state, "docker-runtime@example.test").await;
+    let (host, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech":true})).await;
+    let (note_status, _) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/groups/{group}/notes"),
+            &token,
+            json!({"title":"Computer shared note","content":"backend note remains available"}),
+        ),
+    )
+    .await;
+    assert_eq!(note_status, StatusCode::CREATED);
+    let (url, requests) = recording_fake_provider_sequence(vec![
+        tool_body(vec![("notes", "ReadGroupNotes", json!({}))]),
+        tool_body(vec![(
+            "write",
+            "Write",
+            json!({"path":"artifact.txt","content":"verified computer artifact"}),
+        )]),
+        tool_body(vec![(
+            "shell",
+            "Bash",
+            json!({"command":"printf '\nfrom-shell' >> artifact.txt"}),
+        )]),
+        tool_body(vec![("read", "Read", json!({"path":"artifact.txt"}))]),
+        text_body("Done."),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &url).await;
+    seed_agent_with_tool_config(&state,&owner,&group,&provider,"Computer Agent","2024-01-01T00:00:00Z",json!({"tools":{"write":{"enabled":true},"read":{"enabled":true},"bash":{"enabled":true}},"bypass_approvals":true})).await;
+    let computer_id = uuid::Uuid::new_v4().to_string();
+    let created=client.request(reqwest::Method::POST,"/v1/computers",Some(&json!({"id":computer_id,"owner_id":owner,"binding":{"kind":"team","id":group},"name":"Runtime fixture"}))).await.unwrap();
+    sqlx::query("INSERT INTO computers(id,owner_id,binding_kind,binding_id,name,created_at) VALUES(?,?,'team',?,'Runtime fixture','now')").bind(&computer_id).bind(&owner).bind(&group).execute(state.db.pool()).await.unwrap();
+    sqlx::query("UPDATE groups SET execution_environment_id=? WHERE id=?")
+        .bind(&computer_id)
+        .bind(&group)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    // Collect results and clean up before asserting, so a failed assertion does
+    // not leave the fixture's container or persistent home behind.
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content":"write the artifact on the computer"}),
+    )
+    .await;
+    let artifact=client.request(reqwest::Method::POST,&format!("/v1/computers/{computer_id}/exec"),Some(&json!({"expected_generation":created["generation"],"argv":["python3","-c","from pathlib import Path; print(Path('artifact.txt').read_text())"],"cwd":"","timeout_seconds":10}))).await;
+    let cleanup=client.request(reqwest::Method::POST,&format!("/v1/computers/{computer_id}/actions"),Some(&json!({"expected_generation":created["generation"],"action":"destroy","confirm":computer_id,"purge_home":true}))).await;
+    server.abort();
+    assert!(cleanup.is_ok(), "fixture cleanup failed");
+    let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
+    assert_eq!(results.len(), 4, "{events:?}");
+    for result in results {
+        assert_eq!(result["status"], "completed", "{result}");
+    }
+    assert!(artifact.unwrap()["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("verified computer artifact\nfrom-shell"));
+    assert!(!host.path().join("artifact.txt").exists());
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 5);
+    let prompt = requests[0]["messages"][0]["content"].as_str().unwrap();
+    assert!(prompt.contains(&format!("Linux computer {computer_id}")));
+    assert!(!prompt.contains(&host.path().to_string_lossy().to_string()));
+    assert!(requests[4]["messages"].to_string().contains("from-shell"));
+    assert!(requests[1]["messages"]
+        .to_string()
+        .contains("Computer shared note"));
+}
+
+#[tokio::test]
 async fn every_group_agent_can_read_and_edit_shared_notes_on_demand() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "shared-note-tools@example.com").await;
@@ -7788,7 +7895,9 @@ async fn group_stream_client_disconnect_after_visible_token_persists_replayable_
     assert_eq!(fourth.kind, StreamEventKind::AgentStart);
     let fifth = rx.recv().await.unwrap();
     assert_eq!(fifth.kind, StreamEventKind::Token);
-    assert_eq!(fifth.payload["delta"], "a");
+    // Deltas arriving within the coalescing window share one event.
+    let delta = fifth.payload["delta"].as_str().unwrap();
+    assert!(!delta.is_empty() && "abc".starts_with(delta), "{delta}");
     drop(rx);
 
     let outcome = handle.await.unwrap();
@@ -7836,6 +7945,76 @@ async fn group_stream_client_disconnect_after_visible_token_persists_replayable_
         .await
         .unwrap();
     assert_eq!(thread_status, "active");
+}
+
+#[tokio::test]
+async fn group_stream_coalesces_token_deltas_without_losing_text() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "coalesce@example.com").await;
+    let owner = owner_id(&state, "coalesce@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let expected: String = (0..50).map(|i| format!("w{i} ")).collect();
+    let mut body: String = (0..50)
+        .map(|i| format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"w{i} \"}}}}]}}\n"))
+        .collect();
+    body.push_str("data: [DONE]\n");
+    let body: &'static str = Box::leak(body.into_boxed_str());
+    let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone());
+    let request = TurnRequest {
+        group_id: group.clone(),
+        owner_id: owner.clone(),
+        thread_id: None,
+        content: "hi".to_string(),
+        attachments: Vec::new(),
+        model_override: None,
+        effort_override: None,
+    };
+    let (tx, mut rx) = mpsc::channel(256);
+    let handle = tokio::spawn(run_group_turn(services, request, tx));
+    while rx.recv().await.is_some() {}
+    assert_eq!(handle.await.unwrap(), TurnOutcome::Completed);
+
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT e.kind, e.payload_json FROM stream_events e JOIN threads t ON t.id = e.thread_id \
+         WHERE t.group_id = ? ORDER BY e.seq ASC",
+    )
+    .bind(&group)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    let tokens: Vec<String> = rows
+        .iter()
+        .filter(|(kind, _)| kind == "token")
+        .map(|(_, payload)| {
+            let payload: Value = serde_json::from_str(payload).unwrap();
+            assert_eq!(payload["text"], payload["delta"]);
+            payload["delta"].as_str().unwrap().to_string()
+        })
+        .collect();
+    assert!(tokens.len() < 50, "{} token events", tokens.len());
+    assert_eq!(tokens.concat(), expected);
+    let last_token = rows.iter().rposition(|(kind, _)| kind == "token").unwrap();
+    let message = rows
+        .iter()
+        .position(|(kind, _)| kind == "agent_message")
+        .unwrap();
+    assert!(
+        last_token < message,
+        "held text must flush before the final message"
+    );
 }
 
 #[tokio::test]
@@ -8428,7 +8607,8 @@ async fn resume_thread_disconnect_completes_message_for_replay() {
     assert_eq!(start.kind, StreamEventKind::AgentStart);
     let token_event = rx.recv().await.unwrap();
     assert_eq!(token_event.kind, StreamEventKind::Token);
-    assert_eq!(token_event.payload["delta"], " more");
+    let delta = token_event.payload["delta"].as_str().unwrap();
+    assert!(delta.starts_with(" more"), "{delta}");
     drop(rx);
 
     let outcome = handle.await.unwrap();
@@ -9796,6 +9976,20 @@ async fn approving_replays_the_exact_paused_call() {
         "Removed the artifact.",
     )
     .await;
+
+    // Rebuild the process-local registry after startup recovery. The question
+    // and exact action remain in SQLite while no original runtime is alive.
+    qunica_backend::runtime::group_scheduler::SchedulerStore::new(
+        state.db.pool().clone(),
+        state.write_lock.clone(),
+    )
+    .recover_incomplete_turns()
+    .await
+    .unwrap();
+    let mut restarted_state = state.clone();
+    restarted_state.active_turns =
+        qunica_backend::runtime::group_scheduler::ActiveTurnRegistry::new();
+    let app = qunica_backend::api::router(restarted_state);
 
     let resumed = stream_events(
         &app,

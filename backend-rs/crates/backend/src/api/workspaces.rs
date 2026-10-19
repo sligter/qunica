@@ -88,7 +88,7 @@ pub async fn create(
     headers: HeaderMap,
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<WorkspaceResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok((
         StatusCode::CREATED,
         Json(create_inner(&state, &owner_id, body).await?),
@@ -276,7 +276,7 @@ pub async fn browse_directories(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<BrowseQuery>,
 ) -> Result<Json<BrowseResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let root = resolve_workspace_root(&state, &owner_id).await?;
     let target = resolve_directory(&root, query.path.as_deref())?;
 
@@ -328,7 +328,7 @@ pub async fn create_directory(
     headers: HeaderMap,
     Json(request): Json<CreateDirectoryRequest>,
 ) -> Result<(StatusCode, Json<DirectoryEntry>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let root = resolve_workspace_root(&state, &owner_id).await?;
     let parent = resolve_directory(&root, request.parent.as_deref())?;
     let name = validate_directory_name(&request.name)?;
@@ -400,7 +400,7 @@ pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<WorkspaceResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
 
     let rows = sqlx::query_as::<_, WorkspaceRow>(
         "SELECT id, owner_id, name, backend_type, local_path, config_json, status, created_at, updated_at \
@@ -423,7 +423,7 @@ pub async fn get(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
 ) -> Result<Json<WorkspaceResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let workspace_id = parse_id(&workspace_id)?;
 
     let row = load_owned(state.db.pool(), &workspace_id, &owner_id).await?;
@@ -436,7 +436,7 @@ pub async fn update(
     Path(workspace_id): Path<String>,
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<WorkspaceResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok(Json(
         update_inner(&state, &owner_id, &workspace_id, body).await?,
     ))
@@ -518,7 +518,7 @@ pub async fn delete(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let workspace_id = parse_id(&workspace_id)?;
 
     // Confirms existence and ownership before mutating anything.

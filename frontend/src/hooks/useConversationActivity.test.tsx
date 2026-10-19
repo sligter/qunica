@@ -25,8 +25,12 @@ vi.mock('@/lib/api-v2/client', async (importOriginal) => {
   return { ...original, fetchJson: mocks.fetchJson }
 })
 
-vi.mock('@/lib/api-v2/sse', () => ({
-  openApiV2SseStream: (options: { handlers: ApiV2SseHandlers }) => {
+vi.mock('@/lib/realtime/cancelTurn', () => ({
+  cancelTurn: (group: string, turn: string, token: string) => mocks.fetchJson('/groups/' + group + '/turns/' + turn + '/cancel', { method: 'POST', token }),
+}))
+
+vi.mock('@/lib/realtime/stream', () => ({
+  openConversationStream: (options: { handlers: ApiV2SseHandlers }) => {
     const abort = vi.fn()
     mocks.streams.push({ handlers: options.handlers })
     return { abort } as unknown as AbortController

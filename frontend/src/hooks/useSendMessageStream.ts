@@ -7,7 +7,7 @@
  * never share transient state.
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { z } from 'zod'
 
@@ -20,7 +20,7 @@ import {
   todoUpdatePayloadSchema,
   waitingForUserPayloadSchema,
 } from '@/lib/api-v2/schemas'
-import { openApiV2SseStream } from '@/lib/api-v2/sse'
+import { openConversationStream as openApiV2SseStream } from '@/lib/realtime/stream'
 import type { RetryState } from '@/lib/api-v2/retry'
 import { pendingActionFromOutput } from '@/lib/appActions'
 import type {
@@ -37,6 +37,9 @@ import { conversationWorkspaceFilesQueryKey } from '@/hooks/useConversationWorks
 import { notifyReplyOutcome } from '@/lib/replyNotifications'
 import { useAuthStore } from '@/stores/authStore'
 import { useConversationActivityStore } from '@/stores/conversationActivityStore'
+import { useAccountSyncStore, type AccountJob } from '@/stores/accountSyncStore'
+import { realtimeClient } from '@/lib/realtime/client'
+import { cancelTurn } from '@/lib/realtime/cancelTurn'
 import { useMessageStore } from '@/stores/messageStore'
 import type { ActiveAgent, ToolActivity, ToolActivityStatus } from '@/stores/messageStore'
 import type { ContextUsage, Message, MessageSendInput } from '@/types/api'
@@ -160,6 +163,8 @@ function externalRunStatus(status: string | undefined): ToolActivityStatus {
   if (status === 'completed') return 'completed'
   return 'failed'
 }
+
+const WORKSPACE_FILES_REFRESH_MS = 500
 
 function requestId(): string {
   return crypto.randomUUID()
@@ -346,6 +351,7 @@ export function useSendMessageStream(
   const onConversationUpdated = options.onConversationUpdated
   const token = useAuthStore((s) => s.token)
   const currentUserId = useAuthStore((s) => s.user?.id ?? null)
+  const accountSnapshot = useAccountSyncStore((s) => s.snapshot)
   const appendMessage = useMessageStore((s) => s.appendMessage)
   const startOptimisticUserMessage = useMessageStore((s) => s.startOptimisticUserMessage)
   const settleOptimisticUserMessage = useMessageStore((s) => s.settleOptimisticUserMessage)
@@ -456,6 +462,19 @@ export function useSendMessageStream(
     }
   }, [groupId, qc, scope, threadId])
 
+  // Note: an ACP run reports tool progress thousands of times. Refreshing the
+  // file list per event rescanned the workspace every frame, so only finished
+  // tools schedule a refresh, at most once per window.
+  const filesRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const refreshWorkspaceFilesSoon = useCallback(() => {
+    if (!groupId || filesRefreshTimerRef.current !== undefined) return
+    filesRefreshTimerRef.current = setTimeout(() => {
+      filesRefreshTimerRef.current = undefined
+      void qc.invalidateQueries({ queryKey: conversationWorkspaceFilesQueryKey(scope, groupId) })
+    }, WORKSPACE_FILES_REFRESH_MS)
+  }, [groupId, qc, scope])
+  useEffect(() => () => clearTimeout(filesRefreshTimerRef.current), [])
+
   const invalidateTurn = useCallback(
     (turnId: string) => {
       if (!groupId) return
@@ -493,10 +512,7 @@ export function useSendMessageStream(
       if (groupId && token) {
         const traces = await Promise.all(
           Array.from(turnIds, (turnId) =>
-            fetchJson<unknown>(`/groups/${groupId}/turns/${turnId}/cancel`, {
-              method: 'POST',
-              token,
-            }).then(parseGroupTurnTrace),
+            cancelTurn(groupId, turnId, token).then(parseGroupTurnTrace),
           ),
         )
         for (const trace of traces) {
@@ -631,7 +647,7 @@ export function useSendMessageStream(
   )
 
   const send = useCallback(
-    (input: string | MessageSendInput): Promise<void> => {
+    (input: string | MessageSendInput, observed?: { streamId: string; cursor: string; events: StreamEvent[] }): Promise<void> => {
       if (!groupId || !token) {
         const message = 'Authentication and a conversation are required to send a message'
         setError(message)
@@ -645,14 +661,16 @@ export function useSendMessageStream(
       const storeId = stateKey ?? groupId
       let id: string
       try {
-        id = requestId()
+        id = observed?.streamId ?? requestId()
       } catch (error) {
         const startupError = asError(error, 'Unable to start the message stream')
         setError(startupError.message)
         return Promise.reject(startupError)
       }
       const acknowledgement = createPendingSendAcknowledgement()
-      pendingSendAcknowledgementsRef.current.set(id, acknowledgement)
+      if (streamsRef.current.has(id)) return Promise.resolve()
+      if (observed) acknowledgement.resolve()
+      else pendingSendAcknowledgementsRef.current.set(id, acknowledgement)
       setError(null)
       setRetryExhausted(false)
       clearWarnings(storeId)
@@ -666,10 +684,12 @@ export function useSendMessageStream(
         threadId,
         currentUserId,
       )
-      optimisticMessageIdsRef.current.set(id, optimisticMessage.id)
-      startOptimisticUserMessage(storeId, id, optimisticMessage)
+      if (!observed) {
+        optimisticMessageIdsRef.current.set(id, optimisticMessage.id)
+        startOptimisticUserMessage(storeId, id, optimisticMessage)
+      }
       sendFailuresRef.current.delete(id)
-      startActivityRun({ id, conversationId: groupId, threadId, scope })
+      if (!useConversationActivityStore.getState().runs[id]) startActivityRun({ id, conversationId: groupId, threadId, scope })
       const message = {
         ...(typeof input === 'string' ? { content: input, attachments: [] } : input),
         client_request_id: id,
@@ -681,6 +701,7 @@ export function useSendMessageStream(
           url: `/api/v2${conversationApiPath(scope, groupId)}/messages/stream`,
           body: message,
           token,
+          observe: observed,
           replayUrl: () => `/api/v2${conversationApiPath(scope, groupId)}/streams/${id}`,
           handlers: {
           onOpen: () => { clearRetry(id); setRetryExhausted(false); setError(null) },
@@ -708,6 +729,7 @@ export function useSendMessageStream(
             clearRetry(id)
             const streamId = event.stream_id
             streamIdsRef.current.set(id, streamId)
+            if (!acceptsStreamEvent(storeId, streamId)) return
             const schedulerUpdate = parseSchedulerStreamEvent(event)
             if (schedulerUpdate) {
               schedulerTurnByRequestRef.current.set(id, schedulerUpdate.payload.turn_id)
@@ -878,8 +900,8 @@ export function useSendMessageStream(
                 }
                 pushToolActivity(storeId, activity)
                 upsertStreamTool(storeId, streamId, activity)
-                if (event.kind === 'tool_call_result') {
-                  void qc.invalidateQueries({ queryKey: conversationWorkspaceFilesQueryKey(scope, groupId) })
+                if (event.kind === 'tool_call_result' && status !== 'started') {
+                  refreshWorkspaceFilesSoon()
                 }
                 return
               }
@@ -1095,6 +1117,7 @@ export function useSendMessageStream(
       qc,
       refreshActiveCount,
       refreshRetry,
+      refreshWorkspaceFilesSoon,
       reconcileSchedulerTurn,
       rejectSendBeforeAcknowledgement,
       scope,
@@ -1114,6 +1137,35 @@ export function useSendMessageStream(
       upsertStreamTool,
     ],
   )
+
+  useEffect(() => {
+    if (!groupId || !token || activeSend || !accountSnapshot) return
+    if (scope === 'groups' && !threadId) return
+    const jobs = accountSnapshot.active_jobs.filter(job => job.group_id === groupId
+      && (!threadId || job.thread_id === threadId) && ['queued', 'running'].includes(job.status)
+      && !realtimeClient(token).localRuns.has(job.stream_id))
+    if (!jobs.length) return
+    let cancelled = false
+    async function observe(job: AccountJob) {
+      const snapshot = await realtimeClient(token!).request<{
+        active_jobs: AccountJob[]
+        runs: { stream_id: string; cursor: string }[]
+        inflight_events: StreamEvent[]
+        inflight_output: { stream_id: string; agent_id: string; kind: 'token' | 'reasoning'; text: string; seq: number }[]
+      }>(`/threads/${job.thread_id}/snapshot`)
+      if (cancelled || useAuthStore.getState().token !== token || !snapshot.active_jobs.some(item => item.stream_id === job.stream_id && item.status !== 'waiting_for_user')) return
+      const events: StreamEvent[] = snapshot.inflight_events.filter(event => event.stream_id === job.stream_id)
+      for (const output of snapshot.inflight_output.filter(item => item.stream_id === job.stream_id)) {
+        events.push({ stream_id: job.stream_id, event_id: `${job.stream_id}:${output.seq}`, seq: output.seq,
+          kind: output.kind, payload: { agent_id: output.agent_id, text: output.text } })
+      }
+      events.sort((a, b) => a.seq - b.seq)
+      await send('', { streamId: job.stream_id,
+        cursor: snapshot.runs.find(item => item.stream_id === job.stream_id)?.cursor ?? '-1', events })
+    }
+    for (const job of jobs) void observe(job).catch(err => { if (!cancelled) setError(String(err)) })
+    return () => { cancelled = true }
+  }, [groupId, threadId, token, activeSend, accountSnapshot, scope, send])
 
   return {
     send,

@@ -7,6 +7,7 @@ import {
   RotateCw,
   ShieldAlert,
   SquareTerminal,
+  Hand,
   X,
 } from 'lucide-react'
 import {
@@ -30,6 +31,7 @@ import {
 import { usePersistentPaneHeight } from '@/terminal/usePersistentPaneHeight'
 import { useMobilePanel } from '@/components/layout/mobilePanels'
 import { controlInput } from './controlInput'
+import { ServerTerminalSessions } from './ServerTerminalSessions'
 
 export const FULL_ACCESS_WARNING_KEY = 'qunica:terminal-full-access-warning:v1'
 
@@ -96,6 +98,7 @@ function rememberWarningDismissed(): void {
 export function TerminalSurface({ mobile = false }: { mobile?: boolean } = {}) {
   const { t } = useTranslation('chat')
   const runtime = useTerminalRuntime()
+  const [sessionsOpen, setSessionsOpen] = useState(false)
   const hostRef = useRef<HTMLElement>(null)
   const [mobileOpen, setMobileOpen] = useMobilePanel('terminal')
   const [controlArmed, setControlArmed] = useState(false)
@@ -230,6 +233,7 @@ export function TerminalSurface({ mobile = false }: { mobile?: boolean } = {}) {
       style={{ height: chromeVisible ? mobile ? '100dvh' : displayedHeight : 0, display: mobile && !chromeVisible ? 'none' : undefined }}
       aria-hidden={!chromeVisible}
     >
+      {sessionsOpen && runtime.activeConversation && <ServerTerminalSessions conversationId={runtime.activeConversation.conversationId} onAttach={runtime.createTab} onClose={() => setSessionsOpen(false)} />}
       {chromeVisible ? (
         <>
           <div
@@ -277,7 +281,7 @@ export function TerminalSurface({ mobile = false }: { mobile?: boolean } = {}) {
                           role="tab"
                           aria-selected={selected}
                           className="min-w-0 flex-1 truncate text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          title={tab.label}
+                          title={runtime.canAttach && tab.sessionId ? `${tab.label} · ${tab.sessionId.slice(0, 8)}` : tab.label}
                           onClick={() => runtime.selectTab(tab.tabId)}
                           onDoubleClick={() => startRename(tab)}
                         >
@@ -306,6 +310,10 @@ export function TerminalSurface({ mobile = false }: { mobile?: boolean } = {}) {
             <div className="flex shrink-0 items-center border-l border-[var(--terminal-border)] pl-1">
               {ready ? (
                 <>
+                  {runtime.canAttach && <IconAction label={t('terminal.serverSessions')} icon={SquareTerminal} onClick={() => setSessionsOpen(true)} />}
+                  {runtime.setInputControl && activeTab?.status === 'running' && <IconAction
+                    label={t(activeTab.inputEnabled === false ? 'terminal.acquireInput' : 'terminal.releaseInput')}
+                    icon={Hand} onClick={() => void runtime.setInputControl?.(activeTab.tabId, activeTab.inputEnabled === false).catch(() => undefined)} />}
                   <IconAction
                     label={t('terminal.new')}
                     icon={Plus}
@@ -406,6 +414,9 @@ export function TerminalSurface({ mobile = false }: { mobile?: boolean } = {}) {
             {t('terminal.starting')}
           </div>
         ) : null}
+        {runtimeChromeVisible && activeTab?.status === 'running' && activeTab.inputEnabled === false ? (
+          <div role="status" className="pointer-events-none absolute right-3 top-2 rounded bg-[var(--terminal-chrome)] px-2 py-1 text-[11px] text-[var(--terminal-inactive-tab)]">{t('terminal.readOnly')}</div>
+        ) : null}
         {runtimeChromeVisible && activeTab?.status === 'exited' ? (
           <div className="absolute inset-x-0 bottom-0 flex items-center justify-between border-t border-[var(--terminal-border)] bg-[var(--terminal-chrome)] px-3 py-2 text-xs">
             <span className="text-[var(--terminal-inactive-tab)]">
@@ -424,9 +435,10 @@ export function TerminalSurface({ mobile = false }: { mobile?: boolean } = {}) {
             <span className="min-w-0 truncate text-destructive" title={activeTab.error?.message}>
               {t('terminal.spawnError', { message: activeTab.error?.message ?? '' })}
             </span>
-            <Button type="button" variant="outline" size="sm" className="h-7 shrink-0" onClick={() => void runtime.restartTab(activeTab.tabId).catch(() => undefined)}>
+            <Button type="button" variant="outline" size="sm" className="h-7 shrink-0" onClick={() => void (activeTab.error?.code === 'terminal.output_gap' && activeTab.sessionId && runtime.canAttach
+              ? runtime.createTab(activeTab.sessionId) : runtime.restartTab(activeTab.tabId)).catch(() => undefined)}>
               <RotateCw className="h-3.5 w-3.5" />
-              {t('terminal.retry')}
+              {t(activeTab.error?.code === 'terminal.output_gap' && runtime.canAttach ? 'terminal.redraw' : 'terminal.retry')}
             </Button>
           </div>
         ) : null}

@@ -20,11 +20,13 @@ const mocks = vi.hoisted(() => ({
   cancel: {} as Record<string, unknown>,
   refetch: vi.fn(),
   mutate: vi.fn(),
+  acknowledge: vi.fn(),
 }))
 
 vi.mock('@/hooks/useGroupTurnTrace', () => ({
   useGroupTurnTrace: () => mocks.trace,
   useCancelGroupTurn: () => mocks.cancel,
+  useAcknowledgeStoppedTurn: () => ({ isPending: false, isError: false, mutate: mocks.acknowledge }),
 }))
 
 function traceFixture(): GroupTurnTraceResponse {
@@ -60,6 +62,7 @@ describe('TurnTraceDrawer', () => {
   beforeEach(() => {
     mocks.refetch.mockReset()
     mocks.mutate.mockReset()
+    mocks.acknowledge.mockReset()
     mocks.trace = { data: undefined, isLoading: false, isError: false, error: null, refetch: mocks.refetch }
     mocks.cancel = { isPending: false, isError: false, error: null, mutate: mocks.mutate }
   })
@@ -84,6 +87,31 @@ describe('TurnTraceDrawer', () => {
     renderDrawer()
     expect(screen.getByText('回合详情')).toBeVisible()
     expect(screen.getByRole('alert')).toHaveTextContent('RAW_BACKEND_DETAIL')
+  })
+
+  it('requires explicit confirmation before unblocking interrupted work', async () => {
+    const data = traceFixture()
+    data.turn.status = 'failed'
+    data.stop_confirmation_required = true
+    mocks.trace = { ...mocks.trace, data }
+    renderDrawer()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: 'Confirm stopped work…' }))
+    expect(mocks.acknowledge).not.toHaveBeenCalled()
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Verify that the previous process')
+    await user.click(screen.getByRole('button', { name: 'I verified it has stopped' }))
+    expect(mocks.acknowledge).toHaveBeenCalledWith({ groupId: 'group-1', turnId: 'turn-1' })
+    expect(mocks.mutate).not.toHaveBeenCalled()
+  })
+
+  it('allows queued work to be cancelled', () => {
+    const data = traceFixture()
+    data.turn.status = 'queued'
+    mocks.trace = { ...mocks.trace, data }
+    renderDrawer()
+    expect(screen.getByText('Queued')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Stop turn' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Confirm stopped work…' })).not.toBeInTheDocument()
   })
 
   it('localizes known termination reasons and cost while preserving unknown reasons', async () => {

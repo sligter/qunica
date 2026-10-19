@@ -11,6 +11,7 @@ import {
 import { fetchJson } from '@/lib/api-v2/client'
 import { groupThreadsQueryOptions } from '@/hooks/useGroupThreads'
 import { useAuthStore } from '@/stores/authStore'
+import { useAccountSyncStore } from '@/stores/accountSyncStore'
 import { useMessageStore } from '@/stores/messageStore'
 import type {
   ClearGroupMessagesResponse,
@@ -80,6 +81,7 @@ export const conversationMessagesQueryOptions = (
   refetchOnWindowFocus: () => !hasLocalStream(conversationStateKey(conversationId, threadId)),
   refetchOnReconnect: () => !hasLocalStream(conversationStateKey(conversationId, threadId)),
   refetchInterval: query => {
+    if (useAccountSyncStore.getState().status === 'connected') return false
     if (hasLocalStream(conversationStateKey(conversationId, threadId))) return false
     return query.state.data?.pages.some(page => page.some(message =>
       message.turn_summary && ['pending', 'running'].includes(message.turn_summary.status),

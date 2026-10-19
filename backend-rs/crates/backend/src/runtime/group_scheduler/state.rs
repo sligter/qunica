@@ -4,6 +4,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnStatus {
+    Queued,
     Pending,
     Running,
     WaitingForUser,
@@ -19,6 +20,7 @@ pub enum TurnStatus {
 impl TurnStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Queued => "queued",
             Self::Pending => "pending",
             Self::Running => "running",
             Self::WaitingForUser => "waiting_for_user",
@@ -38,6 +40,7 @@ impl TryFrom<&str> for TurnStatus {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
+            "queued" => Ok(Self::Queued),
             "pending" => Ok(Self::Pending),
             "running" => Ok(Self::Running),
             "waiting_for_user" => Ok(Self::WaitingForUser),
@@ -123,7 +126,10 @@ pub fn validate_turn_transition(
 ) -> Result<(), SchedulerStateError> {
     let allowed = matches!(
         (from, to),
-        (TurnStatus::Pending, TurnStatus::Running)
+        (TurnStatus::Queued, TurnStatus::Pending)
+            | (TurnStatus::Queued, TurnStatus::Cancelled)
+            | (TurnStatus::Queued, TurnStatus::Failed)
+            | (TurnStatus::Pending, TurnStatus::Running)
             | (TurnStatus::Pending, TurnStatus::Cancelled)
             | (TurnStatus::Pending, TurnStatus::Superseded)
             | (TurnStatus::Pending, TurnStatus::Failed)

@@ -26,6 +26,7 @@ interface TurnSummaryProps {
 }
 
 const turnStatusKeys = {
+  queued: 'trace.statuses.queued',
   pending: 'trace.statuses.pending',
   running: 'trace.statuses.running',
   waiting_for_user: 'trace.statuses.waiting_for_user',

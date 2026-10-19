@@ -1,7 +1,13 @@
+pub mod account;
 pub mod agents;
 pub mod app_actions;
 pub mod assistant;
 pub mod auth;
+pub mod automations;
+pub mod commands;
+pub mod computer_desktop;
+pub mod computer_proxy;
+pub mod computers;
 pub mod conversations;
 pub mod direct_chats;
 pub mod error;
@@ -11,12 +17,15 @@ pub mod health;
 pub mod llm_providers;
 pub mod mcp_servers;
 pub mod messages;
+pub mod realtime;
 pub mod skills;
 mod sse_replay;
 pub mod system_settings;
 pub mod terminal;
+pub mod terminal_realtime;
 pub mod threads;
 pub mod token_usage;
+pub mod workspace_events;
 pub mod workspace_files;
 pub mod workspaces;
 
@@ -42,6 +51,7 @@ use crate::{
 /// Shared application state injected into every API v2 handler.
 #[derive(Clone)]
 pub struct AppState {
+    pub computers: Option<Arc<crate::computers::SupervisorClient>>,
     pub db: Db,
     pub auth: AuthSettings,
     /// Serializes chat/runtime writes so per-thread sequence allocation stays
@@ -87,23 +97,109 @@ pub fn router(state: AppState) -> Router {
         .allow_methods([
             Method::GET,
             Method::POST,
+            Method::PUT,
             Method::PATCH,
             Method::DELETE,
             Method::OPTIONS,
+        ])
+        .expose_headers([
+            HeaderName::from_static("x-terminal-generation"),
+            HeaderName::from_static("x-terminal-stream"),
+            HeaderName::from_static("x-terminal-cursor"),
         ])
         .allow_headers([
             AUTHORIZATION,
             CONTENT_TYPE,
             ACCEPT,
             HeaderName::from_static("last-event-id"),
+            HeaderName::from_static("x-request-id"),
+            HeaderName::from_static("x-terminal-client"),
+            HeaderName::from_static("x-terminal-generation"),
+            HeaderName::from_static("x-terminal-observe"),
         ]);
 
     Router::new()
+        .route("/api/v2/computers/desktop", get(computer_desktop::upgrade))
+        .route(
+            "/api/v2/computers/:computer_id/control",
+            axum::routing::post(computer_desktop::control),
+        )
+        .route(
+            "/api/v2/computers/:computer_id/artifacts",
+            get(computer_desktop::artifacts),
+        )
+        .route(
+            "/api/v2/computer-artifacts/:id",
+            get(computer_desktop::download),
+        )
+        .route(
+            "/api/v2/computers",
+            axum::routing::post(computers::create).get(computers::list),
+        )
+        .route("/api/v2/computers/:computer_id", get(computers::get))
+        .route(
+            "/api/v2/computers/:computer_id/actions",
+            axum::routing::post(computers::action),
+        )
+        .route(
+            "/api/v2/execution-environments/binding",
+            axum::routing::put(computers::bind),
+        )
         .route("/api/v1/health", get(health::health))
         .route("/api/v2/health", get(health::health))
+        .route("/api/v2/instance", get(account::capabilities))
+        .route("/api/v2/account/snapshot", get(account::snapshot))
+        .route("/api/v2/account/events", get(account::events))
+        .route(
+            "/api/v2/threads/:thread_id/snapshot",
+            get(account::thread_snapshot),
+        )
+        .route(
+            "/api/v2/realtime/tickets",
+            axum::routing::post(realtime::ticket),
+        )
+        .route("/api/v2/realtime", get(realtime::upgrade))
+        .route("/api/v2/commands", axum::routing::post(commands::submit))
+        .route("/api/v2/commands/:request_id", get(commands::get))
+        // Webhook delivery authenticates by its per-task secret, not a device
+        // session, so it deliberately sits outside the authenticated CRUD paths.
+        .route(
+            "/api/v2/automation-hooks/:hook_id",
+            axum::routing::post(automations::webhook),
+        )
+        .route(
+            "/api/v2/automations",
+            get(automations::list).post(automations::create),
+        )
+        .route(
+            "/api/v2/automations/preview",
+            axum::routing::post(automations::preview),
+        )
+        .route(
+            "/api/v2/automations/:id",
+            get(automations::get).patch(automations::update),
+        )
+        .route(
+            "/api/v2/automations/:id/toggle",
+            axum::routing::post(automations::toggle),
+        )
+        .route(
+            "/api/v2/automations/:id/secret",
+            axum::routing::post(automations::secret),
+        )
+        .route("/api/v2/automations/:id/history", get(automations::history))
         .route("/api/v2/auth/config", get(auth::public_config))
         .route("/api/v2/auth/register", axum::routing::post(auth::register))
         .route("/api/v2/auth/login", axum::routing::post(auth::login))
+        .route("/api/v2/auth/logout", axum::routing::post(auth::logout))
+        .route(
+            "/api/v2/auth/sessions",
+            get(auth::list_sessions).post(auth::create_session),
+        )
+        .route(
+            "/api/v2/auth/sessions/:session_id",
+            axum::routing::delete(auth::revoke_session),
+        )
         .route("/api/v2/auth/me", get(auth::me).patch(auth::update_me))
         .route("/api/v2/token-usage", get(token_usage::get))
         .route(
@@ -118,11 +214,18 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v2/terminal/sessions",
-            axum::routing::post(terminal::create).delete(terminal::close_all),
+            axum::routing::post(terminal::create)
+                .get(terminal::list)
+                .delete(terminal::close_all),
+        )
+        .route("/api/v2/terminal/realtime", get(terminal_realtime::upgrade))
+        .route(
+            "/api/v2/terminal/sessions/:session_id/lease",
+            axum::routing::post(terminal::lease),
         )
         .route(
             "/api/v2/terminal/sessions/:session_id",
-            axum::routing::delete(terminal::close),
+            axum::routing::delete(terminal::close).get(terminal::get),
         )
         .route(
             "/api/v2/terminal/sessions/:session_id/events",
@@ -634,6 +737,14 @@ pub fn router(state: AppState) -> Router {
             "/api/v2/skills/:skill_id/resources/*resource_path",
             get(skills::read_resource).patch(skills::update_resource),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            workspace_events::track,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::guard_session_stream,
+        ))
         .with_state(state)
         .layer(cors)
 }
@@ -697,6 +808,7 @@ pub async fn router_with_state_for_tests() -> (Router, AppState) {
         .expect("connect test db");
     db.migrate().await.expect("migrate test db");
     let state = AppState {
+        computers: None,
         db,
         auth: AuthSettings {
             secret_key: "test-secret".to_string(),

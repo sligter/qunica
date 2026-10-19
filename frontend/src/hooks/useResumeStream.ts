@@ -19,7 +19,8 @@ import {
   todoItemSchema,
   waitingForUserPayloadSchema,
 } from '@/lib/api-v2/schemas'
-import { openApiV2SseStream } from '@/lib/api-v2/sse'
+import { openConversationStream as openApiV2SseStream } from '@/lib/realtime/stream'
+import { cancelTurn } from '@/lib/realtime/cancelTurn'
 import type { RetryState } from '@/lib/api-v2/retry'
 import type { StreamEvent } from '@/lib/api-v2/types'
 import { conversationMessagesKey } from '@/hooks/useGroupMessages'
@@ -218,10 +219,7 @@ export function useResumeStream(
       try {
         if (groupId && turnId) {
           const trace = parseGroupTurnTrace(
-            await fetchJson<unknown>(`/groups/${groupId}/turns/${turnId}/cancel`, {
-              method: 'POST',
-              token,
-            }),
+            await cancelTurn(groupId, turnId, token),
           )
           if (stateId) reconcileSchedulerTurn(stateId, trace)
         } else {

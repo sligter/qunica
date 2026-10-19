@@ -103,6 +103,15 @@ struct History {
     finished_at: Option<Instant>,
 }
 
+#[derive(Default)]
+struct InputLease {
+    generation: u64,
+    holder: Option<String>,
+    expires: Option<Instant>,
+    stream: Option<String>,
+}
+const INPUT_LEASE_TTL: Duration = Duration::from_secs(15);
+
 pub struct TerminalSession {
     pub id: String,
     pub owner_id: String,
@@ -114,6 +123,7 @@ pub struct TerminalSession {
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     history: Mutex<History>,
     events: broadcast::Sender<TerminalFrame>,
+    input_lease: Mutex<InputLease>,
 }
 
 /// Roughly what a frame costs to keep around. Only output has a payload worth
@@ -126,6 +136,123 @@ fn frame_cost(event: &TerminalEvent) -> usize {
 }
 
 impl TerminalSession {
+    pub fn acquire_input(&self, holder: &str) -> Option<u64> {
+        let Ok(mut lease) = self.input_lease.try_lock() else {
+            return None;
+        };
+        if lease
+            .expires
+            .is_some_and(|expires| expires > Instant::now())
+        {
+            if lease.holder.as_deref() != Some(holder) {
+                return None;
+            }
+        } else {
+            lease.generation += 1;
+            lease.holder = Some(holder.to_owned());
+            lease.stream = None;
+        }
+        lease.expires = Some(Instant::now() + INPUT_LEASE_TTL);
+        Some(lease.generation)
+    }
+
+    pub fn release_input(&self, holder: &str) {
+        let mut lease = self.input_lease.lock().expect("terminal lease mutex");
+        if lease.holder.as_deref() == Some(holder) {
+            lease.holder = None;
+            lease.expires = None;
+            lease.stream = None;
+        }
+    }
+
+    pub fn acquire_stream_input(&self, holder: &str, stream: &str) -> Option<u64> {
+        let Ok(mut lease) = self.input_lease.try_lock() else {
+            return None;
+        };
+        let valid = lease.expires.is_some_and(|at| at > Instant::now());
+        if valid && lease.holder.as_deref() != Some(holder) {
+            return None;
+        }
+        if !valid {
+            lease.generation += 1;
+            lease.holder = Some(holder.to_owned());
+        }
+        lease.stream = Some(stream.to_owned());
+        lease.expires = Some(Instant::now() + INPUT_LEASE_TTL);
+        Some(lease.generation)
+    }
+
+    pub fn release_stream_input(&self, holder: &str, stream: &str) {
+        let mut lease = self.input_lease.lock().expect("terminal lease mutex");
+        // A delayed drop from a previous SSE body must not release its replacement.
+        if lease.holder.as_deref() == Some(holder) && lease.stream.as_deref() == Some(stream) {
+            lease.holder = None;
+            lease.expires = None;
+            lease.stream = None;
+        }
+    }
+
+    /// Note: validate and mutate under one lease lock, including on blocking PTY
+    /// workers, so an expired connection cannot race a new holder's generation.
+    pub fn with_input_lease<T>(
+        &self,
+        holder: &str,
+        generation: u64,
+        action: impl FnOnce() -> Result<T, TerminalError>,
+    ) -> Result<T, TerminalError> {
+        let lease = self.input_lease.lock().expect("terminal lease mutex");
+        if lease.holder.as_deref() != Some(holder)
+            || lease.generation != generation
+            || lease
+                .expires
+                .is_none_or(|expires| expires <= Instant::now())
+        {
+            return Err(TerminalError::new(
+                "terminal.lease_required",
+                "Another device controls this terminal. Acquire input before typing.",
+            ));
+        }
+        action()
+    }
+
+    pub fn input_lease_valid(&self, holder: &str, generation: u64) -> bool {
+        self.input_lease.try_lock().is_ok_and(|lease| {
+            lease.holder.as_deref() == Some(holder)
+                && lease.generation == generation
+                && lease.expires.is_some_and(|at| at > Instant::now())
+        })
+    }
+
+    pub fn replay_after(&self, after: u64) -> Result<Vec<TerminalFrame>, TerminalError> {
+        let history = self.history.lock().expect("terminal history mutex");
+        if after > history.seq
+            || history
+                .frames
+                .front()
+                .is_some_and(|(first, _)| *first > after + 1)
+        {
+            return Err(TerminalError::new(
+                "terminal.output_gap",
+                "Terminal output exceeded the replay window. Reopen the terminal to redraw.",
+            ));
+        }
+        Ok(history
+            .frames
+            .iter()
+            .filter(|(seq, _)| *seq > after)
+            .cloned()
+            .collect())
+    }
+
+    pub fn replay_start(&self) -> u64 {
+        self.history
+            .lock()
+            .expect("terminal history mutex")
+            .frames
+            .front()
+            .map(|(seq, _)| seq.saturating_sub(1))
+            .unwrap_or(0)
+    }
     fn push(&self, event: TerminalEvent) {
         let mut history = self.history.lock().expect("terminal history mutex");
         history.seq += 1;
@@ -232,6 +359,25 @@ impl TerminalManager {
             .cloned()
     }
 
+    pub fn list_owned(&self, owner: &str, conversation: &str) -> Vec<TerminalDescriptor> {
+        let sessions = self.sessions.lock().expect("terminal sessions mutex");
+        let mut result: Vec<_> = sessions
+            .values()
+            .filter(|session| {
+                session.owner_id == owner
+                    && session.conversation_id == conversation
+                    && !session.is_finished()
+            })
+            .map(|session| TerminalDescriptor {
+                session_id: session.id.clone(),
+                shell_name: session.shell_name.clone(),
+                cwd: session.cwd.clone(),
+            })
+            .collect();
+        result.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        result
+    }
+
     pub fn create(
         &self,
         options: CreateTerminalOptions,
@@ -292,6 +438,7 @@ impl TerminalManager {
             killer: Mutex::new(killer),
             history: Mutex::new(History::default()),
             events,
+            input_lease: Mutex::new(InputLease::default()),
         });
 
         // The PTY reader blocks, so it gets an OS thread rather than a runtime
@@ -431,6 +578,38 @@ fn build_shell_command(shell: &ShellSpec) -> CommandBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_window_and_sse_input_generation_are_independent() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = TerminalManager::new();
+        let session = manager.create(options(root.path())).unwrap();
+        let first = session.acquire_stream_input("device", "old-body").unwrap();
+        assert_eq!(
+            session.acquire_stream_input("device", "replacement"),
+            Some(first)
+        );
+        session.release_stream_input("device", "old-body");
+        assert!(session.with_input_lease("device", first, || Ok(())).is_ok());
+        assert!(session.acquire_input("observer").is_none());
+        session.release_stream_input("device", "replacement");
+        let second = session.acquire_input("observer").unwrap();
+        assert!(second > first);
+        assert!(session
+            .with_input_lease("device", first, || Ok(()))
+            .is_err());
+        session.push(TerminalEvent::Output {
+            bytes_base64: "x".repeat(REPLAY_BUFFER_BYTES + 1),
+        });
+        session.push(TerminalEvent::Output {
+            bytes_base64: "tail".to_owned(),
+        });
+        assert_eq!(
+            session.replay_after(0).unwrap_err().code,
+            "terminal.output_gap"
+        );
+        manager.close(&session.id, "owner");
+    }
 
     fn options(cwd: &Path) -> CreateTerminalOptions {
         CreateTerminalOptions {

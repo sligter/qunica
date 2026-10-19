@@ -31,13 +31,13 @@ describe('createHttpTerminalTransport', () => {
   })
 
   async function openTerminal() {
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
-      session_id: 'session-1', shell_name: 'bash', cwd: '/workspace',
-    }))
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async input => jsonResponse(String(input).endsWith('/lease')
+      ? { generation: 1, lease_ms: 15000 } : { session_id: 'session-1', shell_name: 'bash', cwd: '/workspace' }))
     vi.stubGlobal('fetch', fetchMock)
     const onEvent = vi.fn()
     const transport = createHttpTerminalTransport()
     await transport.create({ conversationId: 'chat-1', cwd: '/workspace', cols: 80, rows: 24 }, onEvent)
+    onEvent.mockClear()
     return { transport, onEvent, fetchMock, stream: fetchEventSource.mock.calls[0]![1] }
   }
 
@@ -62,7 +62,7 @@ describe('createHttpTerminalTransport', () => {
     expect(onEvent).toHaveBeenCalledOnce()
     restored.onmessage?.(output(2))
     expect(onEvent).toHaveBeenCalledTimes(2)
-    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
     await transport.close('chat-1', 'session-1')
     window.dispatchEvent(new Event('online'))
     await Promise.resolve()
@@ -77,8 +77,8 @@ describe('createHttpTerminalTransport', () => {
     expect(() => stream.onclose?.()).toThrow('before the shell exited')
     expect(() => stream.onerror?.(new TypeError('offline'))).not.toThrow()
     await stream.fetch?.('/events', { headers: { 'last-event-id': '2' } })
-    expect(new Headers(fetchMock.mock.calls[1]![1]?.headers).get('last-event-id')).toBe('1')
-    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+    expect(new Headers(fetchMock.mock.calls[2]![1]?.headers).get('last-event-id')).toBe('1')
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(2)
   })
 
   it('reports replay gaps and stops reconnecting instead of silently losing output', async () => {
@@ -126,6 +126,7 @@ describe('createHttpTerminalTransport', () => {
           cwd: '/workspaces/demo',
         }, 201)
       }
+      if (url.endsWith('/lease')) return jsonResponse({ generation: 1, lease_ms: 15000 })
       return new Response(null, { status: 204 })
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -154,7 +155,7 @@ describe('createHttpTerminalTransport', () => {
       id: '1',
       retry: undefined,
     })
-    expect(events).toEqual([{
+    expect(events).toEqual([{ event: 'control', data: { writable: true } }, {
       event: 'output',
       data: { bytes: new Uint8Array([104, 105]) },
     }])
@@ -166,6 +167,7 @@ describe('createHttpTerminalTransport', () => {
     expect(streamOptions.signal?.aborted).toBe(true)
     expect(fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method])).toEqual([
       ['/api/v2/terminal/sessions', 'POST'],
+      ['/api/v2/terminal/sessions/session-1/lease', 'POST'],
       ['/api/v2/terminal/sessions/session-1/input', 'POST'],
       ['/api/v2/terminal/sessions/session-1/resize', 'POST'],
       ['/api/v2/terminal/sessions/session-1', 'DELETE'],

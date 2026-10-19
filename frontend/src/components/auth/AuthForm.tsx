@@ -21,6 +21,7 @@ export function AuthForm({ mode, onSuccess }: AuthFormProps) {
   const { t } = useTranslation('auth')
   const setToken = useAuthStore((s) => s.setToken)
   const setUser = useAuthStore((s) => s.setUser)
+  const loginNotice = useAuthStore((s) => s.loginNotice)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [showPassword, setShowPassword] = useState(false)
   const isLogin = mode === 'login'
@@ -86,6 +87,7 @@ export function AuthForm({ mode, onSuccess }: AuthFormProps) {
 
   return (
     <form onSubmit={onSubmit} noValidate className="space-y-5">
+      {isLogin && loginNotice && <p role="status" className="text-sm text-muted-foreground">{t(`notices.${loginNotice}`)}</p>}
       {!isLogin && (
         <div className="space-y-2">
           <Label htmlFor="name">{t('fields.name')}</Label>

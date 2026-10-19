@@ -4,6 +4,7 @@ export interface TerminalTabMetadata {
   id: string
   label: string
   launchDirectory: string
+  serverSessionId?: string
 }
 
 export interface TerminalConversationMetadata {
@@ -50,6 +51,7 @@ function sanitizeTab(value: unknown): TerminalTabMetadata | null {
   const id = getOwnProperty(value, 'id')
   const label = getOwnProperty(value, 'label')
   const launchDirectory = getOwnProperty(value, 'launchDirectory')
+  const serverSessionId = getOwnProperty(value, 'serverSessionId')
   if (
     typeof id !== 'string' ||
     typeof label !== 'string' ||
@@ -61,6 +63,7 @@ function sanitizeTab(value: unknown): TerminalTabMetadata | null {
     id,
     label,
     launchDirectory,
+    ...(typeof serverSessionId === 'string' && /^[0-9a-f-]{36}$/i.test(serverSessionId) ? { serverSessionId } : {}),
   }
 }
 

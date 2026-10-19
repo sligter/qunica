@@ -9,7 +9,7 @@ import {
 } from 'react'
 
 import { looksAbsolute } from '@/lib/folderPicker'
-import { isDesktopRuntime } from '@/lib/runtime'
+import { usesLocalDesktop } from '@/lib/runtime'
 import {
   clearTerminalMetadata,
   loadTerminalMetadata,
@@ -19,6 +19,9 @@ import {
   type TerminalTabMetadata,
 } from '@/terminal/metadataStore'
 import { createHttpTerminalTransport } from '@/terminal/httpTransport'
+import { createWsTerminalTransport } from '@/terminal/wsTransport'
+import { apiOrigin } from '@/lib/runtime'
+import { LAN_ORIGIN } from '@/lib/androidSession'
 import { createTauriTerminalTransport } from '@/terminal/tauriTransport'
 import {
   normalizeTerminalTransportError,
@@ -43,6 +46,7 @@ export interface TerminalRuntimeTab {
   status: 'starting' | 'running' | 'exited' | 'error'
   exitCode: number | null
   error: TerminalTransportError | null
+  inputEnabled?: boolean
 }
 
 export interface TerminalRuntimeContextValue {
@@ -55,7 +59,9 @@ export interface TerminalRuntimeContextValue {
   paneHeight: number
   registerConversation(target: TerminalConversationTarget): () => void
   toggleDock(): Promise<void>
-  createTab(): Promise<void>
+  createTab(existingSessionId?: string): Promise<void>
+  canAttach?: boolean
+  setInputControl?(tabId: string, acquire: boolean): Promise<void>
   selectTab(tabId: string): void
   renameTab(tabId: string, label: string): void
   closeTab(tabId: string): Promise<void>
@@ -185,6 +191,7 @@ function publicTab(entry: RuntimeEntry): TerminalRuntimeTab {
     status: entry.status,
     exitCode: entry.exitCode,
     error: entry.error,
+    inputEnabled: entry.inputEnabled,
   }
 }
 
@@ -208,9 +215,9 @@ export function TerminalRuntimeProvider({
     // The desktop shell drives a native PTY; the web build gets the same
     // capability from the server it is already talking to.
     transportRef.current = injectedTransport ?? (
-      isDesktopRuntime()
+      usesLocalDesktop()
         ? createTauriTerminalTransport()
-        : createHttpTerminalTransport()
+        : apiOrigin() === LAN_ORIGIN ? createHttpTerminalTransport() : createWsTerminalTransport()
     )
   }
   const transport = transportRef.current
@@ -335,7 +342,7 @@ export function TerminalRuntimeProvider({
     useDescriptorLabel: boolean,
     output = runtimeRef.current.get(tab.id)?.output ?? createOutputChannel(),
     requestedCwd = looksAbsolute(tab.launchDirectory) ? tab.launchDirectory : fallbackCwd,
-    mayFallback = looksAbsolute(tab.launchDirectory) && tab.launchDirectory !== fallbackCwd,
+    mayFallback = !tab.serverSessionId && looksAbsolute(tab.launchDirectory) && tab.launchDirectory !== fallbackCwd,
   ): Promise<void> => {
     if (
       isClosingAllRef.current ||
@@ -380,6 +387,11 @@ export function TerminalRuntimeProvider({
         dispatchOutput(current.output, event.data.bytes)
         return
       }
+      if (event.event === 'control') {
+        current.inputEnabled = event.data.writable
+        publishRuntime()
+        return
+      }
       if (event.event === 'exit') {
         current.status = 'exited'
         current.exitCode = event.data.code
@@ -413,6 +425,7 @@ export function TerminalRuntimeProvider({
             cols: DEFAULT_COLS,
             rows: DEFAULT_ROWS,
             shell: shellRef.current,
+            ...(transport.canAttach && tab.serverSessionId ? { existingSessionId: tab.serverSessionId } : {}),
           },
           onEvent,
         )
@@ -476,6 +489,7 @@ export function TerminalRuntimeProvider({
       if (current.status === 'starting') current.status = 'running'
       updateTabMetadata(conversationId, tab.id, (savedTab) => {
         savedTab.launchDirectory = descriptor.cwd
+        if (transport.canAttach) savedTab.serverSessionId = descriptor.sessionId
         if (useDescriptorLabel) savedTab.label = descriptor.shellName
       })
       publishRuntime()
@@ -515,6 +529,7 @@ export function TerminalRuntimeProvider({
   const createTabFor = useCallback(async (
     conversationId: string,
     cwd: string,
+    existingSessionId?: string,
   ): Promise<void> => {
     if (
       isClosingAllRef.current ||
@@ -526,6 +541,7 @@ export function TerminalRuntimeProvider({
       id: createTabId(),
       label: 'Terminal',
       launchDirectory: cwd,
+      ...(existingSessionId ? { serverSessionId: existingSessionId } : {}),
     }
     updateConversationMetadata(conversationId, (conversation) => {
       conversation.tabs.push(tab)
@@ -574,13 +590,19 @@ export function TerminalRuntimeProvider({
     }
   }, [ensureConversationRestored])
 
-  const createTab = useCallback(async (): Promise<void> => {
+  const createTab = useCallback(async (existingSessionId?: string): Promise<void> => {
     if (isClosingAllRef.current) return
     const target = activeConversationRef.current
     if (target?.availability !== 'ready') return
     if (closingConversationScopesRef.current.has(target.conversationId)) return
-    await createTabFor(target.conversationId, target.cwd)
-  }, [createTabFor])
+    if (existingSessionId && !transport.canAttach) return
+    const existing = existingSessionId && [...runtimeRef.current.values()].find(entry => entry.sessionId === existingSessionId && entry.status !== 'error')
+    if (existing) {
+      updateConversationMetadata(existing.conversationId, conversation => { conversation.activeTabId = existing.tabId; conversation.open = true })
+      return
+    }
+    await createTabFor(target.conversationId, target.cwd, existingSessionId)
+  }, [createTabFor, transport.canAttach, updateConversationMetadata])
 
   const toggleDock = useCallback(async (): Promise<void> => {
     if (isClosingAllRef.current) return
@@ -741,7 +763,7 @@ export function TerminalRuntimeProvider({
         return
       }
       await startRuntimeTab(
-        tab,
+        { ...tab, serverSessionId: undefined },
         entry.conversationId,
         readyCwdsRef.current.get(entry.conversationId) ?? entry.fallbackCwd,
         false,
@@ -882,7 +904,7 @@ export function TerminalRuntimeProvider({
 
   const write = useCallback(async (tabId: string, data: string): Promise<void> => {
     const entry = runtimeRef.current.get(tabId)
-    if (entry?.sessionId === null || entry === undefined) {
+    if (entry?.sessionId === null || entry === undefined || entry.inputEnabled === false) {
       // Input can race a create/restart render. It is safe to ignore until the
       // replacement session is ready, and it must not turn the tab fatal.
       return
@@ -912,7 +934,7 @@ export function TerminalRuntimeProvider({
     rows: number,
   ): Promise<boolean> => {
     const entry = runtimeRef.current.get(tabId)
-    if (entry?.sessionId === null || entry === undefined) return false
+    if (entry?.sessionId === null || entry === undefined || entry.inputEnabled === false) return false
     try {
       await transport.resize(entry.conversationId, entry.sessionId, cols, rows)
       return true
@@ -965,6 +987,11 @@ export function TerminalRuntimeProvider({
       restartTab,
       closeConversation,
       closeAll,
+      canAttach: transport.canAttach,
+      setInputControl: transport.setInputControl ? async (tabId, acquire) => {
+        const entry = runtimeRef.current.get(tabId)
+        if (entry?.sessionId) await transport.setInputControl?.(entry.sessionId, acquire)
+      } : undefined,
       toggleMaximized,
       setPaneHeight,
       subscribeOutput,
@@ -989,6 +1016,7 @@ export function TerminalRuntimeProvider({
     subscribeOutput,
     toggleDock,
     toggleMaximized,
+    transport,
     write,
   ])
 

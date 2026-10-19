@@ -40,15 +40,28 @@ pub struct ApiError {
     status: StatusCode,
     code: &'static str,
     message: String,
+    details: serde_json::Value,
 }
 
 impl ApiError {
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
     pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
             code,
             message: message.into(),
+            details: serde_json::json!({}),
         }
+    }
+
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = details;
+        self
+    }
+    pub fn details(&self) -> &serde_json::Value {
+        &self.details
     }
 
     pub fn invalid_input(message: impl Into<String>) -> Self {
@@ -91,6 +104,16 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        json_error(self.status, self.code, self.message).into_response()
+        (
+            self.status,
+            Json(ErrorEnvelope {
+                error: ErrorBody {
+                    code: self.code.into(),
+                    message: self.message,
+                    details: self.details,
+                },
+            }),
+        )
+            .into_response()
     }
 }

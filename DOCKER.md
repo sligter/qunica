@@ -17,7 +17,7 @@ and the integrated terminal runs a shell inside the container.
 Use a dedicated hostname at `/`, serving the UI and API from the same origin.
 The example `docker/Caddyfile.mobile` runs on the Docker host, proxies the
 loopback-bound Compose port `18765`, obtains HTTPS certificates through Caddy,
-and streams SSE without response buffering. Set `QUNICA_DOMAIN` to your real
+and forwards WS upgrades and unbuffered SSE. Set `QUNICA_DOMAIN` to your real
 hostname, configure DNS and the certificate challenge access required by your
 deployment, then run Caddy with that config. Private VPN deployments still need
 a certificate trusted by the phone. Keep the initial-account and registration
@@ -37,12 +37,12 @@ close; the app displays a notice instead of reloading a draft or approval.
 Keep the prior release's hashed assets available until its old tabs are closed.
 
 Before remote use, verify installation and safe areas on iOS/Android, a deep
-link reload, timely SSE events through the proxy, and expired-token logout.
+link reload, main/terminal WS upgrades through the proxy, and device revocation.
 Inspect Cache Storage to confirm no private response was stored. Logging out
-clears local auth and message state and stops streams; it does not revoke a
-previously issued JWT on the server. Per-device revocation is a separate server
-capability. This example config must be validated against your actual domain
-and proxy installation before deployment.
+revokes the current device session, clears private state and stops its streams.
+Sessions otherwise persist until explicit revocation; legacy tokens require one
+new login. This example config must be validated against your actual domain
+and proxy installation before deployment. See [realtime synchronization](backend-rs/crates/backend/src/docs/guide/realtime.md).
 
 For a deliberately cross-origin browser client, set `QUNICA_ALLOWED_ORIGINS` to
 a comma-separated list such as `https://phone.example,https://phone.example:8443`.
@@ -71,14 +71,13 @@ docker run -d --name qunica \
   -p 127.0.0.1:8900-8999:8900-8999 \
   -v qunica-data:/data \
   -v qunica-workspaces:/workspaces \
-  -v /var/run/docker.sock:/var/run/docker.sock \
   qunica:local
 ```
 
-Compose also maps container ports `8900-8999` to the same loopback ports on the
-VPS for services started by agents. Those services must listen on `0.0.0.0`;
-for example, container port `8999` is available at `http://127.0.0.1:8999` on
-the VPS. Keep public access behind an authenticated HTTPS reverse proxy.
+The optional container ports `8900-8999` are commented out in Compose. Enable
+only the ports needed for agent-started services and keep them bound to
+loopback. Such services must listen on `0.0.0.0` inside the container; keep
+public access behind an authenticated HTTPS reverse proxy.
 
 The first build compiles the Rust backend from scratch and takes a while.
 Rebuilds reuse BuildKit cache mounts for cargo and pnpm, so they are much
@@ -148,10 +147,15 @@ Everything has a working default; nothing is required.
 | `QUNICA_INITIAL_USER_NAME` | `Admin` | display name used when the initial account is created |
 | `QUNICA_WORKSPACES_DIR` | `/workspaces` | created by the entrypoint and applied as the workspace root while onboarding is incomplete |
 
-Login tokens have no time limit, including tokens issued before this change.
-The app keeps the login across restarts until the user signs out. Signing out
-clears the saved token and private client state; it does not revoke copies of
-the token on the server. Token signatures and account checks still apply.
+Login tokens have no time limit. Each login creates a persistent device session;
+signing out revokes it on the server and clears the saved token and private
+client state. Other devices remain signed in. Revoked sessions are rejected on
+HTTP requests and existing SSE streams close. If revocation cannot be confirmed,
+the app keeps the login so the user can retry.
+Old tokens without a device session receive `401 session_upgrade_required` and
+require one fresh login (or a new scan for paired phones). Back up the database
+before upgrading; the `auth_sessions` migration is additive and must be retained
+with the signing key to preserve device sessions across restarts.
 `ACCESS_TOKEN_EXPIRE_MINUTES` is no longer used; remove the old
 `--access-token-expire-minutes` command-line option from launch scripts.
 
@@ -189,26 +193,34 @@ Global npm packages install under `/home/qunica/.npm-global`; `uv tool`,
 runtime configuration, and caches across rebuilds, or bake them into your own
 image built `FROM qunica:local`.
 
-Compose mounts the host Docker socket by default, and the entrypoint maps its
-group to the non-root `qunica` user. This uses the host daemon rather than
-running a second daemon inside Qunica. **Anyone who can run an agent can take
-full control of the Docker host**, including mounting and editing host files;
-Docker documents this as part of the
-[daemon attack surface](https://docs.docker.com/engine/security/#docker-daemon-attack-surface).
-Remove the `/var/run/docker.sock` volume to disable it or use a remote Docker
-context instead.
+Compose does not mount the Docker socket into the application, and the
+entrypoint does not grant its group to agents. The bundled Docker CLI has no
+host daemon access by default. Docker control is restricted to the separate
+Supervisor, Chromium/noVNC, constrained egress and proxied OpenCode execution are
+described in [controlled computers](backend-rs/crates/backend/src/docs/guide/computers.md).
+Build both execution images before enabling `docker-compose.computers.yml`; the
+private model listener and Supervisor must not be published as host ports. Bound
+execution never falls back to the app's trusted local workspace.
 
 ## Behind a reverse proxy
 
-The app streams responses over Server-Sent Events, so response buffering has to
-be off, and uploads go up to 26 MB.
+Direct clients use WebSocket for account/run synchronization and server
+terminals. Pairing retains Server-Sent Events, so response buffering stays off.
+Uploads go up to 26 MB. Put the map in nginx's `http` context:
 
 ```nginx
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
 location / {
     proxy_pass http://127.0.0.1:18765;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
     proxy_buffering off;
     proxy_read_timeout 3600s;
     client_max_body_size 32m;
@@ -216,8 +228,8 @@ location / {
 ```
 
 Serve the UI and the API from the same origin, as this image does. The backend's
-CORS allowlist only covers localhost origins, so a UI hosted on a different host
-than the API is not a supported setup. On an internet-facing host, also
+CORS/WS Origin allowlist can include explicit `QUNICA_ALLOWED_ORIGINS` for native
+or deliberately cross-origin clients. On an internet-facing host, also
 rate-limit `/api/v2/auth/login` at the reverse proxy.
 
 ## Upgrading

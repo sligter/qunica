@@ -134,7 +134,7 @@ pub async fn get(
     headers: HeaderMap,
     Query(query): Query<TokenUsageQuery>,
 ) -> Result<Json<TokenUsageResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let from = normalize_date(query.from.as_deref(), "from")?;
     let to = normalize_date(query.to.as_deref(), "to")?;
     if matches!((&from, &to), (Some(from), Some(to)) if from > to) {

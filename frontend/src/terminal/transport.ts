@@ -5,6 +5,8 @@ import type {
 } from './types'
 
 export interface TerminalTransport {
+  canAttach?: boolean
+  setInputControl?(sessionId: string, acquire: boolean): Promise<void>
   create(
     request: CreateTerminalRequest,
     onEvent: (event: TerminalEvent) => void,

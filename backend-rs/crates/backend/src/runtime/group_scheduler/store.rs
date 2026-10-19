@@ -107,20 +107,7 @@ impl SchedulerStore {
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
         let mut tx = begin_write(&self.pool).await?;
-        let current = fetch_turn_in_tx(&mut tx, turn_id).await?;
-        let snapshot = if is_terminal_turn(current.status) {
-            current
-        } else {
-            transition_turn_in_tx(
-                &mut tx,
-                turn_id,
-                current.status,
-                TurnStatus::Cancelled,
-                Some(TurnReason::UserCancelled),
-                &now,
-            )
-            .await?
-        };
+        let snapshot = cancel_turn_in_tx(&mut tx, turn_id, &now).await?;
         tx.commit().await?;
         Ok(snapshot)
     }
@@ -400,7 +387,6 @@ impl SchedulerStore {
         validate_dispatch_transition(DispatchStatus::Running, DispatchStatus::Interrupted)?;
         validate_turn_transition(TurnStatus::Pending, TurnStatus::Failed)?;
         validate_turn_transition(TurnStatus::Running, TurnStatus::Failed)?;
-        validate_turn_transition(TurnStatus::WaitingForUser, TurnStatus::Failed)?;
 
         let now = now_rfc3339();
         let _guard = self.write_lock.lock().await;
@@ -424,7 +410,7 @@ impl SchedulerStore {
             "UPDATE group_turns \
              SET status = ?, termination_reason = ?, \
                  completed_at = COALESCE(completed_at, ?), updated_at = ? \
-             WHERE status IN ('pending', 'running', 'waiting_for_user')",
+             WHERE status IN ('pending', 'running') AND NOT EXISTS (SELECT 1 FROM execution_jobs j WHERE j.turn_id=group_turns.id AND j.status='queued')",
         )
         .bind(TurnStatus::Failed.as_str())
         .bind(TurnReason::ServerRestart.as_str())
@@ -446,7 +432,7 @@ impl SchedulerStore {
                      ELSE 'active' \
                  END, \
                  updated_at = ? \
-             WHERE status IN ('running', 'failed')",
+             WHERE status IN ('running', 'failed') AND NOT EXISTS (SELECT 1 FROM execution_jobs j WHERE j.thread_id=threads.id AND j.status='queued')",
         )
         .bind(&now)
         .execute(&mut *tx)
@@ -737,8 +723,30 @@ async fn insert_turn_in_tx(
     fetch_turn_in_tx(tx, &input.id).await
 }
 
+pub(crate) async fn cancel_turn_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    turn_id: &str,
+    now: &str,
+) -> Result<TurnSnapshot, SchedulerStoreError> {
+    let current = fetch_turn_in_tx(tx, turn_id).await?;
+    let snapshot = if is_terminal_turn(current.status) {
+        current
+    } else {
+        transition_turn_in_tx(
+            tx,
+            turn_id,
+            current.status,
+            TurnStatus::Cancelled,
+            Some(TurnReason::UserCancelled),
+            now,
+        )
+        .await?
+    };
+    Ok(snapshot)
+}
+
 /// Mark the thread's one durable active turn as superseded, if it has one.
-async fn supersede_active_turn_in_tx(
+pub(crate) async fn supersede_active_turn_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     thread_id: &str,
     now: &str,

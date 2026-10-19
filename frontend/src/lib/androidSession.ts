@@ -5,7 +5,8 @@ export const isAndroidRuntime = () => import.meta.env.MODE === 'android'
 
 export function normalizeServerOrigin(value: string): string {
   const url = new URL(value.trim())
-  if (url.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+  const loopback = import.meta.env.DEV && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+  if ((url.protocol !== 'https:' && !loopback) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
     throw new Error('Use an HTTPS server address without a path, credentials, query or fragment.')
   }
   if (['tauri.localhost', 'ipc.localhost'].includes(url.hostname)) throw new Error('Choose your Qunica Server address.')
@@ -14,7 +15,7 @@ export function normalizeServerOrigin(value: string): string {
 
 export interface LanConnection { endpoint: string; publicKey: string; credential: string }
 export const LAN_ORIGIN = 'https://qunica-lan.invalid'
-interface Session { server: string | null; token: string | null; lan?: LanConnection }
+interface Session { server: string | null; token: string | null; lan?: LanConnection; savedLan?: LanConnection }
 interface AndroidState { server: string | null; ready: boolean; error: string | null }
 export const useAndroidSession = create<AndroidState>(() => ({ server: null, ready: false, error: null }))
 let session: Session = { server: null, token: null }
@@ -28,7 +29,7 @@ export function initializeAndroidSession(): Promise<string | null> {
     if (parsed.lan) await invoke('mobile_lan_configure', { connection: parsed.lan })
     const server = parsed.lan ? LAN_ORIGIN : parsed.server ? normalizeServerOrigin(parsed.server) : null
     if (server === LAN_ORIGIN && !parsed.lan) throw new Error('Missing desktop pairing. Scan again.')
-    session = { server, token: server && typeof parsed.token === 'string' ? parsed.token : null, ...(parsed.lan ? { lan: parsed.lan } : {}) }
+    session = { server, token: server && typeof parsed.token === 'string' ? parsed.token : null, ...(parsed.lan ? { lan: parsed.lan } : {}), ...(parsed.savedLan ? { savedLan: parsed.savedLan } : {}) }
     localStorage.removeItem('qunica:auth:v1')
     useAndroidSession.setState({ server, ready: true, error: null })
     return session.token
@@ -56,7 +57,8 @@ export function saveAndroidToken(token: string | null): Promise<void> {
 
 export async function changeAndroidServer(value: string): Promise<void> {
   const server = normalizeServerOrigin(value)
-  await persist({ server, token: null })
+  const savedLan = session.lan ?? session.savedLan
+  await persist({ server, token: null, ...(savedLan ? { savedLan } : {}) })
   if (useAndroidSession.getState().server === LAN_ORIGIN) await invoke('mobile_lan_configure', { connection: null })
   useAndroidSession.setState({ server })
 }
@@ -72,6 +74,17 @@ export async function pairAndroidDesktop(offer: string): Promise<string | null> 
 
 export const androidDesktopAddress = () => session.lan?.endpoint ?? session.server
 export const hasAndroidDesktopPairing = () => !!session.lan
+
+export const hasSavedAndroidPairing = () => !!session.savedLan
+/** Restoring a connection restores its pinned device identity, never its old account token. */
+export async function restoreAndroidPairing(): Promise<void> {
+  const lan = session.savedLan
+  if (!lan) throw new Error('No saved desktop pairing.')
+  await invoke('mobile_lan_verify', { connection: lan })
+  await persist({ server: LAN_ORIGIN, token: null, lan })
+  await invoke('mobile_lan_configure', { connection: lan })
+  useAndroidSession.setState({ server: LAN_ORIGIN })
+}
 
 /** Keep the pinned identity. Verify it before changing either storage or live requests. */
 export async function changeAndroidDesktopEndpoint(endpoint: string): Promise<void> {

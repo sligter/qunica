@@ -101,6 +101,32 @@ describe('AppSidebar terminal cleanup', () => {
     )
   }
 
+  it('reports a failed server logout and permits revocation retry before clearing login', async () => {
+    const user = userEvent.setup()
+    useAuthStore.getState().setToken('device-session')
+    useAuthStore.setState({ user: {
+      id: 'user-1', name: 'Device User', email: 'user@example.com', avatar_url: null,
+      created_at: '2026-10-18T00:00:00Z',
+    } })
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetch)
+    renderSidebar()
+    await user.click(screen.getByRole('button', { name: 'User menu' }))
+    await user.click(screen.getByRole('button', { name: 'Log out' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not revoke this device session')
+    expect(useAuthStore.getState().token).toBe('device-session')
+    expect(screen.getByTestId('location')).toHaveTextContent('/chats/chat-1')
+    await user.click(screen.getByRole('button', { name: 'Log out' }))
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/login'))
+    expect(useAuthStore.getState().token).toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(fetch).toHaveBeenLastCalledWith('/api/v2/auth/logout', expect.objectContaining({
+      method: 'POST', headers: { Authorization: 'Bearer device-session' },
+    }))
+  })
+
   it('waits for terminal cleanup after backend deletion and before navigation', async () => {
     let releaseCleanup!: () => void
     mocks.closeConversation.mockImplementationOnce(() => new Promise<void>((resolve) => {

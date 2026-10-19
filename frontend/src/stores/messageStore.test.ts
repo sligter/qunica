@@ -46,6 +46,28 @@ describe('messageStore scheduler state', () => {
     useMessageStore.setState(initialState, true)
   })
 
+  it('orders authoritative rows by server sequence while preserving optimistic positions', () => {
+    const store=useMessageStore.getState()
+    store.setHistory('group-1',[{...message('newer'),seq:'9007199254740994'},{...message('older'),seq:'9007199254740993'}])
+    store.startSend('group-1',async()=>undefined)
+    store.appendMessage('group-1',message('optimistic'))
+    store.setHistory('group-1',[{...message('older'),seq:'9007199254740993'},{...message('newer'),seq:'9007199254740994'}])
+    expect(useMessageStore.getState().byGroup['group-1'].map(row=>row.id)).toEqual(['older','newer','optimistic'])
+    store.appendMessage('group-1',{...message('older'),content:'late stream payload'})
+    expect(useMessageStore.getState().byGroup['group-1'][0].content).toBe('older')
+  })
+
+  it('does not restore deleted messages or cleared streams from late history and output', () => {
+    const store=useMessageStore.getState()
+    store.appendMessage('group-1',message('deleted'))
+    store.startStreamRun('group-1','retired',message('deleted'))
+    store.removeMessage('group-1','deleted')
+    store.setHistory('group-1',[message('deleted')])
+    store.finalizeInFlight('group-1',message('deleted'))
+    expect(useMessageStore.getState().byGroup['group-1']).toEqual([])
+    expect(store.acceptsStreamEvent('group-1','retired')).toBe(false)
+  })
+
   it('keeps live local messages when cached history reloads after navigation', () => {
     const store = useMessageStore.getState()
     store.setHistory('group-1', [message('persisted')])
@@ -262,7 +284,7 @@ describe('messageStore scheduler state', () => {
     expect(run.scheduler_status).toBe('budget_exhausted')
     expect(run.terminal_reason).toBe('budget_exhausted')
 
-    store.clearGroupMessages('group-1')
+    useMessageStore.setState(initialState, true)
     store.startStreamRun('group-1', 'stream-1', message('message-2'))
     store.applySchedulerEvent(
       'group-1',

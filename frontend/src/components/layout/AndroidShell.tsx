@@ -1,30 +1,44 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Cable, ChevronLeft, Loader2, QrCode, ShieldCheck } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { androidDesktopAddress, changeAndroidDesktopEndpoint, hasAndroidDesktopPairing, initializeAndroidSession, pairAndroidDesktop, retryAndroidPersistence, useAndroidSession } from '@/lib/androidSession'
+import { androidDesktopAddress, changeAndroidDesktopEndpoint, changeAndroidServer, hasAndroidDesktopPairing, hasSavedAndroidPairing, initializeAndroidSession, pairAndroidDesktop, restoreAndroidPairing, retryAndroidPersistence, useAndroidSession } from '@/lib/androidSession'
 import { useAuthStore } from '@/stores/authStore'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { clearComposerDrafts } from '@/lib/composerDraft'
+import { ServerConnectionForm } from './ServerConnectionForm'
+import { applyConnectionPolicy } from '@/lib/connectionPolicy'
+import { checkInstance } from '@/lib/realtime/instance'
+import { LAN_ORIGIN } from '@/lib/androidSession'
 
 export function AndroidShell({ children }: { children: ReactNode }) {
   const { i18n } = useTranslation()
   const zh = i18n.language.startsWith('zh')
   const { server, ready, error } = useAndroidSession()
-  const token = useAuthStore(s => s.token)
   const [sessionReady, setSessionReady] = useState(false)
   const [editing, setEditing] = useState(false)
   const [address, setAddress] = useState('')
   const [destination, setDestination] = useState('')
   const [busy, setBusy] = useState(false)
   const [connectionError, setConnectionError] = useState<string | null>(null)
+  const [pairing, setPairing] = useState(false)
   const initialize = () => {
-    void initializeAndroidSession().then(token => {
+    void initializeAndroidSession().then(async token => {
+      const origin = useAndroidSession.getState().server
+      if (origin) applyConnectionPolicy(origin)
+      if (origin && origin !== LAN_ORIGIN) {
+        try { await checkInstance(origin) }
+        catch (cause) { setConnectionError(String(cause)); setSessionReady(true); setEditing(true); return }
+      }
       useAuthStore.setState({ token, user: null, hydrated: false })
       setSessionReady(true)
     }).catch(() => undefined)
   }
   useEffect(initialize, [])
+
+  if (!ready) return <main role="status" className="app-safe-area flex h-full items-center justify-center bg-background p-6">
+    {error ? <div className="space-y-3 text-sm"><p>{zh ? '无法读取安全存储，请重试。' : 'Unable to read secure storage. Try again.'}</p><Button onClick={initialize}>{zh ? '重试' : 'Retry'}</Button></div> : <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />}
+  </main>
 
   async function connect(offer: string) {
     setSessionReady(false)
@@ -67,6 +81,21 @@ export function AndroidShell({ children }: { children: ReactNode }) {
         {server && ready ? <Button variant="ghost" size="icon" aria-label={zh ? '返回' : 'Back'} onClick={() => setEditing(false)}><ChevronLeft /></Button> : null}
       </header>
       <div className="mx-auto w-full max-w-md flex-1">
+        {!pairing ? <div className="space-y-6">
+          <ServerConnectionForm onConnect={async origin => {
+            useAuthStore.getState().logout()
+            await changeAndroidServer(origin)
+            window.location.replace('/')
+          }} />
+          <Button className="h-12 w-full gap-2" variant="outline" disabled={busy} onClick={() => setPairing(true)}><Cable className="h-4 w-4" />{zh ? '配对桌面工作台' : 'Pair a desktop workspace'}</Button>
+          {hasSavedAndroidPairing() && <Button variant="ghost" className="w-full" disabled={busy} onClick={() => {
+            setBusy(true)
+            useAuthStore.getState().logout()
+            void restoreAndroidPairing().then(() => window.location.replace('/')).catch(cause => setConnectionError(String(cause))).finally(() => setBusy(false))
+          }}>{zh ? '连接已保存的配对电脑' : 'Connect saved desktop pairing'}</Button>}
+          {connectionError && <p role="alert" className="text-sm text-destructive">{connectionError}</p>}
+        </div> : <>
+        <Button variant="ghost" className="mb-6" onClick={() => setPairing(false)}>{zh ? '返回服务器连接' : 'Back to server connection'}</Button>
         <div className="mb-6 flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-muted text-primary"><Cable size={26} /></div>
         <p className="mb-3 text-xs tracking-[0.2em] text-primary">YOUR DESKTOP, WITH YOU</p>
         <h1 className="mb-3 font-serif text-3xl leading-tight">{zh ? '连接你的工作台' : 'Connect your workspace'}</h1>
@@ -95,13 +124,14 @@ export function AndroidShell({ children }: { children: ReactNode }) {
           <p className="text-xs leading-5 text-muted-foreground">{zh ? '保留配对身份，验证仍是原电脑后保存。不需要重新扫码。' : 'Keeps your pairing and saves only after verifying the same desktop. No new QR needed.'}</p>
           <Button type="submit" variant="outline" disabled={busy || !destination.trim()} className="min-h-11 w-full">{zh ? '验证并保存地址' : 'Verify and save address'}</Button>
         </form> : null}
+        </>}
       </div>
       <p className="mx-auto mt-10 flex max-w-md items-center gap-2 text-xs text-muted-foreground"><ShieldCheck className="h-4 w-4 shrink-0" />{zh ? '登录凭据使用 Android Keystore 加密保存' : 'Credentials are encrypted using Android Keystore'}</p>
     </main>
   )
 
   return <>
-    {!token ? <div className="app-safe-area flex shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-3 py-1 text-xs"><span className="truncate text-muted-foreground">{androidDesktopAddress()}</span><Button variant="ghost" size="sm" onClick={() => { setAddress(''); setEditing(true) }}>{zh ? '重新配对' : 'Pair another desktop'}</Button></div> : null}
+    <div className="app-safe-area flex shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-3 py-1 text-xs"><span className="truncate text-muted-foreground">{androidDesktopAddress()}</span><Button variant="ghost" size="sm" onClick={() => { setAddress(''); setPairing(false); setEditing(true) }}>{zh ? '切换连接' : 'Switch connection'}</Button></div>
     {error ? <div role="alert" className="shrink-0 bg-destructive/10 px-3 py-2 text-sm">{zh ? '安全存储写入失败，请重试后再关闭应用。' : 'Secure storage failed. Retry before closing the app.'}<Button variant="ghost" onClick={() => { void retryAndroidPersistence().catch(() => undefined) }}>{zh ? '重试' : 'Retry'}</Button></div> : null}
     {children}
   </>

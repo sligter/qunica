@@ -71,7 +71,7 @@ pub async fn create(
     headers: HeaderMap,
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<DirectChatResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok((
         StatusCode::CREATED,
         Json(create_inner(&state, &owner_id, &body.agent_id).await?),
@@ -231,7 +231,7 @@ pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<DirectChatResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     // The Assistant's chat is reached through the floating dock, never the chat
     // list; showing it there would put a conversation the user cannot delete
     // alongside ones they can.
@@ -245,7 +245,7 @@ pub async fn get(
     headers: HeaderMap,
     Path(chat_id): Path<String>,
 ) -> Result<Json<DirectChatResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok(Json(
         fetch(
             state.db.pool(),
@@ -262,7 +262,7 @@ pub async fn update(
     Path(chat_id): Path<String>,
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<DirectChatResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let chat_id = validate_uuid(&chat_id, "chat id")?;
     let title = validate_title(&body.title)?;
     fetch(state.db.pool(), &chat_id, &owner_id).await?;
@@ -277,7 +277,7 @@ pub async fn delete(
     headers: HeaderMap,
     Path(chat_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let chat_id = validate_uuid(&chat_id, "chat id")?;
     fetch(state.db.pool(), &chat_id, &owner_id).await?;
     sqlx::query("UPDATE groups SET status = 'deleted', updated_at = ? WHERE id = ? AND owner_id = ? AND conversation_kind = 'direct'")
@@ -292,7 +292,7 @@ pub async fn get_workspace_root(
     headers: HeaderMap,
     Path(chat_id): Path<String>,
 ) -> Result<Json<workspace_files::WorkspaceRootResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let chat_id = validate_uuid(&chat_id, "chat id")?;
     Ok(Json(
         workspace_files::workspace_root(
@@ -313,7 +313,7 @@ pub async fn list_workspace_files(
     Path(chat_id): Path<String>,
     Query(query): Query<WorkspaceFilePathQuery>,
 ) -> Result<Json<Vec<workspace_files::WorkspaceFileResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let chat_id = validate_uuid(&chat_id, "chat id")?;
     Ok(Json(
         workspace_files::list_workspace_files(
@@ -338,7 +338,7 @@ pub async fn preview_workspace_file(
     Path(chat_id): Path<String>,
     Query(query): Query<WorkspaceFilePathQuery>,
 ) -> Result<Json<workspace_files::WorkspaceFilePreviewResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let chat_id = validate_uuid(&chat_id, "chat id")?;
     Ok(Json(
         workspace_files::preview_workspace_file(
@@ -361,7 +361,7 @@ pub async fn download_workspace_file(
     Path(chat_id): Path<String>,
     Query(query): Query<WorkspaceFilePathQuery>,
 ) -> Result<axum::response::Response, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let chat_id = validate_uuid(&chat_id, "chat id")?;
     workspace_files::stream_workspace_file(
         state.db.pool(),
@@ -382,7 +382,7 @@ pub async fn read_workspace_file_text(
     Path(chat_id): Path<String>,
     Query(query): Query<WorkspaceFilePathQuery>,
 ) -> Result<Json<workspace_files::WorkspaceFileTextResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let chat_id = validate_uuid(&chat_id, "chat id")?;
     Ok(Json(
         workspace_files::read_workspace_file_text(
@@ -406,7 +406,7 @@ pub async fn save_workspace_file_text(
     Query(query): Query<WorkspaceFilePathQuery>,
     Json(body): Json<SaveWorkspaceFileTextRequest>,
 ) -> Result<Json<workspace_files::WorkspaceFileTextResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let chat_id = validate_uuid(&chat_id, "chat id")?;
     Ok(Json(
         workspace_files::save_workspace_file_text(
@@ -577,7 +577,7 @@ pub async fn list_workspace_roots(
     headers: HeaderMap,
     Path(chat_id): Path<String>,
 ) -> Result<Json<Vec<workspace_files::ConversationRootEntry>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let chat_id = validate_uuid(&chat_id, "chat id")?;
     Ok(Json(
         workspace_files::list_conversation_roots(

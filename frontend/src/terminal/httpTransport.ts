@@ -11,7 +11,7 @@
 
 import { fetchEventSource } from '@microsoft/fetch-event-source'
 
-import { apiUrl } from '@/lib/runtime'
+import { apiOrigin, apiUrl } from '@/lib/runtime'
 import { abortOnAuthChange, authFetch, expireAuthToken } from '@/lib/authFetch'
 import { useAuthStore } from '@/stores/authStore'
 
@@ -27,12 +27,12 @@ import {
 } from './transport'
 import type { TerminalDescriptor, TerminalEvent } from './types'
 
-type WireTerminalEvent =
+export type WireTerminalEvent =
   | { event: 'output'; data: { bytes_base64: string } }
   | { event: 'exit'; data: { code: number | null; signal: string | null } }
   | { event: 'error'; data: { code: string; message: string } }
 
-interface WireDescriptor {
+export interface WireDescriptor {
   session_id: string
   shell_name: string
   cwd: string
@@ -62,9 +62,9 @@ function errorFromEnvelope(status: number, payload: unknown): TerminalTransportE
   return new TerminalTransportError(code, message)
 }
 
-async function request<T>(
+export async function terminalRequest<T>(
   path: string,
-  init: { method: 'POST' | 'DELETE'; body?: unknown },
+  init: { method: 'GET' | 'POST' | 'DELETE'; body?: unknown; headers?: Record<string, string> },
 ): Promise<T | null> {
   let response: Response
   try {
@@ -73,6 +73,7 @@ async function request<T>(
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${authToken()}`,
+        ...init.headers,
       },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
     })
@@ -88,7 +89,7 @@ async function request<T>(
   return (await response.json().catch(() => null)) as T | null
 }
 
-function wireEventToTerminalEvent(event: WireTerminalEvent): TerminalEvent {
+export function wireEventToTerminalEvent(event: WireTerminalEvent): TerminalEvent {
   switch (event.event) {
     case 'output':
       return {
@@ -103,16 +104,45 @@ function wireEventToTerminalEvent(event: WireTerminalEvent): TerminalEvent {
 }
 
 export function createHttpTerminalTransport(): TerminalTransport {
+  const clientId = crypto.randomUUID()
+  const leases = new Map<string, number | null>()
+  const streamIds = new Map<string, string>()
+  const inputReleased = new Set<string>()
+  const callbacks = new Map<string, (event: TerminalEvent) => void>()
   const streams = new Map<string, AbortController>()
   const writeTails = new Map<string, Promise<void>>()
+  let identity: { token: string; origin: string } | undefined
+  function request<T>(path: string, init: Parameters<typeof terminalRequest>[1]): Promise<T | null> {
+    if (identity && (identity.token !== useAuthStore.getState().token || identity.origin !== apiOrigin())) {
+      return Promise.reject(new TerminalTransportError('terminal.session_changed', 'The signed-in account or server changed.'))
+    }
+    return terminalRequest<T>(path, init)
+  }
+  function leaseHeaders(sessionId: string): Record<string, string> {
+    const generation = leases.get(sessionId)
+    if (!generation) throw new TerminalTransportError('terminal.lease_required', 'Another device controls this terminal. Reconnect to request input.')
+    return { 'x-terminal-client': clientId, 'x-terminal-generation': String(generation) }
+  }
 
   function openStream(
     sessionId: string,
     onEvent: (event: TerminalEvent) => void,
     lastEventId?: string,
+    repaint = false,
   ): AbortController {
     const controller = new AbortController()
     const token = authToken()
+    const renewal = setInterval(() => {
+      const generation = leases.get(sessionId)
+      if (controller.signal.aborted || inputReleased.has(sessionId)) return
+      void request<{ generation: number | null }>(`/terminal/sessions/${sessionId}/lease`, {
+        method: 'POST', body: { client_id: clientId, action: generation ? 'renew' : 'acquire', generation, stream: streamIds.get(sessionId) },
+      }).then(result => { if (!controller.signal.aborted) {
+        leases.set(sessionId, result?.generation ?? null)
+        onEvent({ event: 'control', data: { writable: !!result?.generation } })
+      } })
+        .catch(() => { leases.set(sessionId, null) })
+    }, 5_000)
     const cleanupAuth = abortOnAuthChange(controller, token)
     let recoveryQueued = false
     const recover = () => {
@@ -125,6 +155,7 @@ export function createHttpTerminalTransport(): TerminalTransport {
       })
     }
     const cleanup = () => {
+      clearInterval(renewal)
       cleanupAuth()
       document.removeEventListener('visibilitychange', recover)
       window.removeEventListener('online', recover)
@@ -138,25 +169,35 @@ export function createHttpTerminalTransport(): TerminalTransport {
     // pending reconnect would otherwise resurrect a 404 loop.
     streams.set(sessionId, controller)
 
-    void fetchEventSource(apiUrl(`/api/v2/terminal/sessions/${sessionId}/events`), {
+    void fetchEventSource(apiUrl(`/api/v2/terminal/sessions/${sessionId}/events${repaint ? '?repaint=true' : ''}`), {
       method: 'GET',
       headers: {
         Accept: 'text/event-stream',
         Authorization: `Bearer ${token}`,
+        'x-terminal-client': clientId,
         ...(lastEventId ? { 'last-event-id': lastEventId } : {}),
       },
       signal: controller.signal,
-      fetch: (input, init) => {
+      fetch: (_input, init) => {
         const headers = new Headers(init?.headers)
         headers.delete('last-event-id')
         if (lastEventId) headers.set('last-event-id', lastEventId)
-        return authFetch(input, { ...init, headers })
+        if (inputReleased.has(sessionId)) headers.set('x-terminal-observe', 'true')
+        return authFetch(apiUrl(`/api/v2/terminal/sessions/${sessionId}/events${repaint ? '?repaint=true' : ''}`), { ...init, headers })
       },
       // The PTY keeps running while the tab is in the background, so the stream
       // has to keep draining or the reconnect replays a backlog.
       openWhenHidden: true,
       onopen: async (response) => {
-        if (response.ok) return
+        if (response.ok) {
+          const generation = Number(response.headers.get('x-terminal-generation')) || null
+          leases.set(sessionId, generation)
+          const streamId = response.headers.get('x-terminal-stream')
+          if (streamId) streamIds.set(sessionId, streamId)
+          if (repaint) { lastEventId = response.headers.get('x-terminal-cursor') ?? lastEventId; repaint = false }
+          onEvent({ event: 'control', data: { writable: generation !== null } })
+          return
+        }
         if (response.status === 401) expireAuthToken(token)
         throw errorFromEnvelope(
           response.status,
@@ -210,18 +251,33 @@ export function createHttpTerminalTransport(): TerminalTransport {
     streams.delete(sessionId)
   }
 
-  async function writeInput(sessionId: string, data: string): Promise<void> {
+  async function writeInput(sessionId: string, data: string, connection: AbortController | undefined): Promise<void> {
     for (const chunk of utf8InputChunks(toWellFormedUnicode(data))) {
+      if (!connection || connection.signal.aborted || streams.get(sessionId) !== connection) throw new TerminalTransportError('terminal.disconnected', 'Terminal reconnected. Queued input was not resent.')
       await request(`/terminal/sessions/${sessionId}/input`, {
         method: 'POST',
         body: { data: chunk },
+        headers: leaseHeaders(sessionId),
       })
     }
   }
 
   return {
+    canAttach: true,
+    async setInputControl(sessionId, acquire) {
+      if (acquire) inputReleased.delete(sessionId)
+      else inputReleased.add(sessionId)
+      const lease = await request<{ generation: number | null }>(`/terminal/sessions/${sessionId}/lease`, { method: 'POST', body: {
+        client_id: clientId, action: acquire ? 'acquire' : 'release', stream: streamIds.get(sessionId),
+      } })
+      leases.set(sessionId, lease?.generation ?? null)
+      callbacks.get(sessionId)?.({ event: 'control', data: { writable: !!lease?.generation } })
+    },
     async create(createRequest, onEvent) {
-      const descriptor = await request<WireDescriptor>('/terminal/sessions', {
+      identity ??= { token: authToken(), origin: apiOrigin() }
+      const descriptor = createRequest.existingSessionId
+        ? await request<WireDescriptor>(`/terminal/sessions/${encodeURIComponent(createRequest.existingSessionId)}`, { method: 'GET' })
+        : await request<WireDescriptor>('/terminal/sessions', {
         method: 'POST',
         body: {
           conversation_id: createRequest.conversationId,
@@ -237,7 +293,11 @@ export function createHttpTerminalTransport(): TerminalTransport {
           'The server did not return a terminal session.',
         )
       }
-      openStream(descriptor.session_id, onEvent)
+      const lease = await request<{ generation: number | null }>(`/terminal/sessions/${descriptor.session_id}/lease`, { method: 'POST', body: { client_id: clientId, action: 'acquire' } })
+      leases.set(descriptor.session_id, lease?.generation ?? null)
+      callbacks.set(descriptor.session_id, onEvent)
+      onEvent({ event: 'control', data: { writable: !!lease?.generation } })
+      openStream(descriptor.session_id, onEvent, undefined, !!createRequest.existingSessionId)
       return {
         sessionId: descriptor.session_id,
         shellName: descriptor.shell_name,
@@ -249,9 +309,10 @@ export function createHttpTerminalTransport(): TerminalTransport {
     // keystrokes, and a shell reading a password would see them out of order.
     write(_conversationId, sessionId, data) {
       const previousTail = writeTails.get(sessionId)
+      const connection = streams.get(sessionId)
       const operation = previousTail === undefined
-        ? writeInput(sessionId, data)
-        : previousTail.then(() => writeInput(sessionId, data))
+        ? writeInput(sessionId, data, connection)
+        : previousTail.then(() => writeInput(sessionId, data, connection))
       const storedTail = operation.catch(() => undefined)
       writeTails.set(sessionId, storedTail)
       void storedTail.finally(() => {
@@ -266,21 +327,25 @@ export function createHttpTerminalTransport(): TerminalTransport {
       await request(`/terminal/sessions/${sessionId}/resize`, {
         method: 'POST',
         body: { cols, rows },
+        headers: leaseHeaders(sessionId),
       })
     },
 
     async close(_conversationId, sessionId) {
+      const writable = !!leases.get(sessionId)
       stopStream(sessionId)
       writeTails.delete(sessionId)
+      if (!writable) return
       await request(`/terminal/sessions/${sessionId}`, { method: 'DELETE' })
     },
 
     async closeAll() {
+      const owned = [...streams.keys()].filter(sessionId => leases.get(sessionId))
       for (const sessionId of [...streams.keys()]) {
         stopStream(sessionId)
       }
       writeTails.clear()
-      await request('/terminal/sessions', { method: 'DELETE' })
+      await Promise.all(owned.map(sessionId => request(`/terminal/sessions/${sessionId}`, { method: 'DELETE' })))
     },
   }
 }

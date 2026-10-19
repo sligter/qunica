@@ -40,8 +40,7 @@ use std::{
 use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{ChildStdin, ChildStdout},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     sync::{mpsc, oneshot, Mutex},
     task::JoinHandle,
     time::{timeout, Instant},
@@ -146,9 +145,9 @@ impl AcpConnection {
     /// and forwarded on `events_tx`; permission requests are answered with
     /// `permission_policy`. When `raw_updates_tx` is present, response results
     /// and raw session updates are also forwarded in wire order for probes.
-    pub fn spawn(
-        stdin: ChildStdin,
-        stdout: ChildStdout,
+    pub fn spawn<W: AsyncWrite + Unpin + Send + 'static, R: AsyncRead + Unpin + Send + 'static>(
+        stdin: W,
+        stdout: R,
         permission_policy: PermissionPolicy,
         events_tx: mpsc::UnboundedSender<AcpAgentEvent>,
         raw_updates_tx: RawUpdateSink,

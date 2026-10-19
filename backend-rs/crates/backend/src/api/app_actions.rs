@@ -123,7 +123,7 @@ pub async fn list(
     }
     let search = normalize_search(query.q.as_deref())?;
     let status = normalize_status_filter(query.status.as_deref())?;
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
 
     // `LIKE` with an escaped pattern rather than FTS: the history is a page of
     // recent proposals, not a corpus, and an index would cost more to keep than
@@ -207,7 +207,7 @@ pub async fn delete(
     headers: HeaderMap,
     Path(action_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let row = load_action(&state, &action_id, &owner_id).await?;
     if !matches!(
         row.status.as_str(),
@@ -232,7 +232,7 @@ pub async fn clear(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     sqlx::query(
         "DELETE FROM app_actions WHERE owner_id = ? \
          AND status IN ('applied', 'rejected', 'failed', 'expired')",
@@ -249,7 +249,7 @@ pub async fn reject(
     headers: HeaderMap,
     Path(action_id): Path<String>,
 ) -> Result<Json<AppActionResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let row = load_action(&state, &action_id, &owner_id).await?;
     if row.status == "rejected" {
         return Ok(Json(fetch(&state, &action_id, &owner_id).await?));
@@ -273,7 +273,7 @@ pub async fn approve(
     headers: HeaderMap,
     Path(action_id): Path<String>,
 ) -> Result<Json<AppActionResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let row = load_action(&state, &action_id, &owner_id).await?;
     if matches!(row.status.as_str(), "approved" | "applied") {
         return Ok(Json(fetch(&state, &action_id, &owner_id).await?));

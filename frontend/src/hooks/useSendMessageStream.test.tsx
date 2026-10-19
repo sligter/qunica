@@ -25,8 +25,12 @@ vi.mock('@/lib/api-v2/client', async (importOriginal) => {
   return { ...original, fetchJson: mocks.fetchJson }
 })
 
-vi.mock('@/lib/api-v2/sse', () => ({
-  openApiV2SseStream: (options: { handlers: ApiV2SseHandlers; url: string; body: unknown }) => {
+vi.mock('@/lib/realtime/cancelTurn', () => ({
+  cancelTurn: (group: string, turn: string, token: string) => mocks.fetchJson('/groups/' + group + '/turns/' + turn + '/cancel', { method: 'POST', token }),
+}))
+
+vi.mock('@/lib/realtime/stream', () => ({
+  openConversationStream: (options: { handlers: ApiV2SseHandlers; url: string; body: unknown }) => {
     if (mocks.streamStartError) throw mocks.streamStartError
     const abort = vi.fn()
     mocks.streams.push({
@@ -974,6 +978,7 @@ describe('useSendMessageStream direct conversations', () => {
   })
 
   it('invalidates direct-chat workspace files for agent, tool, ACP, and close events', () => {
+    vi.useFakeTimers()
     const queryClient = new QueryClient()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     const { result } = renderHook(
@@ -997,22 +1002,24 @@ describe('useSendMessageStream direct conversations', () => {
       kind: 'agent_message',
       payload: { message_id: 'agent-message-1', agent_id: 'agent-1', content: 'reply' },
     })
+    for (const [seq, status] of [[3, 'started'], [4, 'completed'], [5, 'completed']] as const) {
+      emit(stream.handlers, {
+        stream_id: 'stream-1',
+        seq,
+        event_id: `stream-1:${seq}`,
+        kind: 'tool_call_result',
+        payload: {
+          agent_id: 'agent-1',
+          tool_call_id: `tool-${seq}`,
+          tool_name: 'write_file',
+          status,
+        },
+      })
+    }
     emit(stream.handlers, {
       stream_id: 'stream-1',
-      seq: 3,
-      event_id: 'stream-1:3',
-      kind: 'tool_call_result',
-      payload: {
-        agent_id: 'agent-1',
-        tool_call_id: 'tool-1',
-        tool_name: 'write_file',
-        status: 'completed',
-      },
-    })
-    emit(stream.handlers, {
-      stream_id: 'stream-1',
-      seq: 4,
-      event_id: 'stream-1:4',
+      seq: 6,
+      event_id: 'stream-1:6',
       kind: 'acp_agent_run',
       payload: {
         run_id: 'run-1',
@@ -1023,10 +1030,14 @@ describe('useSendMessageStream direct conversations', () => {
     })
     act(() => stream.handlers.onClose?.())
 
-    const directWorkspaceInvalidations = invalidate.mock.calls.filter(
+    const directWorkspaceInvalidations = () => invalidate.mock.calls.filter(
       ([filters]) => filters?.queryKey?.join('/') === 'direct-chats/chat-1/workspace-files',
     )
-    expect(directWorkspaceInvalidations).toHaveLength(4)
+    expect(directWorkspaceInvalidations()).toHaveLength(3)
+    // Finished tools share one deferred refresh; progress updates schedule none.
+    act(() => { vi.advanceTimersByTime(500) })
+    expect(directWorkspaceInvalidations()).toHaveLength(4)
+    vi.useRealTimers()
     expect(invalidate).not.toHaveBeenCalledWith({
       queryKey: ['groups', 'chat-1', 'workspace-files'],
     })

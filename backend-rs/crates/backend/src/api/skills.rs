@@ -140,7 +140,7 @@ pub async fn create(
     headers: HeaderMap,
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<SkillResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok((
         StatusCode::CREATED,
         Json(create_inner(&state, &owner_id, body).await?),
@@ -193,7 +193,7 @@ pub async fn import_raw(
     headers: HeaderMap,
     Json(body): Json<RawImportRequest>,
 ) -> Result<(StatusCode, Json<SkillResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let parsed = parse_skill_markdown(&body.raw)?;
     let metadata_json = json_to_db_string(&parsed.metadata)?;
     let id = Uuid::new_v4().to_string();
@@ -227,7 +227,7 @@ pub async fn import_package(
     headers: HeaderMap,
     Json(body): Json<PackageImportRequest>,
 ) -> Result<(StatusCode, Json<SkillResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let bytes = STANDARD
         .decode(body.content_base64.trim())
         .map_err(|_| ApiError::invalid_input("content_base64 is not valid base64"))?;
@@ -239,7 +239,7 @@ pub async fn import_github(
     headers: HeaderMap,
     Json(body): Json<GithubImportRequest>,
 ) -> Result<(StatusCode, Json<SkillResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let repo = parse_github_repo(&body.url)?;
     let branch = validate_github_ref(body.branch.as_deref().unwrap_or("main"))?;
     let selected_path = match body
@@ -320,7 +320,7 @@ pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<SkillResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let sql = format!(
         "SELECT {SKILL_COLUMNS} FROM skills \
          WHERE owner_id = ? AND status = 'active' \
@@ -340,7 +340,7 @@ pub async fn get(
     headers: HeaderMap,
     Path(skill_id): Path<String>,
 ) -> Result<Json<SkillResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let skill_id = validate_uuid(&skill_id, "skill id")?;
     let row = load_active_owned(state.db.pool(), &skill_id, &owner_id).await?;
     Ok(Json(row.into()))
@@ -352,7 +352,7 @@ pub async fn update(
     Path(skill_id): Path<String>,
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<SkillResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok(Json(
         update_inner(&state, &owner_id, &skill_id, body).await?,
     ))
@@ -413,7 +413,7 @@ pub async fn delete(
     headers: HeaderMap,
     Path(skill_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let skill_id = validate_uuid(&skill_id, "skill id")?;
     load_active_owned(state.db.pool(), &skill_id, &owner_id).await?;
 
@@ -437,7 +437,7 @@ pub async fn list_resources(
     headers: HeaderMap,
     Path(skill_id): Path<String>,
 ) -> Result<Json<Vec<SkillResourceResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let skill_id = validate_uuid(&skill_id, "skill id")?;
     let row = load_active_owned(state.db.pool(), &skill_id, &owner_id).await?;
     let files = parse_files_json(row.files_json.as_deref());
@@ -469,7 +469,7 @@ pub async fn read_resource(
     headers: HeaderMap,
     Path((skill_id, resource_path)): Path<(String, String)>,
 ) -> Result<Json<SkillResourceResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let skill_id = validate_uuid(&skill_id, "skill id")?;
     let resource_path = validate_resource_path(&resource_path)?;
     let row = load_active_owned(state.db.pool(), &skill_id, &owner_id).await?;
@@ -505,7 +505,7 @@ pub async fn update_resource(
     Path((skill_id, resource_path)): Path<(String, String)>,
     Json(body): Json<ResourceUpdateRequest>,
 ) -> Result<Json<SkillResourceResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let skill_id = validate_uuid(&skill_id, "skill id")?;
     let resource_path = validate_resource_path(&resource_path)?;
     let row = load_active_owned(state.db.pool(), &skill_id, &owner_id).await?;

@@ -182,10 +182,10 @@ async fn startup_recovery_finalizes_incomplete_scheduler_state_without_output() 
     assert_eq!(running.dispatches[1].status, DispatchStatus::Cancelled);
 
     let waiting = recovered.load_turn_trace("turn-waiting").await.unwrap();
-    assert_eq!(waiting.turn.status, TurnStatus::Failed);
+    assert_eq!(waiting.turn.status, TurnStatus::WaitingForUser);
     assert_eq!(
         waiting.turn.termination_reason,
-        Some(TurnReason::ServerRestart)
+        Some(TurnReason::WaitingForUser)
     );
     assert_eq!(waiting.dispatches[0].status, DispatchStatus::WaitingForUser);
 

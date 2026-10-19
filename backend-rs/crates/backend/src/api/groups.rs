@@ -1224,7 +1224,7 @@ pub async fn list_group_templates(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<GroupTemplateResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let rows = sqlx::query_as::<_, GroupTemplateRow>(
         "SELECT id, name, config_json, created_at, updated_at \
          FROM group_templates WHERE owner_id = ? ORDER BY updated_at DESC, id DESC",
@@ -1245,7 +1245,7 @@ pub async fn create_group_template(
     headers: HeaderMap,
     Json(body): Json<GroupTemplateCreateRequest>,
 ) -> Result<(StatusCode, Json<GroupTemplateResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let created = create_group_template_inner(&state, &owner_id, body).await?;
     Ok((StatusCode::CREATED, Json(created)))
 }
@@ -1329,7 +1329,7 @@ pub async fn delete_group_template(
     headers: HeaderMap,
     Path(template_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let template_id = validate_uuid(&template_id, "template id")?;
     let deleted = sqlx::query("DELETE FROM group_templates WHERE id = ? AND owner_id = ?")
         .bind(&template_id)
@@ -1362,7 +1362,7 @@ pub async fn create(
     headers: HeaderMap,
     Json(body): Json<CreateRequest>,
 ) -> Result<(StatusCode, Json<GroupResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok((
         StatusCode::CREATED,
         Json(create_inner(&state, &owner_id, body).await?),
@@ -1518,7 +1518,7 @@ pub async fn list(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<GroupResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
 
     let sql = format!(
         "SELECT {GROUP_COLUMNS} FROM groups \
@@ -1539,7 +1539,7 @@ pub async fn get(
     headers: HeaderMap,
     Path(group_id): Path<String>,
 ) -> Result<Json<GroupResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     let row = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
@@ -1552,7 +1552,7 @@ pub async fn enhance_group_prompt(
     Path(group_id): Path<String>,
     Json(body): Json<GroupPromptEnhanceRequest>,
 ) -> Result<Json<GroupPromptEnhanceResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
     let prompt = body.prompt.trim();
@@ -1677,7 +1677,7 @@ pub async fn update(
     Path(group_id): Path<String>,
     Json(body): Json<UpdateRequest>,
 ) -> Result<Json<GroupResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok(Json(
         update_inner(&state, &owner_id, &group_id, body).await?,
     ))
@@ -1837,7 +1837,7 @@ pub async fn delete(
     headers: HeaderMap,
     Path(group_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     // Confirms existence/ownership (and that it is not already deleted) first.
@@ -1862,7 +1862,7 @@ pub async fn list_group_files(
     headers: HeaderMap,
     Path(group_id): Path<String>,
 ) -> Result<Json<Vec<GroupFileResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
@@ -1878,7 +1878,7 @@ pub async fn upload_group_file(
     Path(group_id): Path<String>,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<GroupFileResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
@@ -1923,7 +1923,7 @@ pub async fn delete_group_file(
     headers: HeaderMap,
     Path((group_id, file_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let file_id = validate_uuid(&file_id, "file id")?;
 
@@ -1948,7 +1948,7 @@ pub async fn get_group_workspace_root(
     headers: HeaderMap,
     Path(group_id): Path<String>,
 ) -> Result<Json<GroupWorkspaceRootResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let root = workspace_files::workspace_root(
         state.db.pool(),
@@ -1971,7 +1971,7 @@ pub async fn list_group_workspace_files(
     Path(group_id): Path<String>,
     Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
 ) -> Result<Json<Vec<GroupWorkspaceFileResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let rows = workspace_files::list_workspace_files(
         state.db.pool(),
@@ -2006,7 +2006,7 @@ pub async fn preview_group_workspace_file(
     Path(group_id): Path<String>,
     Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
 ) -> Result<Json<GroupWorkspaceFilePreviewResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let preview = workspace_files::preview_workspace_file(
         state.db.pool(),
@@ -2038,7 +2038,7 @@ pub async fn upload_group_workspace_file(
     query: GroupWorkspaceUploadQuery,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<GroupWorkspaceFileResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&conversation_id, "conversation id")?;
 
     let root = conversation_files_root(
@@ -2074,7 +2074,7 @@ pub async fn download_group_workspace_file(
     Path(group_id): Path<String>,
     Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
 ) -> Result<Response, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     workspace_files::stream_workspace_file(
         state.db.pool(),
@@ -2095,7 +2095,7 @@ pub async fn read_group_workspace_file_text(
     Path(group_id): Path<String>,
     Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
 ) -> Result<Json<workspace_files::WorkspaceFileTextResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     Ok(Json(
         workspace_files::read_workspace_file_text(
@@ -2119,7 +2119,7 @@ pub async fn save_group_workspace_file_text(
     Query(query): Query<workspace_files::WorkspaceFilePathQuery>,
     Json(body): Json<workspace_files::SaveWorkspaceFileTextRequest>,
 ) -> Result<Json<workspace_files::WorkspaceFileTextResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     Ok(Json(
         workspace_files::save_workspace_file_text(
@@ -2146,7 +2146,7 @@ pub async fn rename_group_workspace_file(
     query: workspace_files::WorkspaceFilePathQuery,
     body: GroupWorkspaceFileRenameRequest,
 ) -> Result<Json<GroupWorkspaceFileResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&conversation_id, "conversation id")?;
 
     let root = conversation_files_root(
@@ -2198,7 +2198,7 @@ pub async fn create_group_workspace_entry(
     query: workspace_files::WorkspaceFilePathQuery,
     body: GroupWorkspaceEntryCreateRequest,
 ) -> Result<(StatusCode, Json<GroupWorkspaceFileResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let conversation_id = validate_uuid(&conversation_id, "conversation id")?;
 
     let root = conversation_files_root(
@@ -2244,7 +2244,7 @@ pub async fn delete_group_workspace_file(
     conversation_id: String,
     query: workspace_files::WorkspaceFilePathQuery,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&conversation_id, "conversation id")?;
 
     let root = conversation_files_root(
@@ -2273,7 +2273,7 @@ pub async fn act_on_group_workspace_files(
     query: workspace_files::WorkspaceFilePathQuery,
     body: GroupWorkspaceFileActionRequest,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let conversation_id = validate_uuid(&conversation_id, "conversation id")?;
     let root = conversation_files_root(
         state.db.pool(),
@@ -2350,7 +2350,7 @@ async fn workspace_git_target(
     group_id: &str,
     thread_id: Option<&str>,
 ) -> Result<WorkspaceGitTarget, ApiError> {
-    let owner_id = current_user_id(headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(headers, state).await?;
     let group_id = validate_uuid(group_id, "group id")?;
     let group = load_active_owned_workspace(state.db.pool(), &group_id, &owner_id).await?;
     let root = group_files_workspace_root(state.db.pool(), &group, &owner_id).await?;
@@ -2740,7 +2740,7 @@ pub async fn generate_group_workspace_git_commit_message(
     Query(query): Query<GroupWorkspaceGitTargetQuery>,
     body: Option<Json<GroupWorkspaceGitCommitMessageRequest>>,
 ) -> Result<Json<GroupWorkspaceGitCommitMessageResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     let root = workspace_git_target(&state, &headers, &group_id, query.thread_id())
@@ -2935,7 +2935,7 @@ pub async fn list_group_notes(
     headers: HeaderMap,
     Path(group_id): Path<String>,
 ) -> Result<Json<Vec<GroupNoteResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     let group = load_active_note_group(state.db.pool(), &group_id, &owner_id).await?;
@@ -2956,7 +2956,7 @@ pub async fn get_group_note(
     headers: HeaderMap,
     Path((group_id, note_id)): Path<(String, String)>,
 ) -> Result<Json<GroupNoteResponse>, ApiError> {
-    let user_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let user_id = current_user_id(&headers, &state).await?;
     Ok(Json(
         get_group_note_inner(state.db.pool(), &user_id, &group_id, &note_id).await?,
     ))
@@ -2993,7 +2993,7 @@ pub async fn create_group_note(
     Path(group_id): Path<String>,
     Json(body): Json<GroupNoteCreateRequest>,
 ) -> Result<(StatusCode, Json<GroupNoteResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let created = create_group_note_inner(&state, &owner_id, &group_id, body).await?;
     Ok((StatusCode::CREATED, Json(created)))
 }
@@ -3083,7 +3083,7 @@ pub async fn update_group_note(
     Path((group_id, note_id)): Path<(String, String)>,
     Json(body): Json<GroupNoteUpdateRequest>,
 ) -> Result<Json<GroupNoteResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok(Json(
         update_group_note_inner(&state, &owner_id, &group_id, &note_id, body).await?,
     ))
@@ -3192,7 +3192,7 @@ pub async fn delete_group_note(
     headers: HeaderMap,
     Path((group_id, note_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let note_id = validate_uuid(&note_id, "note id")?;
 
@@ -3231,7 +3231,7 @@ pub async fn list_group_members(
     headers: HeaderMap,
     Path(group_id): Path<String>,
 ) -> Result<Json<Vec<GroupMemberResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
@@ -3251,7 +3251,7 @@ pub async fn search_group_member_candidates(
     Path(group_id): Path<String>,
     Query(query): Query<MemberCandidatesQuery>,
 ) -> Result<Json<Vec<UserReadResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
 
     load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
@@ -3265,7 +3265,7 @@ pub async fn add_group_member(
     Path(group_id): Path<String>,
     Json(body): Json<GroupMemberAddRequest>,
 ) -> Result<(StatusCode, Json<GroupMemberResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok((
         StatusCode::CREATED,
         Json(add_group_member_inner(&state, &owner_id, &group_id, &body.user_id).await?),
@@ -3350,7 +3350,7 @@ pub async fn remove_group_member(
     headers: HeaderMap,
     Path((group_id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     remove_group_member_inner(&state, &owner_id, &group_id, &user_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -3398,7 +3398,7 @@ pub async fn set_group_member_muted(
     Path((group_id, user_id)): Path<(String, String)>,
     Json(body): Json<GroupMemberMuteRequest>,
 ) -> Result<Json<GroupMemberResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let user_id = validate_uuid(&user_id, "user id")?;
     load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
@@ -3433,7 +3433,7 @@ pub async fn list_group_agents(
     Path(group_id): Path<String>,
     Query(query): Query<ListGroupAgentsQuery>,
 ) -> Result<Json<Vec<GroupAgentResponse>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let thread_id = query
         .thread_id
@@ -3468,7 +3468,7 @@ pub async fn add_group_agent(
     Path(group_id): Path<String>,
     Json(body): Json<GroupAgentAddRequest>,
 ) -> Result<(StatusCode, Json<GroupAgentResponse>), ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     Ok((
         StatusCode::CREATED,
         Json(add_group_agent_inner(&state, &owner_id, &group_id, body).await?),
@@ -3577,7 +3577,7 @@ pub async fn remove_group_agent(
     headers: HeaderMap,
     Path((group_id, agent_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     remove_group_agent_inner(&state, &owner_id, &group_id, &agent_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -3643,7 +3643,7 @@ pub async fn set_group_agent_muted(
     Path((group_id, agent_id)): Path<(String, String)>,
     Json(body): Json<GroupAgentMuteRequest>,
 ) -> Result<Json<GroupAgentResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let agent_id = validate_uuid(&agent_id, "agent id")?;
     load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
@@ -3670,7 +3670,7 @@ pub async fn set_group_agent_workspace_sharing(
     Path((group_id, agent_id)): Path<(String, String)>,
     Json(body): Json<GroupAgentWorkspaceSharingRequest>,
 ) -> Result<Json<GroupAgentResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let agent_id = validate_uuid(&agent_id, "agent id")?;
     load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
@@ -3709,7 +3709,7 @@ pub async fn set_group_agent_topology(
     Path((group_id, agent_id)): Path<(String, String)>,
     Json(body): Json<GroupAgentTopologyRequest>,
 ) -> Result<Json<GroupAgentResponse>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     let agent_id = validate_uuid(&agent_id, "agent id")?;
     let group = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
@@ -4158,7 +4158,7 @@ pub async fn list_workspace_roots_route(
     headers: HeaderMap,
     Path(group_id): Path<String>,
 ) -> Result<Json<Vec<workspace_files::ConversationRootEntry>>, ApiError> {
-    let owner_id = current_user_id(&headers, &state.auth.secret_key)?;
+    let owner_id = current_user_id(&headers, &state).await?;
     let group_id = validate_uuid(&group_id, "group id")?;
     Ok(Json(
         workspace_files::list_conversation_roots(

@@ -33,6 +33,8 @@ fn authed_json(method: &str, uri: &str, token: &str, body: Value) -> Request<Bod
         .uri(uri)
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
+        .header("x-terminal-client", "8577bd18-208f-4d4f-90c1-3e244c35ada4")
+        .header("x-terminal-generation", "1")
         .body(Body::from(body.to_string()))
         .unwrap()
 }
@@ -156,6 +158,43 @@ async fn terminal_create_starts_a_session_inside_the_workspace_root() {
     assert_eq!(status, StatusCode::CREATED, "{descriptor}");
     let session_id = descriptor["session_id"].as_str().unwrap().to_string();
     assert!(!descriptor["shell_name"].as_str().unwrap().is_empty());
+    let (status, sessions) = send(
+        &app,
+        authed_json(
+            "GET",
+            "/api/v2/terminal/sessions?conversation_id=conversation-1",
+            &token,
+            Value::Null,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(sessions[0]["session_id"], session_id);
+    let (status, other) = send(
+        &app,
+        authed_json(
+            "GET",
+            "/api/v2/terminal/sessions?conversation_id=unrelated",
+            &token,
+            Value::Null,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(other.as_array().unwrap().is_empty());
+
+    let (status, lease) = send(
+        &app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/terminal/sessions/{session_id}/lease"),
+            &token,
+            json!({"client_id":"8577bd18-208f-4d4f-90c1-3e244c35ada4","action":"acquire"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{lease}");
+    assert_eq!(lease["generation"], 1);
 
     let (status, _) = send(
         &app,

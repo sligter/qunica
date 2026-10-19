@@ -18,6 +18,25 @@ use super::error::ApiError;
 const REPLAY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
 
+async fn check_retention(
+    pool: &SqlitePool,
+    group: &str,
+    thread: Option<&str>,
+    stream: Uuid,
+    after: i64,
+) -> Result<(), ApiError> {
+    let floor:Option<i64>=sqlx::query_scalar("SELECT r.retained_after FROM run_replay_floors r JOIN threads t ON t.id=r.thread_id WHERE r.stream_id=? AND r.group_id=? AND (? IS NULL OR r.thread_id=?) AND t.status!='cleared'")
+        .bind(stream.to_string()).bind(group).bind(thread).bind(thread).fetch_optional(pool).await.map_err(|_|ApiError::internal("database error"))?;
+    if floor.is_some_and(|floor| after <= floor) {
+        return Err(ApiError::new(
+            axum::http::StatusCode::CONFLICT,
+            "resync_required",
+            "Run cursor is outside the replay window",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) type SseResponse = Sse<BoxStream<'static, Result<Event, Infallible>>>;
 
 #[derive(Debug)]
@@ -150,6 +169,7 @@ pub(crate) async fn replay_existing_stream(
     group_id: String,
     stream_id: Uuid,
 ) -> Result<Option<BoxStream<'static, StreamEvent<Value>>>, ApiError> {
+    check_retention(&pool, &group_id, None, stream_id, -1).await?;
     let events = fetch_replay_events_for_stream(&pool, &group_id, stream_id).await?;
     if events.is_empty() {
         return Ok(None);
@@ -165,6 +185,21 @@ pub(crate) async fn replay_existing_stream(
         events,
         done,
     )))
+}
+
+pub(crate) fn follow_new_stream(
+    pool: SqlitePool,
+    group: String,
+    stream: Uuid,
+) -> BoxStream<'static, StreamEvent<Value>> {
+    follow_replay(
+        pool,
+        ReplayScope::Group(group),
+        stream,
+        -1,
+        Vec::new(),
+        false,
+    )
 }
 
 fn follow_replay(
@@ -214,6 +249,7 @@ pub(crate) async fn fetch_replay_events_for_group(
     group_id: &str,
     cursor: &ReplayCursor,
 ) -> Result<(Vec<StreamEvent<Value>>, bool), ApiError> {
+    check_retention(pool, group_id, None, cursor.stream_id, cursor.seq).await?;
     let anchor: ReplayAnchorRow = sqlx::query_as(
         "SELECT se.stream_id, se.seq, se.kind \
          FROM stream_events se \
@@ -259,6 +295,14 @@ pub(crate) async fn fetch_replay_events_for_thread(
     group_id: &str,
     cursor: &ReplayCursor,
 ) -> Result<(Vec<StreamEvent<Value>>, bool), ApiError> {
+    check_retention(
+        pool,
+        group_id,
+        Some(thread_id),
+        cursor.stream_id,
+        cursor.seq,
+    )
+    .await?;
     let anchor: ReplayAnchorRow = sqlx::query_as(
         "SELECT se.stream_id, se.seq, se.kind \
          FROM stream_events se \

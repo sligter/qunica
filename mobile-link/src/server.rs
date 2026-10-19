@@ -139,12 +139,22 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
         let valid = Arc::new(AtomicBool::new(true));
         let check = valid.clone();
+        let issue = valid.clone();
         let router = Router::new().route("/api/v2/auth/me", get(move |headers: HeaderMap| {
             let check = check.clone();
             async move {
                 if check.load(Ordering::SeqCst) && headers.get("authorization").is_some_and(|v| v == "Bearer account-handoff-secret") {
                     StatusCode::OK
                 } else { StatusCode::UNAUTHORIZED }
+            }
+        })).route("/api/v2/auth/sessions", post(move |headers: HeaderMap| {
+            let issue = issue.clone();
+            async move {
+            if issue.load(Ordering::SeqCst) && headers.get("authorization").is_some_and(|v| v == "Bearer account-handoff-secret") {
+                (StatusCode::OK, axum::Json(serde_json::json!({"access_token": "phone-session-secret"})))
+            } else {
+                (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({})))
+            }
             }
         }));
         let dir = tempfile::tempdir().unwrap();
@@ -163,10 +173,11 @@ mod tests {
         let (mut rx, mut tx) = channel(&server, address).await;
         tx.json(&Auth { credential: parsed.code, claim: true, name: "Phone".into(), device_info: None }).await.unwrap();
         let auth: Authorized = rx.json().await.unwrap();
-        assert_eq!(auth.account_token.as_deref(), Some("account-handoff-secret"));
+        assert_eq!(auth.account_token.as_deref(), Some("phone-session-secret"));
         assert!(claim(&server, address, &offer.uri).await.is_err());
         assert!(server.state.lock().await.pending.is_none());
         assert!(!std::fs::read_to_string(dir.path().join("devices.json")).unwrap().contains("account-handoff-secret"));
+        assert!(!std::fs::read_to_string(dir.path().join("devices.json")).unwrap().contains("phone-session-secret"));
         let (mut rx, mut tx) = channel(&server, address).await;
         tx.json(&Auth { credential: auth.credential.unwrap(), claim: false, name: String::new(), device_info: None }).await.unwrap();
         let auth: Authorized = rx.json().await.unwrap();
@@ -647,6 +658,21 @@ impl MobileServer {
         ensure!(response.status() == axum::http::StatusCode::OK, "Desktop login expired. Sign in and generate a new QR code");
         Ok(())
     }
+    async fn create_device_session(&self, token: &str, name: &str) -> Result<String> {
+        let label: String = name.chars().filter(|c| !c.is_control()).take(64).collect();
+        let label = if label.trim().is_empty() { "Android" } else { label.trim() };
+        let request = Request::builder().method("POST").uri("/api/v2/auth/sessions")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::json!({"device_label": label}).to_string()))?;
+        let response = timeout(Duration::from_secs(5), self.router.clone().oneshot(request)).await??;
+        ensure!(response.status() == axum::http::StatusCode::OK, "Sign in on the desktop and generate a new pairing code");
+        let bytes = timeout(Duration::from_secs(5), axum::body::to_bytes(response.into_body(), 16384)).await??;
+        let body: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let token = body.get("access_token").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+            .context("Server did not issue a device session")?;
+        Ok(token.to_string())
+    }
     pub async fn offer_for_account(self: &Arc<Self>, token: String) -> Result<Pairing> {
         self.validate_account_token(&token).await?;
         self.offer_internal(Some(token)).await
@@ -711,18 +737,8 @@ impl MobileServer {
     ) -> Result<(Authorized, CancellationToken, Arc<Semaphore>)> {
         ensure!(auth.credential.len() <= 128, "Invalid credential");
         let credential_hash = hash(&auth.credential);
-        let account_token = if auth.claim {
-            let token = {
-                let state = self.state.lock().await;
-                let pending = state.pending.as_ref().context("Pairing code expired or already used")?;
-                ensure!(pending.expires > now() && pending.hash == credential_hash, "Pairing code expired or invalid");
-                pending.account_token.clone()
-            };
-            if let Some(token) = &token { self.validate_account_token(token).await?; }
-            token
-        } else { None };
-        // Recheck code and expiry after account validation: rotation/claim may race it.
         let mut state = self.state.lock().await;
+        let mut account_token = None;
         let (id, credential) = if auth.claim {
             let pending = state
                 .pending
@@ -733,6 +749,11 @@ impl MobileServer {
                 "Pairing code expired or invalid"
             );
             ensure!(state.stored.devices.len() < 32, "Device limit reached");
+            // Note: a phone must never share the desktop's session. Serialize
+            // claim and issuance so two scans cannot both mint a credential.
+            if let Some(token) = &pending.account_token {
+                account_token = Some(self.create_device_session(token, &auth.name).await?);
+            }
             let credential = secret()?;
             let id = secret()?;
             let name: String = auth

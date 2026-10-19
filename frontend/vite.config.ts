@@ -41,6 +41,7 @@ function manualChunks(id: string): string | undefined {
   // Must stay out of the catch-all `vendor` chunk: that one is a static
   // dependency of the boot chunk, which would undo TerminalPane's lazy import.
   if (packageName.startsWith('@xterm/')) return 'vendor-terminal'
+  if (packageName === '@novnc/novnc') return 'vendor-desktop'
   if (utilityPackages.has(packageName)) return 'vendor-utils'
   return 'vendor'
 }
@@ -59,6 +60,7 @@ export default defineConfig({
       '/api/v2': {
         target: 'http://127.0.0.1:8765',
         changeOrigin: true,
+        ws: true,
       },
       '/ws': {
         target: 'ws://127.0.0.1:8765',

@@ -14,6 +14,7 @@
 //! group/direct runtimes is deferred to a later task.
 
 pub mod capabilities;
+pub mod computer;
 pub mod config;
 pub mod dsh;
 pub mod notes_mcp;
@@ -130,6 +131,8 @@ impl AcpAgentEvent {
 /// A failure starting an ACP run.
 #[derive(Debug, Error)]
 pub enum AcpRunError {
+    #[error("{0}")]
+    Computer(String),
     /// The requested `cwd` is not an existing local directory.
     #[error("ACP agent workspace must be an existing local directory")]
     Workspace,

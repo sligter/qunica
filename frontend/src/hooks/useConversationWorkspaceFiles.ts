@@ -7,6 +7,7 @@ import { saveAndroidFile } from '@/lib/androidFileExport'
 import { isDesktopRuntime, saveFileViaDialog } from '@/lib/desktop'
 import { apiUrl } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
+import { useAccountSyncStore } from '@/stores/accountSyncStore'
 import type {
   ApiErrorEnvelope,
   ConversationScope,
@@ -247,7 +248,7 @@ export function useConversationWorkspaceFiles(
         { token },
       ),
     enabled: token !== null && !!conversationId,
-    refetchInterval: 10_000,
+    refetchInterval: () => useAccountSyncStore.getState().status === 'connected' ? 60_000 : 10_000,
   })
 }
 

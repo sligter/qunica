@@ -39,6 +39,7 @@ import {
 } from '@/components/layout/CommandPalette'
 import { useAuthStore } from '@/stores/authStore'
 import { isDesktopRuntime } from '@/lib/runtime'
+import { signOut } from '@/lib/authFetch'
 import { openLibraryWindow, openSettingsWindow } from '@/lib/desktop'
 import { DirectChatPickerDialog } from '@/components/direct-chats/DirectChatPickerDialog'
 import { GroupAvatar } from '@/components/groups/GroupAvatar'
@@ -905,22 +906,25 @@ interface SidebarUserMenuProps {
 function SidebarUserMenu({ collapsed }: SidebarUserMenuProps) {
   const { t } = useTranslation('navigation')
   const user = useAuthStore((s) => s.user)
-  const logout = useAuthStore((s) => s.logout)
   const qc = useQueryClient()
   const navigate = useNavigate()
   const { closeAll } = useTerminalRuntime()
   const [open, setOpen] = useState(false)
   const [loggingOut, setLoggingOut] = useState(false)
+  const [logoutFailed, setLogoutFailed] = useState(false)
 
   const onLogout = async () => {
     if (loggingOut) return
     setLoggingOut(true)
+    setLogoutFailed(false)
     try {
       await closeAll(true).catch(logTerminalCleanupError)
-      logout()
+      if (!await signOut()) return
       qc.clear()
       setOpen(false)
       void navigate('/login', { replace: true })
+    } catch {
+      setLogoutFailed(true)
     } finally {
       setLoggingOut(false)
     }
@@ -976,6 +980,7 @@ function SidebarUserMenu({ collapsed }: SidebarUserMenuProps) {
               <LogOut className="h-4 w-4" />
               {t('logout')}
             </Button>
+            {logoutFailed && <p role="alert" className="mt-2 text-xs text-destructive">{t('logoutFailed')}</p>}
           </div>
         </>
       )}

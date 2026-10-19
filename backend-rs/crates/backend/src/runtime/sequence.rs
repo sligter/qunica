@@ -47,6 +47,9 @@ pub struct SequenceAllocator {
 }
 
 impl SequenceAllocator {
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
     pub fn new(pool: SqlitePool, write_lock: Arc<Mutex<()>>) -> Self {
         Self { pool, write_lock }
     }
@@ -106,6 +109,8 @@ impl SequenceAllocator {
             }
         }
 
+        super::approval::sync_pending_in_tx(&mut tx, thread_id, message.content_json.as_deref())
+            .await?;
         let next_seq: i64 = sqlx::query_scalar("SELECT next_seq FROM threads WHERE id = ?")
             .bind(thread_id)
             .fetch_one(&mut *tx)
@@ -155,6 +160,7 @@ impl SequenceAllocator {
         let now = now_rfc3339();
         let mut tx = begin_write(&self.pool).await?;
         ensure_thread_writable(&mut tx, thread_id).await?;
+        super::approval::sync_pending_in_tx(&mut tx, thread_id, content_json).await?;
 
         let result = sqlx::query(
             "UPDATE messages \

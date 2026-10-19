@@ -37,8 +37,8 @@ services:
       # rebuilds. Mount a host directory here instead to reuse an existing
       # Codex or Claude Code login.
       - qunica-home:/home/qunica
-      # DANGER: gives every signed-in agent root-equivalent control of the host.
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Note: Docker control belongs only to the separate Supervisor. Mounting
+      # its socket here would let every agent bypass the computer boundary.
     # Agents spawn shells and external CLI runtimes; without a raised limit a
     # busy group can exhaust the default process budget.
     pids_limit: 4096

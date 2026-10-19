@@ -239,6 +239,9 @@ interface ActiveSend {
 
 interface MessageState {
   byGroup: Record<string, Message[]>
+  deletedMessageIds: Record<string, Set<string>>
+  retiredStreamIds: Record<string, Set<string>>
+  retireStreams: (groupId: string) => void
   inFlightByGroup: Record<string, Record<string, StreamingBubble>>
   activeAgentsByGroup: Record<string, Record<string, ActiveAgent>>
   warningsByGroup: Record<string, string[]>
@@ -617,7 +620,7 @@ function schedulerStatusAcceptsEvents(status: GroupTurnStatus | null): boolean {
 function streamStatusFromSchedulerStatus(status: GroupTurnStatus): StreamRunStatus {
   if (status === 'cancelled') return 'cancelled'
   if (status === 'failed') return 'error'
-  if (status === 'pending' || status === 'running' || status === 'waiting_for_user') {
+  if (status === 'queued' || status === 'pending' || status === 'running' || status === 'waiting_for_user') {
     return 'active'
   }
   return 'completed'
@@ -648,6 +651,7 @@ function reconciledTurnSummary(
       return { ...base, kind: 'silence', message: 'Turn completed without a visible reply' }
     case 'failed':
       return { ...base, kind: 'failed', message: 'Turn failed' }
+    case 'queued':
     case 'pending':
     case 'running':
     case 'completed':
@@ -754,23 +758,32 @@ function mergeHistoryIntoLocal(history: Message[], local: Message[]): Message[] 
     }
     while (cursor <= at && cursor < history.length) {
       const row = history[cursor]
-      merged.push(localById.get(row.id) ?? row)
+      merged.push(row.seq ? row : localById.get(row.id) ?? row)
       cursor += 1
     }
   }
   while (cursor < history.length) {
     const row = history[cursor]
-    merged.push(localById.get(row.id) ?? row)
+    merged.push(row.seq ? row : localById.get(row.id) ?? row)
     cursor += 1
   }
-  return merged
+  return orderServerMessages(merged)
+}
+
+function orderServerMessages(messages: Message[]): Message[] {
+  const formal = messages.filter(message => message.seq && /^\d+$/.test(message.seq))
+    .sort((a, b) => BigInt(a.seq!) < BigInt(b.seq!) ? -1 : BigInt(a.seq!) > BigInt(b.seq!) ? 1 : 0)
+  let at = 0
+  // Optimistic messages keep their local slot until a server row acknowledges them.
+  return messages.map(message => message.seq && /^\d+$/.test(message.seq) ? formal[at++] : message)
 }
 
 /** Replace a message in place when the list already carries its id. */
 function upsertMessage(messages: Message[], message: Message): Message[] {
   const index = messages.findIndex((item) => item.id === message.id)
-  if (index === -1) return [...messages, message]
-  return messages.map((item, itemIndex) => (itemIndex === index ? message : item))
+  if (index === -1) return orderServerMessages([...messages, message])
+  return orderServerMessages(messages.map((item, itemIndex) => (itemIndex === index
+    ? item.seq && !message.seq ? item : message : item)))
 }
 
 function pruneStreamRuns(
@@ -803,6 +816,13 @@ function pruneStreamRunIdMap(
 
 export const useMessageStore = create<MessageState>((set, get) => ({
   byGroup: {},
+  deletedMessageIds: {},
+  retiredStreamIds: {},
+  retireStreams: (groupId) => set(s => ({
+    retiredStreamIds: { ...s.retiredStreamIds, [groupId]: new Set([...(s.retiredStreamIds[groupId] ?? []), ...Object.keys(s.streamRunsByGroup[groupId] ?? {})]) },
+    inFlightByGroup: { ...s.inFlightByGroup, [groupId]: {} },
+    activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: {} },
+  })),
   inFlightByGroup: {},
   activeAgentsByGroup: {},
   warningsByGroup: {},
@@ -817,6 +837,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   setHistory: (groupId, messages) =>
     set((s) => {
+      messages = messages.filter(message => !s.deletedMessageIds[groupId]?.has(message.id))
       const hasActiveStream =
         Boolean(s.activeSendsByGroup[groupId]) ||
         Object.values(s.activeResumesByMessageId).some(
@@ -847,6 +868,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   clearGroupMessages: (groupId) =>
     set((s) => ({
+      deletedMessageIds: { ...s.deletedMessageIds, [groupId]: new Set([...(s.deletedMessageIds[groupId] ?? []), ...(s.byGroup[groupId] ?? []).map(message => message.id)]) },
+      retiredStreamIds: { ...s.retiredStreamIds, [groupId]: new Set([...(s.retiredStreamIds[groupId] ?? []), ...Object.keys(s.streamRunsByGroup[groupId] ?? {})]) },
       byGroup: { ...s.byGroup, [groupId]: [] },
       inFlightByGroup: { ...s.inFlightByGroup, [groupId]: {} },
       activeAgentsByGroup: { ...s.activeAgentsByGroup, [groupId]: {} },
@@ -866,6 +889,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       const groupRunIdsByMessage = s.streamRunIdByUserMessageIdByGroup[groupId] ?? {}
       const runId = groupRunIdsByMessage[messageId]
       const nextState: Partial<MessageState> = {
+        deletedMessageIds: { ...s.deletedMessageIds, [groupId]: new Set([...(s.deletedMessageIds[groupId] ?? []), messageId]) },
+        retiredStreamIds: runId ? { ...s.retiredStreamIds, [groupId]: new Set([...(s.retiredStreamIds[groupId] ?? []), runId]) } : s.retiredStreamIds,
         byGroup: {
           ...s.byGroup,
           [groupId]: messages.filter((message) => message.id !== messageId),
@@ -902,7 +927,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         // Note: an id already on screen means the row came back from a refetch
         // or a replayed stream event; appending a second copy would put it at
         // the bottom of the list and duplicate its React key.
-        [groupId]: upsertMessage(s.byGroup[groupId] ?? [], message),
+        [groupId]: s.deletedMessageIds[groupId]?.has(message.id) ? s.byGroup[groupId] ?? [] : upsertMessage(s.byGroup[groupId] ?? [], message),
       },
     })),
 
@@ -992,6 +1017,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   finalizeInFlight: (groupId, message) =>
     set((s) => {
+      if (s.deletedMessageIds[groupId]?.has(message.id)) return {}
       const agentId = message.sender_id ?? ''
       const groupInFlight = s.inFlightByGroup[groupId] ?? {}
       const remaining = { ...groupInFlight }
@@ -1353,6 +1379,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   finalizeStreamDraft: (groupId, streamId, message, displayName) =>
     set((s) => {
+      if (s.deletedMessageIds[groupId]?.has(message.id) || s.retiredStreamIds[groupId]?.has(streamId)) return {}
       const agentId = message.sender_id ?? 'unknown-agent'
       const groupRuns = s.streamRunsByGroup[groupId] ?? {}
       const groupOrder = s.streamRunOrderByGroup[groupId] ?? []
@@ -1619,6 +1646,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     ),
 
   applySchedulerEvent: (groupId, streamId, update) => {
+    if (get().retiredStreamIds[groupId]?.has(streamId)) return false
     if (update.stream_id !== streamId) return false
     const groupRuns = get().streamRunsByGroup[groupId] ?? {}
     const existing = groupRuns[streamId]
@@ -1731,6 +1759,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     }),
 
   acceptsStreamEvent: (groupId, streamId) => {
+    if (get().retiredStreamIds[groupId]?.has(streamId)) return false
     const run = get().streamRunsByGroup[groupId]?.[streamId]
     return !run || schedulerStatusAcceptsEvents(run.scheduler_status)
   },

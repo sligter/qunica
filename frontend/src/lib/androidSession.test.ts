@@ -3,9 +3,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 
-afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); mocks.invoke.mockReset(); localStorage.clear() })
+afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.resetModules(); mocks.invoke.mockReset(); localStorage.clear() })
 
 describe('Android remote session', () => {
+  it('preserves a paired device identity when selecting a direct server and restores it without an old token', async () => {
+    const lan={endpoint:'192.168.1.4:8766',publicKey:'pinned',credential:'device-secret'}
+    mocks.invoke.mockResolvedValueOnce({value:JSON.stringify({server:'https://qunica-lan.invalid',token:'old-account',lan})}).mockResolvedValue({})
+    const session=await import('./androidSession')
+    await session.initializeAndroidSession()
+    await session.changeAndroidServer('https://remote.example')
+    expect(session.useAndroidSession.getState().server).toBe('https://remote.example')
+    expect(session.hasSavedAndroidPairing()).toBe(true)
+    const writes=mocks.invoke.mock.calls.filter(([name])=>name==='mobile_session_write')
+    expect(JSON.parse(writes.at(-1)![1].value)).toEqual({server:'https://remote.example',token:null,savedLan:lan})
+    await session.restoreAndroidPairing()
+    expect(session.useAndroidSession.getState().server).toBe(session.LAN_ORIGIN)
+    expect(JSON.parse(mocks.invoke.mock.calls.filter(([name])=>name==='mobile_session_write').at(-1)![1].value)).toEqual({server:session.LAN_ORIGIN,token:null,lan})
+    expect(localStorage.length).toBe(0)
+  })
   it('saves a paired desktop login directly in the vault and separates it from device identity', async () => {
     const lan = { endpoint: '192.168.1.4:8766', publicKey: 'pinned-key', credential: 'device-secret' }
     mocks.invoke.mockResolvedValueOnce({ ...lan, accountToken: 'desktop-account-token' }).mockResolvedValue({})
@@ -142,6 +157,27 @@ describe('Android remote session', () => {
     await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledTimes(3))
     expect(useAuthStore.getState().token).toBeNull()
     expect(JSON.parse(mocks.invoke.mock.calls[2][1].value).token).toBeNull()
+  })
+
+  it('clears a legacy token from Keystore while keeping the configured server', async () => {
+    vi.stubEnv('MODE', 'android')
+    mocks.invoke.mockResolvedValueOnce({ value: JSON.stringify({ server: 'https://phone.example', token: 'legacy-token' }) })
+    const session = await import('./androidSession')
+    const token = await session.initializeAndroidSession()
+    const { useAuthStore } = await import('@/stores/authStore')
+    useAuthStore.setState({ token })
+    mocks.invoke.mockResolvedValue({})
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: 'session_upgrade_required', message: 'Sign in again' },
+    }), { status: 401 })))
+    const { authFetch } = await import('./authFetch')
+    await authFetch('https://phone.example/api/v2/auth/me', { headers: { Authorization: 'Bearer legacy-token' } })
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('mobile_session_write', {
+      value: JSON.stringify({ server: 'https://phone.example', token: null }),
+    }))
+    expect(session.useAndroidSession.getState().server).toBe('https://phone.example')
+    expect(useAuthStore.getState()).toMatchObject({ token: null, loginNotice: 'session_upgrade_required' })
+    expect(localStorage.getItem('qunica:auth:v1')).toBeNull()
   })
 
   it('surfaces persistence errors and permits retry without browser credential storage', async () => {

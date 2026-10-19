@@ -49,6 +49,9 @@ macro_rules! doc {
 }
 
 static DOCS: &[Doc] = &[
+    doc!("computers", "Controlled computers", "computer supervisor docker container sandbox home generation controlled execution isolation"),
+    doc!("realtime", "Realtime synchronization", "websocket ws sse account snapshot cursor command receipt job approval restart session ticket sync devices"),
+    doc!("automations", "Automations", "automation schedule cron timer webhook hmac signature timezone missed run pause queue budget occurrence"),
     doc!(
         "getting-started",
         "Getting started",

@@ -1,6 +1,16 @@
 import { Suspense } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
-import { ArrowLeft, Images, Scale, ScrollText, Settings, Sparkles, SlidersHorizontal } from 'lucide-react'
+import {
+  ArrowLeft,
+  CalendarClock,
+  Monitor,
+  Images,
+  Scale,
+  ScrollText,
+  Settings,
+  Sparkles,
+  SlidersHorizontal,
+} from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { RouteFallback } from '@/components/layout/RouteFallback'
@@ -23,6 +33,17 @@ export function SettingsLayout() {
         { to: '/settings/system', label: t('settings:tabs.system'), icon: SlidersHorizontal },
         { to: '/settings/media', label: t('settings:tabs.media'), icon: Images },
         { to: '/settings/decision', label: t('settings:tabs.decision'), icon: Scale },
+      ],
+    },
+    {
+      label: t('settings:groups.automation'),
+      items: [
+        { to: '/settings/computers', label: t('computers:title'), icon: Monitor },
+        {
+          to: '/settings/automations',
+          label: t('settings:tabs.automations'),
+          icon: CalendarClock,
+        },
       ],
     },
     {
