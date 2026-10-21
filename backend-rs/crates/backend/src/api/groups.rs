@@ -1596,6 +1596,11 @@ pub async fn enhance_group_prompt(
         &model,
         provider_row.reasoning_passback != 0,
     );
+    let capabilities = crate::llm::model_capabilities(
+        &provider_row.kind,
+        provider_row.models_json.as_deref(),
+        &model,
+    );
     let context =
         group_prompt_context(state.db.pool(), &group, &owner_id, thread_id.as_deref()).await?;
     let enhancement_agent = serde_json::json!({
@@ -1616,6 +1621,8 @@ pub async fn enhance_group_prompt(
         user_agent: provider_row.user_agent,
         default_model: provider_row.default_model,
         reasoning_passback,
+        supports_temperature: capabilities.temperature,
+        supports_reasoning_effort: capabilities.reasoning_effort,
         context_window_tokens: None,
         context_output_reserve_ratio: None,
     };
@@ -1637,7 +1644,8 @@ pub async fn enhance_group_prompt(
                     .to_string(),
                 ),
             ],
-            temperature: Some(0.2),
+            temperature: capabilities.temperature.then_some(0.2),
+            top_p: None,
             reasoning_passback,
             include_empty_tools: false,
             tools: Vec::new(),
@@ -2793,6 +2801,11 @@ pub async fn generate_group_workspace_git_commit_message(
         &model,
         provider_row.reasoning_passback != 0,
     );
+    let capabilities = crate::llm::model_capabilities(
+        &provider_row.kind,
+        provider_row.models_json.as_deref(),
+        &model,
+    );
     let provider_config = ProviderConfig {
         kind: provider_row.kind,
         base_url: provider_row.base_url,
@@ -2801,6 +2814,8 @@ pub async fn generate_group_workspace_git_commit_message(
         user_agent: provider_row.user_agent,
         default_model: provider_row.default_model,
         reasoning_passback,
+        supports_temperature: capabilities.temperature,
+        supports_reasoning_effort: capabilities.reasoning_effort,
         context_window_tokens: None,
         context_output_reserve_ratio: None,
     };
@@ -2819,7 +2834,8 @@ pub async fn generate_group_workspace_git_commit_message(
     let request = ChatRequest {
         model,
         messages: commit_message_prompt(&diff, prompt),
-        temperature: Some(0.2),
+        temperature: capabilities.temperature.then_some(0.2),
+        top_p: None,
         reasoning_passback: provider_config.reasoning_passback,
         include_empty_tools: false,
         tools: Vec::new(),

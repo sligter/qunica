@@ -441,6 +441,8 @@ export interface ProviderModelConfig {
   context_output_reserve_ratio: number | null
   /** Whether this model accepts a reasoning-effort setting. */
   supports_reasoning_effort?: boolean
+  /** Whether this model accepts `temperature` / `top_p`; undefined means infer. */
+  supports_temperature?: boolean
   reasoning_passback?: boolean
 }
 
@@ -883,6 +885,8 @@ export interface MessageAttachment {
 export interface MessageSendInput {
   content: string
   attachments: Array<Pick<MessageAttachment, 'path'>>
+  /** Thinking depth for this message. Omitted means follow the Agent. */
+  effort_override?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /** Model for this message only. Omitted means the agent's configured one. */
   model_override?: string
 }

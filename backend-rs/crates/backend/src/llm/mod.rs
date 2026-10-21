@@ -53,6 +53,22 @@ pub struct ProviderHttpError {
 }
 
 impl ProviderHttpError {
+    /// Whether the provider rejected the turn because the reasoning behind a
+    /// tool call was not echoed back.
+    ///
+    /// DeepSeek's thinking mode states that, when `tools` is present, every
+    /// previous `reasoning_content` must be passed back; a request with
+    /// passback off answers with this 400. Matching the body is the only
+    /// portable signal, and a false positive only costs one retry.
+    pub fn requires_reasoning_passback(&self) -> bool {
+        if self.status != 400 {
+            return false;
+        }
+        let body = self.body.to_lowercase();
+        body.contains("reasoning_content")
+            && (body.contains("passed back") || body.contains("must be passed"))
+    }
+
     /// A rendering safe to show a user: the status, without the body.
     ///
     /// The body is kept on the struct for classification and server-side logs,
@@ -129,6 +145,14 @@ pub struct ProviderConfig {
     pub user_agent: Option<String>,
     pub default_model: String,
     pub reasoning_passback: bool,
+    /// Whether the selected model accepts `temperature` / `top_p`.
+    ///
+    /// Resolved per model rather than per provider kind: an OpenAI reasoning
+    /// model and a classic chat model share the same endpoint but disagree
+    /// outright about sampling parameters.
+    pub supports_temperature: bool,
+    /// Whether the selected model accepts `reasoning_effort`.
+    pub supports_reasoning_effort: bool,
     /// Total context window size in tokens, if the provider declares one.
     pub context_window_tokens: Option<i64>,
     /// Fraction of the window reserved for model output (0.0..=1.0).
@@ -142,23 +166,119 @@ pub struct ProviderModelConfig {
     pub context_window_tokens: Option<i64>,
     #[serde(default)]
     pub context_output_reserve_ratio: Option<f64>,
-    /// Whether this model accepts a reasoning-effort setting.
+    /// Explicit "this model accepts a reasoning-effort setting" opt-in.
     ///
-    /// Defaults to false so the control stays hidden until someone says
-    /// otherwise: sending the field to a model that rejects it turns a normal
-    /// question into a provider error, and models that predate this flag have
-    /// no value stored.
+    /// False is the stored default for historical providers, so it cannot mean
+    /// "this model rejects the field": doing that would silently switch
+    /// thinking off for every agent configured before the capability existed.
+    /// The effective answer combines this opt-in with the model family — see
+    /// [`model_capabilities`]. The provider form leaves the field alone; it is
+    /// for an API client with a custom model name.
     #[serde(default)]
     pub supports_reasoning_effort: bool,
+    /// Explicit sampling-parameter override, set through the API.
+    ///
+    /// `None` means infer from the model id. `Some(false)` is for a gateway
+    /// that rejects `temperature` even though its model name looks ordinary.
+    /// The provider form does not edit this, so inference stays authoritative.
+    #[serde(default)]
+    pub supports_temperature: Option<bool>,
     /// Whether prior reasoning is sent back during this model's tool loop.
     #[serde(default)]
     pub reasoning_passback: Option<bool>,
 }
 
-pub fn model_context_config(models_json: Option<&str>, model: &str) -> (Option<i64>, Option<f64>) {
+/// The per-model capabilities the provider request path has to honour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelCapabilities {
+    pub temperature: bool,
+    pub reasoning_effort: bool,
+}
+
+fn stored_model_config(models_json: Option<&str>, model: &str) -> Option<ProviderModelConfig> {
     models_json
         .and_then(|raw| serde_json::from_str::<Vec<ProviderModelConfig>>(raw).ok())
         .and_then(|models| models.into_iter().find(|item| item.id == model))
+}
+
+/// The provider kinds whose wire format is the OpenAI chat dialect, where the
+/// model name is the only signal for sampling/reasoning support.
+fn is_openai_like_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "openai-compatible"
+            | "openai_compatible"
+            | "openai"
+            | "openai-responses"
+            | "deepseek"
+            | "vllm"
+            | "openrouter"
+    )
+}
+
+/// The model id without a gateway's `vendor/` prefix or `:variant` suffix.
+fn model_name_core(model: &str) -> String {
+    let base = model.rsplit('/').next().unwrap_or(model);
+    let base = base.split(':').next().unwrap_or(base);
+    base.trim().to_ascii_lowercase()
+}
+
+/// OpenAI reasoning families reject `temperature`; their chat snapshots do not.
+fn is_openai_reasoning_model(model: &str) -> bool {
+    let name = model_name_core(model);
+    if name.contains("-chat") {
+        return false;
+    }
+    ["o1", "o3", "o4", "gpt-5", "gpt-6", "gpt-7", "codex"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+/// OpenAI chat models that are known **not** to reason. Sending
+/// `reasoning_effort` to one is a provider error, so these are the only models
+/// the request path withholds it from; everything unknown keeps the field, as
+/// a custom gateway may well understand it.
+fn is_known_non_reasoning_openai_model(model: &str) -> bool {
+    let name = model_name_core(model);
+    ["gpt-3", "gpt-4", "chatgpt"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+        || (name.starts_with("gpt-5") && name.contains("-chat"))
+        || (name.starts_with("gpt-6") && name.contains("-chat"))
+}
+
+// Note: the model family is the source of truth and the stored flags are
+// opt-in overrides. Every provider created before these capabilities existed
+// stores `false`, so treating that as "model rejects it" would silently turn
+// thinking off for existing agents.
+/// Resolve the capabilities the request path must honour for `model`.
+///
+/// The stored flags are overrides, not the source of truth: a provider created
+/// before either capability existed stores neither, and the model family is
+/// what the provider will actually accept. For existing providers the practical
+/// effect is "thinking still works, classic chat models stop receiving
+/// `reasoning_effort`, and OpenAI reasoning models stop receiving
+/// `temperature`".
+pub fn model_capabilities(kind: &str, models_json: Option<&str>, model: &str) -> ModelCapabilities {
+    let stored = stored_model_config(models_json, model);
+    let openai_like = is_openai_like_kind(kind);
+    let temperature = stored
+        .as_ref()
+        .and_then(|item| item.supports_temperature)
+        .unwrap_or_else(|| !(openai_like && is_openai_reasoning_model(model)));
+    let reasoning_effort = stored
+        .as_ref()
+        .is_some_and(|item| item.supports_reasoning_effort)
+        || !openai_like
+        || !is_known_non_reasoning_openai_model(model);
+    ModelCapabilities {
+        temperature,
+        reasoning_effort,
+    }
+}
+
+pub fn model_context_config(models_json: Option<&str>, model: &str) -> (Option<i64>, Option<f64>) {
+    stored_model_config(models_json, model)
         .map(|item| {
             (
                 item.context_window_tokens,
@@ -186,6 +306,32 @@ pub fn model_reasoning_passback(
         .find(|item| item.id == model)
         .and_then(|item| item.reasoning_passback)
         .unwrap_or(false)
+}
+
+/// Read an agent's configured sampling temperature.
+///
+/// Out-of-range values are clamped rather than rejected: the form validates
+/// them, and an imported or hand-edited config should not turn every turn into
+/// a provider error.
+pub fn temperature_from_config(model_config_json: Option<&str>) -> Option<f64> {
+    sampling_from_config(model_config_json, "temperature", 0.0, 2.0)
+}
+
+/// Read an agent's configured `top_p`.
+pub fn top_p_from_config(model_config_json: Option<&str>) -> Option<f64> {
+    sampling_from_config(model_config_json, "top_p", 0.0, 1.0)
+}
+
+fn sampling_from_config(
+    model_config_json: Option<&str>,
+    key: &str,
+    min: f64,
+    max: f64,
+) -> Option<f64> {
+    let value = model_config_json
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.get(key).and_then(serde_json::Value::as_f64))?;
+    value.is_finite().then(|| value.clamp(min, max))
 }
 
 /// A streaming chat completion provider.
@@ -416,7 +562,10 @@ pub(crate) fn sse_data(line: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{model_context_config, model_reasoning_passback};
+    use super::{
+        model_capabilities, model_context_config, model_reasoning_passback,
+        temperature_from_config, top_p_from_config, ProviderHttpError,
+    };
 
     #[test]
     fn model_context_config_uses_the_selected_model() {
@@ -438,5 +587,95 @@ mod tests {
             "legacy",
             true
         ));
+    }
+
+    #[test]
+    fn model_capabilities_infer_the_model_family() {
+        // OpenAI reasoning models reject sampling parameters but understand
+        // the effort enum (their chat snapshots are the exception).
+        for model in ["o3-mini", "o4-mini", "gpt-5.5", "openai/gpt-5:free"] {
+            let capabilities = model_capabilities("openai-compatible", None, model);
+            assert!(!capabilities.temperature, "{model}");
+            assert!(capabilities.reasoning_effort, "{model}");
+        }
+        assert!(model_capabilities("openai-compatible", None, "gpt-5-chat-latest").temperature);
+        assert!(model_capabilities("openai-compatible", None, "gpt-6-astra").reasoning_effort);
+
+        // Classic chat models keep temperature and must not get the effort.
+        let gpt4 = model_capabilities("openai-compatible", None, "gpt-4o-mini");
+        assert!(gpt4.temperature);
+        assert!(!gpt4.reasoning_effort);
+
+        // DeepSeek accepts both (thinking mode ignores temperature rather than
+        // rejecting it), and unknown custom names are left alone.
+        let deepseek = model_capabilities("openai-compatible", None, "deepseek-reasoner");
+        assert!(deepseek.temperature);
+        assert!(deepseek.reasoning_effort);
+        let custom = model_capabilities("openai-compatible", None, "my-reasoner");
+        assert!(custom.temperature);
+        assert!(custom.reasoning_effort);
+
+        // Native thinking providers always take the field.
+        let claude = model_capabilities("anthropic", None, "claude-sonnet-4-5");
+        assert!(claude.temperature);
+        assert!(claude.reasoning_effort);
+    }
+
+    #[test]
+    fn model_capabilities_honour_explicit_overrides() {
+        let raw = r#"[
+            {"id":"gpt-4o","supports_temperature":false,"supports_reasoning_effort":true},
+            {"id":"custom","supports_temperature":true,"supports_reasoning_effort":false}
+        ]"#;
+
+        let classic = model_capabilities("openai-compatible", Some(raw), "gpt-4o");
+        assert!(!classic.temperature, "explicit temperature false wins");
+        assert!(
+            classic.reasoning_effort,
+            "explicit effort true overrides the family inference"
+        );
+
+        let custom = model_capabilities("openai-compatible", Some(raw), "custom");
+        assert!(custom.temperature);
+        assert!(
+            custom.reasoning_effort,
+            "unknown names keep the field: historical configs store false by default"
+        );
+    }
+
+    #[test]
+    fn sampling_settings_are_read_as_f64_and_bounded() {
+        let raw = r#"{"temperature":0.95,"top_p":0.8}"#;
+        assert_eq!(temperature_from_config(Some(raw)), Some(0.95));
+        assert_eq!(top_p_from_config(Some(raw)), Some(0.8));
+        assert_eq!(
+            temperature_from_config(Some(r#"{"temperature":9}"#)),
+            Some(2.0)
+        );
+        assert_eq!(top_p_from_config(Some(r#"{"top_p":-1}"#)), Some(0.0));
+        assert_eq!(
+            temperature_from_config(Some(r#"{"temperature":"hot"}"#)),
+            None
+        );
+        assert_eq!(temperature_from_config(Some("{}")), None);
+    }
+
+    #[test]
+    fn deepseek_passback_rejection_is_recognised() {
+        let error = ProviderHttpError {
+            status: 400,
+            body: "{\"error\":{\"message\":\"The `reasoning_content` in the thinking mode must be passed back to the API.\"}}".to_string(),
+        };
+        assert!(error.requires_reasoning_passback());
+        let unrelated = ProviderHttpError {
+            status: 400,
+            body: "context length exceeded".to_string(),
+        };
+        assert!(!unrelated.requires_reasoning_passback());
+        let wrong_status = ProviderHttpError {
+            status: 500,
+            body: "reasoning_content must be passed back".to_string(),
+        };
+        assert!(!wrong_status.requires_reasoning_passback());
     }
 }

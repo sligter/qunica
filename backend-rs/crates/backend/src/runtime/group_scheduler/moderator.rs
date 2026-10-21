@@ -150,7 +150,13 @@ pub async fn select_with_moderator(
     let request = bounded_request(request);
     let automatic = request.automatic;
     let candidates = request.candidates.clone();
-    let chat_request = moderator_chat_request(config, &request);
+    let mut chat_request = moderator_chat_request(config, &request);
+    // Routing is deterministic already; a reasoning model that rejects
+    // sampling parameters must not be sent a temperature just because the
+    // moderator has one of its own.
+    if !provider_cfg.supports_temperature {
+        chat_request.temperature = None;
+    }
 
     let deadline = tokio::time::Instant::now() + config.timeout;
     let provider_called = true;
@@ -204,6 +210,8 @@ async fn resolve_provider(
         &config.model,
         row.reasoning_passback != 0,
     );
+    let capabilities =
+        crate::llm::model_capabilities(&row.kind, row.models_json.as_deref(), &config.model);
 
     Ok(ProviderConfig {
         kind: row.kind,
@@ -213,6 +221,8 @@ async fn resolve_provider(
         user_agent: row.user_agent,
         default_model: row.default_model,
         reasoning_passback,
+        supports_temperature: capabilities.temperature,
+        supports_reasoning_effort: capabilities.reasoning_effort,
         context_window_tokens: model_window.or(row.context_window_tokens),
         context_output_reserve_ratio: model_reserve.or(row.context_output_reserve_ratio),
     })
@@ -249,6 +259,7 @@ fn moderator_chat_request(config: &ModeratorConfig, request: &ModeratorRequest) 
             ChatMessage::text("user", input.to_string()),
         ],
         temperature: Some(0.0),
+        top_p: None,
         reasoning_passback: false,
         include_empty_tools: true,
         tools: Vec::new(),

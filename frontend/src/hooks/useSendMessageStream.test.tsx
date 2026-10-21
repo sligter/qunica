@@ -243,6 +243,16 @@ describe('useSendMessageStream scheduler events', () => {
     })
   })
 
+  it('keeps the chosen thinking effort in the direct-chat transport request', () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useSendMessageStream('chat-1', { scope: 'direct-chats' }), {
+      wrapper: wrapper(queryClient),
+    })
+    act(() => ignoreSend(hook.result.current.send({ content: 'think deeply', attachments: [], effort_override: 'max' })))
+    expect(mocks.streams[0]?.body).toMatchObject({ content: 'think deeply', effort_override: 'max' })
+    expect(mocks.streams[0]?.url).toContain('/direct-chats/chat-1/')
+  })
+
   it('resolves send on the persisted user-message acknowledgement before agents finish', async () => {
     const queryClient = new QueryClient()
     const hook = renderHook(() => useSendMessageStream('group-1'), {

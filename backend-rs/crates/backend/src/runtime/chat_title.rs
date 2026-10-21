@@ -138,6 +138,7 @@ async fn try_generate(pool: &SqlitePool, group_id: &str) -> anyhow::Result<Optio
         &owner_id,
         &provider_id,
         &model_config_json,
+        None,
     )
     .await
     {
@@ -198,6 +199,7 @@ async fn generate_title_with_provider(
             ChatMessage::text("user", &prompt),
         ],
         temperature: None,
+        top_p: None,
         // One-shot transcription-style call: no thinking budget, no tools.
         reasoning_passback: false,
         include_empty_tools: false,

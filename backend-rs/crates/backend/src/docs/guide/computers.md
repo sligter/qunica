@@ -9,6 +9,20 @@ for observed checks and the remaining external acceptance gates.
 
 ## Deployment
 
+**Settings → Computers → Setup guide** shows the deployment quick start and
+opens this bundled deployment guide, including when no Supervisor is configured.
+It works without an external documentation site. The desktop
+instance menu beside the Qunica logo lists Local and previously connected
+servers, and offers **Add server**. Changing instances clears the previous
+instance's active login and cached data; choosing the current instance preserves
+its login.
+
+Desktop **Local mode** starts the embedded backend and uses the existing local
+database and workspaces without Docker or a Supervisor. Choose it on first entry
+or from **Switch instance**. Instance selection does not change execution
+bindings: explicitly unbind a group or Agent in computer settings to restore host
+execution. An unavailable bound computer never silently falls back to the host.
+
 The application has no Docker socket. The optional Supervisor alone controls
 Docker through a separate authenticated, internal interface. It has neither the
 application database nor vendor model keys. API callers cannot choose arbitrary

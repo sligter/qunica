@@ -155,7 +155,15 @@ impl ChatMessage {
 pub struct ChatRequest {
     pub model: String,
     pub messages: Vec<ChatMessage>,
-    pub temperature: Option<f32>,
+    /// Sampling temperature, omitted rather than sent as null when `None`.
+    ///
+    /// `f64` rather than `f32`: the value travels from JSON configuration to
+    /// the wire, and an `f32` re-serialized through `serde_json` emits binary
+    /// noise (`0.95` becomes `0.949999988079071`).
+    pub temperature: Option<f64>,
+    /// Nucleus sampling, omitted rather than sent as null when `None`.
+    #[serde(default)]
+    pub top_p: Option<f64>,
     pub reasoning_passback: bool,
     #[serde(default)]
     pub include_empty_tools: bool,

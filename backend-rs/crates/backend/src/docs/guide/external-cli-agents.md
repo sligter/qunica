@@ -19,9 +19,22 @@ Qunica detects and launches these CLIs; it does not manage their accounts. Insta
 
 - **command** and **args** — what to run.
 - **model** — which model the CLI should use, when it accepts one.
-- **thinking_effort** — reasoning depth, for runtimes that expose it. Codex and Claude Code spell this differently; Qunica maps it per profile.
+- **thinking_effort** — reasoning depth, for runtimes that expose it. Qunica uses the runtime's declared `thought_level` config option, including model-dependent option IDs. Older adapters use profile-specific fallback names. A runtime that does not implement the setting emits a visible warning; a returned value that differs from the requested effort fails the turn before prompting. DeepSeek Harness applies its supported `off` / `high` / `max` settings through its managed Cordis configuration. The same session-setting path applies to container OpenCode.
 - **timeout_seconds** — how long one run may take.
 - **permission_policy** — how to answer the CLI's permission prompts.
+
+The direct-chat composer offers a per-message thinking selector for API models
+that advertise support. **Follow Agent** omits the override and uses the Agent's
+saved configuration. ACP runtime choices remain in the Agent's runtime settings;
+they can differ from the API model's five depth levels. A message-level effort
+submitted through the API also takes precedence for ACP. Selecting a depth sends
+the provider or runtime's native setting; it does not guarantee a particular
+amount of reasoning or expose its private reasoning.
+
+The configuration identifiers follow the runtime's
+[ACP session config options](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v2/schema.mdx).
+API model levels follow their provider dialect, including
+[OpenAI reasoning effort](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
 
 ## Shared group notes
 

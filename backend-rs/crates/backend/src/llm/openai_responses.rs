@@ -128,6 +128,9 @@ fn request_body(request: &ChatRequest) -> Value {
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
+    if let Some(top_p) = request.top_p {
+        body["top_p"] = json!(top_p);
+    }
     if let Some(effort) = request.reasoning_effort {
         body["reasoning"] = json!({"effort": effort.as_str(), "summary": "auto"});
     }

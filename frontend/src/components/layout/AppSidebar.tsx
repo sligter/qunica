@@ -30,6 +30,7 @@ import {
 } from '@/hooks/useDirectChats'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { BrandMark } from '@/components/brand/BrandMark'
+import { DesktopInstanceSwitcher } from '@/components/layout/DesktopInstanceSwitcher'
 import { ConversationStatusIndicator } from '@/components/chat/ConversationStatusDot'
 import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { OverlayNavLink, useOverlayLinkState } from '@/components/layout/overlayRouting'
@@ -370,6 +371,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean } = {}) {
             <span className="min-w-0 flex-1 truncate font-serif text-sm font-semibold tracking-tight">
               Qunica
             </span>
+            <DesktopInstanceSwitcher />
           </>
         )}
         <Button

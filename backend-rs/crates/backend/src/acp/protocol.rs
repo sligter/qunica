@@ -133,6 +133,7 @@ pub struct AcpConnection {
     writer_tx: mpsc::UnboundedSender<WriterMessage>,
     pending: PendingMap,
     events_tx: EventSink,
+    config_options: Arc<Mutex<Vec<Value>>>,
     next_id: Arc<AtomicI64>,
     stdout_tail: Arc<Mutex<Tail>>,
     reader: JoinHandle<()>,
@@ -156,6 +157,7 @@ impl AcpConnection {
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let events_tx: EventSink = Arc::new(Mutex::new(Some(events_tx)));
         let stdout_tail = Arc::new(Mutex::new(Tail::new()));
+        let config_options = Arc::new(Mutex::new(Vec::new()));
 
         let writer = tokio::spawn(async move {
             let mut stdin = stdin;
@@ -180,6 +182,7 @@ impl AcpConnection {
         let reader_events_tx = events_tx.clone();
         let reader_raw_updates_tx = raw_updates_tx;
         let reader_stdout_tail = stdout_tail.clone();
+        let reader_config_options = config_options.clone();
         let reader = tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             // Ends on stdout EOF (`Ok(None)`) or a read error (`Err`).
@@ -196,6 +199,7 @@ impl AcpConnection {
                     permission_policy,
                     &reader_events_tx,
                     &reader_raw_updates_tx,
+                    &reader_config_options,
                 )
                 .await;
             }
@@ -209,6 +213,7 @@ impl AcpConnection {
             writer_tx,
             pending,
             events_tx,
+            config_options,
             next_id: Arc::new(AtomicI64::new(1)),
             stdout_tail,
             reader,
@@ -244,6 +249,9 @@ impl AcpConnection {
 
     /// Send a JSON-RPC request and await its response.
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, ProtocolError> {
+        if matches!(method, METHOD_SESSION_NEW | METHOD_SESSION_LOAD) {
+            self.config_options.lock().await.clear();
+        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
@@ -267,6 +275,10 @@ impl AcpConnection {
             }),
             Err(_) => Err(ProtocolError::TransportClosed),
         }
+    }
+
+    pub(super) async fn config_options(&self) -> Vec<Value> {
+        self.config_options.lock().await.clone()
     }
 
     /// Send a fire-and-forget JSON-RPC notification (no response expected).
@@ -342,6 +354,7 @@ async fn route_incoming(
     permission_policy: PermissionPolicy,
     events_tx: &EventSink,
     raw_updates_tx: &RawUpdateSink,
+    config_options: &Arc<Mutex<Vec<Value>>>,
 ) {
     let trimmed = line.trim();
     if trimmed.is_empty() || !trimmed.starts_with('{') {
@@ -369,6 +382,9 @@ async fn route_incoming(
                     .get("params")
                     .and_then(|params| params.get("update"))
                 {
+                    if let Some(options) = update.get("configOptions").and_then(Value::as_array) {
+                        *config_options.lock().await = options.clone();
+                    }
                     if let Some(raw_updates_tx) = raw_updates_tx {
                         let _ = raw_updates_tx.send(update.clone()).await;
                     }
@@ -397,6 +413,12 @@ async fn route_incoming(
                     Ok(message.get("result").cloned().unwrap_or(Value::Null))
                 };
                 if let Some(tx) = pending.lock().await.remove(&id) {
+                    if let Ok(result) = &outcome {
+                        if let Some(options) = result.get("configOptions").and_then(Value::as_array)
+                        {
+                            *config_options.lock().await = options.clone();
+                        }
+                    }
                     if let (Ok(result), Some(raw_updates_tx)) = (&outcome, raw_updates_tx) {
                         let _ = raw_updates_tx.send(result.clone()).await;
                     }

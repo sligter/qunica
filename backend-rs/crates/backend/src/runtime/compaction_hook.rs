@@ -126,6 +126,10 @@ pub fn is_context_overflow(error: &anyhow::Error) -> bool {
 pub struct ProviderSummarizer {
     provider: Arc<dyn LlmProvider>,
     model: String,
+    /// Whether this model accepts a reasoning-effort hint. A classic chat
+    /// model rejects the field, and a failed summary silently changes the
+    /// compaction result, so it is only sent when the model can take it.
+    supports_reasoning_effort: bool,
     /// Total tokens the summarizer has spent across every pass this turn.
     ///
     /// Providers report usage on the stream (as `ChatDelta::Usage`), which the
@@ -137,10 +141,15 @@ pub struct ProviderSummarizer {
 }
 
 impl ProviderSummarizer {
-    pub fn new(provider: Arc<dyn LlmProvider>, model: String) -> Self {
+    pub fn new(
+        provider: Arc<dyn LlmProvider>,
+        model: String,
+        supports_reasoning_effort: bool,
+    ) -> Self {
         Self {
             provider,
             model,
+            supports_reasoning_effort,
             usage: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -156,12 +165,16 @@ impl Summarizer for ProviderSummarizer {
                 ChatMessage::text("user", transcript),
             ],
             temperature: None,
+            top_p: None,
             reasoning_passback: false,
             include_empty_tools: false,
             tools: Vec::new(),
             // A summary is transcription, not deliberation; thinking budget
-            // spent here is taken from the turn that needed the room.
-            reasoning_effort: Some(ReasoningEffort::Low),
+            // spent here is taken from the turn that needed the room. Models
+            // that reject the field get it omitted rather than fail the pass.
+            reasoning_effort: self
+                .supports_reasoning_effort
+                .then_some(ReasoningEffort::Low),
         };
         let stream = self.provider.stream(request).await?;
         let (text, tokens) = collect_text(stream).await;

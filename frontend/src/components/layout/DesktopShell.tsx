@@ -3,25 +3,40 @@ import { invoke } from '@tauri-apps/api/core'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { ServerConnectionForm } from './ServerConnectionForm'
-import { saveDesktopConnection, useDesktopConnection, type DesktopConnection } from '@/lib/desktopConnection'
+import { hasDesktopConnection, saveDesktopConnection, useDesktopConnection, type DesktopConnection } from '@/lib/desktopConnection'
 import { useAuthStore } from '@/stores/authStore'
 import { checkInstance } from '@/lib/realtime/instance'
+import { DesktopInstanceContext } from '@/lib/desktopInstanceContext'
 
 export function DesktopShell({ children }: { children: ReactNode }) {
   const { i18n } = useTranslation()
   const zh = i18n.language.startsWith('zh')
   const { connection } = useDesktopConnection()
   const [ready, setReady] = useState(false)
-  const [editing, setEditing] = useState(false)
+  const [selected, setSelected] = useState(hasDesktopConnection)
+  const [editing, setEditing] = useState(() => !hasDesktopConnection())
+  const [attempt, setAttempt] = useState(0)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => {
+    if (!selected) return
     let cancelled = false
+    setReady(false)
+    setError(null)
     const startup = connection.mode === 'local' ? invoke('backend_start') : checkInstance(connection.origin)
     void startup.then(() => { if (!cancelled) setReady(true) })
       .catch(cause => { if (!cancelled) { setError(String(cause)); setEditing(true) } })
     return () => { cancelled = true }
-  }, [connection])
+  }, [connection, selected, attempt])
   async function select(next: DesktopConnection) {
+    const same = next.mode === connection.mode && (next.mode === 'local' || (connection.mode === 'remote' && next.origin === connection.origin))
+    // Note: choosing the existing local instance must preserve its saved login.
+    if (same) {
+      saveDesktopConnection(connection)
+      setSelected(true)
+      setEditing(false)
+      if (!ready) setAttempt(value => value + 1)
+      return
+    }
     // Note: clear credentials and callback owners before changing the origin.
     useAuthStore.getState().logout()
     saveDesktopConnection(next)
@@ -32,11 +47,7 @@ export function DesktopShell({ children }: { children: ReactNode }) {
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     {ready && <Button variant="ghost" className="w-full" onClick={() => setEditing(false)}>{zh ? '返回工作台' : 'Back to workspace'}</Button>}
   </div></main>
-  return <>
-    <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-card px-4 py-1 text-xs">
-      <span role="status" className="truncate text-muted-foreground">{connection.mode === 'remote' ? connection.origin : ready ? (zh ? '本地实例' : 'Local instance') : (zh ? '正在启动本地实例…' : 'Starting local instance…')}</span>
-      <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>{zh ? '切换实例' : 'Switch instance'}</Button>
-    </div>
-    {ready && children}
-  </>
+  return <DesktopInstanceContext.Provider value={{ select, add: () => setEditing(true) }}>
+    {ready ? children : <main role="status" className="flex h-full items-center justify-center text-sm text-muted-foreground">{zh ? '正在连接实例…' : 'Connecting to instance…'}</main>}
+  </DesktopInstanceContext.Provider>
 }

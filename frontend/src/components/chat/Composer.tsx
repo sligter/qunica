@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowUp, Check, ChevronDown, FileText, Image, Paperclip, RotateCw, Sparkles, Square, X } from 'lucide-react'
+import { ArrowUp, BrainCircuit, Check, ChevronDown, FileText, Image, Paperclip, RotateCw, Sparkles, Square, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { MentionPopover } from '@/components/chat/MentionPopover'
 import { useCompactLayout } from '@/hooks/useMediaQuery'
 import { ImageLightbox } from '@/components/chat/ImageLightbox'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectLabel, SelectGroup, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   getConversationWorkspaceFile,
   getConversationWorkspaceFileMetadata,
@@ -24,6 +25,7 @@ import {
 } from '@/lib/conversationDrag'
 import { readComposerDraft, writeComposerDraft } from '@/lib/composerDraft'
 import { MENTION_CLASS_NAME, splitMentions } from '@/lib/mentions'
+import { apiOrigin } from '@/lib/runtime'
 import { useAuthStore } from '@/stores/authStore'
 import {
   isWorkspaceRelativePath,
@@ -104,6 +106,16 @@ interface ComposerProps {
 /** Reasoning depth, matching the backend's five levels. */
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 type EffortLevel = (typeof EFFORT_LEVELS)[number]
+
+function readEffortOverride(key: string | undefined): EffortLevel | null {
+  if (!key) return null
+  try {
+    const stored = localStorage.getItem(key)
+    return EFFORT_LEVELS.find(level => level === stored) ?? null
+  } catch {
+    return null
+  }
+}
 
 const MAX_ATTACHMENTS_PER_MESSAGE = 10
 
@@ -302,6 +314,14 @@ export function Composer({
 }: ComposerProps) {
   const { t } = useTranslation('chat')
   const compactLayout = useCompactLayout()
+  const token = useAuthStore((state) => state.token)
+  const userId = useAuthStore((state) => state.user?.id)
+  const resolvedConversationId = conversationId ?? groupId
+  // Note: desktop instances share localStorage, while this choice belongs to
+  // one account's conversation and must survive workspace/composer remounts.
+  const effortStorageKey = userId && resolvedConversationId
+    ? `qunica:composer-effort:v1:${JSON.stringify([apiOrigin() || window.location.origin, userId, scope, resolvedConversationId])}`
+    : undefined
   const [value, setValue] = useState(() => readComposerDraft(draftKey))
   const [attachments, setAttachmentState] = useState<PendingAttachment[]>([])
   const [uploadError, setUploadError] = useState<WorkspaceErrorMessageKey | null>(null)
@@ -315,7 +335,23 @@ export function Composer({
   const [showMention, setShowMention] = useState(false)
   // null means "whatever the agent is configured with"; only an explicit pick
   // becomes an override on the wire.
-  const [effortOverride, setEffortOverride] = useState<EffortLevel | null>(null)
+  const [effortOverride, setEffortOverride] = useState(() => readEffortOverride(effortStorageKey))
+
+  useEffect(() => {
+    setEffortOverride(readEffortOverride(effortStorageKey))
+  }, [effortStorageKey])
+
+  const changeEffortOverride = (value: string) => {
+    const next = EFFORT_LEVELS.find(level => level === value) ?? null
+    setEffortOverride(next)
+    if (!effortStorageKey) return
+    try {
+      if (next) localStorage.setItem(effortStorageKey, next)
+      else localStorage.removeItem(effortStorageKey)
+    } catch {
+      // Storage restrictions must never block selection or sending.
+    }
+  }
   // Only offered when the answering model advertises support. Sending the
   // field to a model that rejects it turns a normal question into a provider
   // error.
@@ -335,8 +371,6 @@ export function Composer({
   const valueRef = useRef(value)
   const draftRevisionRef = useRef(0)
   const dragDepthRef = useRef(0)
-  const token = useAuthStore((state) => state.token)
-  const resolvedConversationId = conversationId ?? groupId
   const hasWorkspace = workspaceId === undefined
     ? Boolean(resolvedConversationId)
     : Boolean(workspaceId)
@@ -1236,29 +1270,25 @@ export function Composer({
               <div className="flex-1" />
             )}
             {effortSupported ? (
-              <div className="flex w-32 shrink-0 items-center gap-1.5 pl-1 max-lg:order-first max-lg:mb-1 max-lg:w-full max-lg:border-b max-lg:border-border max-lg:px-2 max-lg:pb-2">
-                <span className="w-10 shrink-0 truncate text-right text-2xs text-muted-foreground">
-                  {effortOverride
-                    ? t(`composer.effort.${effortOverride}`)
-                    : t('composer.effort.auto')}
-                </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={EFFORT_LEVELS.length}
-                  step={1}
-                  value={effortOverride ? EFFORT_LEVELS.indexOf(effortOverride) + 1 : 0}
-                  onChange={(event) => {
-                    const value = Number(event.target.value)
-                    setEffortOverride(EFFORT_LEVELS[value - 1] ?? null)
-                  }}
-                  className="h-1 min-w-0 flex-1 cursor-pointer accent-primary"
+              <Select value={effortOverride ?? 'default'} onValueChange={changeEffortOverride}>
+                {/* Note: native option popups do not reliably inherit the app's dark theme on Windows. */}
+                <SelectTrigger
                   aria-label={t('composer.effort.label')}
-                  aria-valuetext={effortOverride
-                    ? t(`composer.effort.${effortOverride}`)
-                    : t('composer.effort.auto')}
-                />
-              </div>
+                  title={t('composer.effort.label')}
+                  className="h-8 w-auto max-w-40 shrink-0 gap-1.5 rounded-lg border-transparent bg-transparent px-2 py-0 text-xs text-muted-foreground shadow-none hover:bg-muted/70 hover:text-foreground focus-visible:ring-1 [&>svg:last-child]:h-3 [&>svg:last-child]:w-3"
+                >
+                  <BrainCircuit className={cn('h-3.5 w-3.5 shrink-0', effortOverride && 'text-primary')} aria-hidden="true" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent side="top" align="end" className="min-w-44 rounded-xl bg-popover p-1 text-popover-foreground shadow-lg">
+                  <SelectGroup>
+                    <SelectLabel className="px-2.5 py-2 text-2xs font-medium text-muted-foreground">{t('composer.effort.label')}</SelectLabel>
+                    <SelectItem value="default" className="py-2 text-xs data-[state=checked]:bg-primary/10 data-[state=checked]:text-primary">{t('composer.effort.auto')}</SelectItem>
+                    <SelectSeparator className="mx-1 my-1" />
+                    {EFFORT_LEVELS.map(level => <SelectItem key={level} value={level} className="py-2 text-xs data-[state=checked]:bg-primary/10 data-[state=checked]:text-primary">{t(`composer.effort.${level}`)}</SelectItem>)}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
             ) : null}
             {isStreaming && hasText && (
               <Button

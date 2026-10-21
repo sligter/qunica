@@ -10,7 +10,7 @@ An agent is a reusable AI member: a prompt, a model, a set of tools, and a works
 - **runtime_kind** — `llm_chat` or `acp`. Defaults to `llm_chat`.
 - **workspace_id** — the workspace to bind. Required at creation.
 - **llm_provider_id** — the provider to call. Only for `llm_chat`.
-- **llm_config** — model settings, including `model` and `vision`.
+- **llm_config** — model settings: `model`, `vision`, `temperature`, `top_p`, and `reasoning_effort`. Sampling and thinking fields are omitted automatically for models that reject them.
 - **tool_config** — which tools are enabled.
 - **skill_ids** — skills mounted for this agent.
 
@@ -21,6 +21,42 @@ An agent is a reusable AI member: a prompt, a model, a set of tools, and a works
 **`acp`** drives an external CLI agent over the Agent Client Protocol — Codex CLI, Claude Code, and other presets. It stores an `acp_runtime` blob instead of a provider, and Qunica only detects and launches the CLI: install it and sign in outside the app. See `external-cli-agents`.
 
 For `llm_chat`, Qunica loads repository conventions from `AGENTS.md` in the primary workspace root, or `CLAUDE.md` when `AGENTS.md` is absent, with a 6,000-character limit. The section is refreshed every turn and is lower priority than host operating, approval, and workspace rules. Qunica removes it from ACP briefs because supported CLI agents load their own project instructions from the working directory.
+
+## Prompt layers
+
+Qunica assembles instructions for every invocation from separate sources:
+
+| Layer | Responsibility |
+| --- | --- |
+| Agent persona | Role, domain conventions, deliverables and quality criteria; custom prompts remain unchanged |
+| Host operating rules | Complete authorized work, inspect before editing, preserve unrelated changes, respect approvals, inspect tool outcomes and verify proportionately |
+| Tool guidance (`llm_chat`) | Short usage advice for tools in this invocation's actual catalog, such as bounded reads, focused edits, job status and source inspection |
+| Runtime and conversation context | Actual shell, workspace roots, participants, scheduler, relevant skills and shared notes |
+| Project conventions | Workspace-provided instructions, subordinate to host constraints |
+
+Host rules reach existing agents as well as newly created ones. The default persona
+and the prompt generator focus on role and craft instead of duplicating host
+policies. Existing saved personas are not migrated or overwritten.
+
+ACP receives host task context in its existing task envelope. Qunica omits its
+provider-native tool guidance and project-convention excerpt from that brief;
+the external runtime supplies its own tool catalog and project-instruction loader.
+Group dispatch remains sequential, and permission enforcement stays in code.
+An instruction, proposal, tool launch or job ID is not proof of completion.
+
+This separation adapts the capability-dependent guidance in
+[dsh's prompt assembly](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/core/system-prompt/src/index.ts)
+and [file-tool instructions](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/fs/tool-fs/src/read.ts).
+Qunica keeps its existing history and ACP protocols; it does not implement dsh's
+plugin registry or runtime-context snapshot format.
+
+Request-recording and assembly regressions verify these instructions reach API-model requests
+and that unavailable tool guidance stays out of ACP briefs. They do not measure
+model behavior. For model evaluation, compare the same tasks before and after:
+implementing a bounded fix while preserving unrelated changes, answering a
+review without edits, recovering from an edit conflict, inspecting a background
+job without launching it twice, and reporting an unconfigured tool or a pending
+proposal accurately. Assess actual actions and checks, not just final wording.
 
 ## Built-in tools
 

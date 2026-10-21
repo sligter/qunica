@@ -53,9 +53,10 @@ const SYSTEM_PROMPT_WRITER_PROMPT: &str = "You write production system prompts f
 The prompt must be specific to the supplied role and usable as-is. It must:\n\
 - establish the agent's role, outcomes, boundaries, and a short execution workflow;\n\
 - state role-specific quality bars, conventions, and checks;\n\
-- tell the agent to follow mounted Skills when relevant and collaborate clearly with other Agents or groups;\n\
+- describe role-specific deliverables and how to judge them, without prescribing a long ritual for every task;\n\
+- make collaboration conditional on available tools and the host's group scheduler; do not assume that @mentions or prose dispatch work outside its declared rules;\n\
 - use the language of the supplied role details or existing prompt when it is clear.\n\
-The host already injects generic rules every turn (read context first, verify changes, confirm risky actions, use only exposed tools, respect workspace boundaries, report faithfully and concisely, ask only when blocked); do not restate them.\n\
+The host already injects generic execution rules every turn (complete authorized work, inspect before editing, preserve unrelated changes, verify results, respect approvals and workspace boundaries, report faithfully, ask only for material missing choices). It also adds tool-specific guidance from the actual tool catalog. Do not repeat those rules or invent tools, paths, environment facts, background execution, mounted Skills or delegation capabilities. External ACP runtimes provide their own native tool instructions.\n\
 For an enhancement, preserve the original intent and useful constraints while removing repetition and ambiguity. Do not mention this generation request, a provider, or a model, and do not leave placeholders.";
 
 const AGENT_COLUMNS: &str = "id, owner_id, workspace_id, \
@@ -376,6 +377,11 @@ pub async fn generate_system_prompt(
         &model,
         provider_row.reasoning_passback != 0,
     );
+    let capabilities = crate::llm::model_capabilities(
+        &provider_row.kind,
+        provider_row.models_json.as_deref(),
+        &model,
+    );
     let provider_config = ProviderConfig {
         kind: provider_row.kind,
         base_url: provider_row.base_url,
@@ -384,6 +390,8 @@ pub async fn generate_system_prompt(
         user_agent: provider_row.user_agent,
         default_model: provider_row.default_model,
         reasoning_passback,
+        supports_temperature: capabilities.temperature,
+        supports_reasoning_effort: capabilities.reasoning_effort,
         context_window_tokens: None,
         context_output_reserve_ratio: None,
     };
@@ -393,7 +401,10 @@ pub async fn generate_system_prompt(
     let request = ChatRequest {
         model,
         messages: system_prompt_generation_messages(name, description, existing_prompt),
-        temperature: Some(0.4),
+        // A prompt-writing request is not thinking; a model that rejects
+        // sampling parameters must not get one anyway.
+        temperature: capabilities.temperature.then_some(0.4),
+        top_p: None,
         reasoning_passback,
         include_empty_tools: false,
         tools: Vec::new(),

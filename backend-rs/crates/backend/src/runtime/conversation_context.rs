@@ -381,28 +381,38 @@ pub fn render_conversation(
                         ))
                     })
                     .collect();
+                // DeepSeek's thinking mode validates every previous assistant
+                // message when `tools` is present, not only the one that
+                // carried the call, so the turn's recorded reasoning rides on
+                // both the call and its trailing answer. Providers that sign
+                // their thinking gate on the signature instead and ignore the
+                // copy on the unsigned message.
+                let reasoning = row.reasoning.join("\n");
+                let with_reasoning = |message: ChatMessage| {
+                    if reasoning.trim().is_empty() {
+                        message
+                    } else {
+                        message.with_reasoning(reasoning.clone())
+                    }
+                };
                 if !completed_calls.is_empty() {
-                    // The thinking rides on the tool-call message rather than
-                    // the trailing text one: that is the message a provider in
-                    // thinking mode validates, and it is where the reasoning
-                    // belonged in the first place.
-                    messages.push(
-                        ChatMessage::assistant_tool_calls(
-                            "",
-                            completed_calls
-                                .iter()
-                                .map(|(call, _)| call.clone())
-                                .collect(),
-                        )
-                        .with_reasoning(row.reasoning.join("\n")),
-                    );
+                    messages.push(with_reasoning(ChatMessage::assistant_tool_calls(
+                        "",
+                        completed_calls
+                            .iter()
+                            .map(|(call, _)| call.clone())
+                            .collect(),
+                    )));
                     messages.extend(completed_calls.into_iter().map(|(call, result)| {
                         ChatMessage::tool_result(call.id, call.name, result)
                     }));
                 }
                 if !row.content.is_empty() || row.tool_calls.is_empty() {
                     own_message_index = messages.len();
-                    messages.push(ChatMessage::text("assistant", row.content.clone()));
+                    messages.push(with_reasoning(ChatMessage::text(
+                        "assistant",
+                        row.content.clone(),
+                    )));
                 } else {
                     produced_own_message = false;
                 }
@@ -754,7 +764,7 @@ mod tests {
 
         let messages = to_llm_messages("sys", "agent-1", &rows, AttachmentAccess::Readable);
 
-        let assistant = messages
+        let call = messages
             .iter()
             .find(|message| !message.tool_calls.is_empty())
             .expect("the completed call is replayed as an assistant message");
@@ -762,16 +772,44 @@ mod tests {
         // from the transcript with its reasoning dropped, and a provider in
         // thinking mode rejects the continuation outright.
         assert_eq!(
-            assistant.reasoning_content.as_deref(),
+            call.reasoning_content.as_deref(),
             Some("first I check the file\nthen I read it")
         );
-        assert!(
+        // DeepSeek validates every previous assistant message when `tools` is
+        // present, so the trailing answer carries the turn's reasoning too.
+        // Providers that sign their thinking ignore the unsigned copy.
+        let answer = messages
+            .iter()
+            .find(|message| message.role == "assistant" && message.tool_calls.is_empty())
+            .expect("the trailing answer is replayed");
+        assert_eq!(
+            answer.reasoning_content.as_deref(),
+            Some("first I check the file\nthen I read it")
+        );
+        assert_eq!(
             messages
                 .iter()
                 .filter(|message| message.reasoning_content.is_some())
-                .count()
-                == 1,
-            "reasoning belongs to the one message that made the call"
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_text_only_answer_carries_its_thinking_into_the_next_turn() {
+        let rows = vec![agent_row(Some(
+            r#"{"schema_version":1,"reasoning":["considered it"]}"#,
+        ))];
+
+        let messages = to_llm_messages("sys", "agent-1", &rows, AttachmentAccess::Readable);
+
+        let assistant = messages
+            .iter()
+            .find(|message| message.role == "assistant")
+            .expect("the answer is replayed");
+        assert_eq!(
+            assistant.reasoning_content.as_deref(),
+            Some("considered it")
         );
     }
 

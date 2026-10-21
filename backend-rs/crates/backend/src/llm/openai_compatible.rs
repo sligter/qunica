@@ -43,11 +43,11 @@ impl OpenAiCompatibleProvider {
 ///
 /// `reasoning_passback` decides whether an assistant message carries the
 /// thinking that produced it back to the provider. It is a per-model setting
-/// because the two camps disagree outright: DeepSeek's own `deepseek-reasoner`
-/// rejects a request that echoes `reasoning_content`, while several gateways
-/// running a model in thinking mode reject one that omits it ("The
-/// `reasoning_content` in the thinking mode must be passed back to the API").
-/// There is no value that satisfies both, so the operator picks per model.
+/// because gateways disagree: DeepSeek's thinking mode requires
+/// `reasoning_content` whenever `tools` is present (and ignores it otherwise),
+/// while some proxies reject the echoed field. Off is the stored default; when
+/// a provider answers with the "`reasoning_content` … must be passed back" 400,
+/// the runtime retries the request once with passback on.
 fn to_messages(messages: &[ChatMessage], reasoning_passback: bool) -> Vec<Value> {
     messages
         .iter()
@@ -237,8 +237,13 @@ impl LlmProvider for OpenAiCompatibleProvider {
             "stream_options": { "include_usage": true },
         });
         // Absent rather than null: strict gateways may reject optional keys outright.
+        // The caller has already withheld these for models that reject them
+        // (OpenAI reasoning families), so whatever arrives here is safe to send.
         if let Some(temperature) = request.temperature {
             body["temperature"] = json!(temperature);
+        }
+        if let Some(top_p) = request.top_p {
+            body["top_p"] = json!(top_p);
         }
         // The level itself, never a token budget: this endpoint's vocabulary
         // for thinking is the enum, and a budget key here is either ignored or

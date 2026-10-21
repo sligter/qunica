@@ -101,6 +101,7 @@ fn request() -> ChatRequest {
         model: "test-model".to_string(),
         messages: vec![ChatMessage::text("user", "hi")],
         temperature: Some(0.0),
+        top_p: None,
         reasoning_passback: false,
         include_empty_tools: false,
         tools: Vec::new(),
@@ -119,6 +120,7 @@ fn image_request(role: &str) -> ChatRequest {
             ],
         )],
         temperature: Some(0.0),
+        top_p: None,
         reasoning_passback: false,
         include_empty_tools: false,
         tools: Vec::new(),
@@ -144,6 +146,7 @@ fn continuation_request() -> ChatRequest {
             ChatMessage::tool_result("call_1", "Read", "file body"),
         ],
         temperature: Some(0.0),
+        top_p: None,
         reasoning_passback: false,
         include_empty_tools: false,
         tools: Vec::new(),
@@ -177,6 +180,7 @@ fn parallel_continuation_request() -> ChatRequest {
             ChatMessage::tool_result("call_2", "Read", "b body"),
         ],
         temperature: Some(0.0),
+        top_p: None,
         reasoning_passback: false,
         include_empty_tools: false,
         tools: Vec::new(),
@@ -203,6 +207,7 @@ fn gemini_thought_signature_request() -> ChatRequest {
             ChatMessage::tool_result("search", "search", "{\"ok\":true}"),
         ],
         temperature: Some(0.0),
+        top_p: None,
         reasoning_passback: false,
         include_empty_tools: false,
         tools: Vec::new(),
@@ -400,8 +405,8 @@ async fn llm_contract_openai_sends_reasoning_back_only_when_the_model_asks_for_i
     let _ = collect(provider.stream(on).await.unwrap()).await;
 
     let captured = captures.lock().await;
-    // Off is the default because DeepSeek's own `deepseek-reasoner` rejects a
-    // request that echoes reasoning back.
+    // Off is the stored default; gateways that require the field are healed by
+    // the runtime's one-shot retry rather than by echoing it unconditionally.
     assert!(
         captured[0]["messages"][2]
             .get("reasoning_content")
@@ -459,6 +464,24 @@ async fn llm_contract_openai_omits_absent_temperature() {
 
     let captured = captures.lock().await;
     assert!(captured[0].get("temperature").is_none(), "{}", captured[0]);
+    assert!(captured[0].get("top_p").is_none(), "{}", captured[0]);
+}
+
+#[tokio::test]
+async fn llm_contract_openai_serializes_sampling_as_f64() {
+    // The value comes from JSON configuration. Carrying it as f32 and
+    // re-serializing it emitted `0.949999988079071` for a configured 0.95.
+    let (url, captures) = capture_server("data: [DONE]\n").await;
+    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+    let mut request = request();
+    request.temperature = Some(0.95);
+    request.top_p = Some(0.8);
+
+    let _ = collect(provider.stream(request).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    assert_eq!(captured[0]["temperature"], json!(0.95), "{}", captured[0]);
+    assert_eq!(captured[0]["top_p"], json!(0.8), "{}", captured[0]);
 }
 
 #[tokio::test]
@@ -785,6 +808,7 @@ fn effort_request(effort: Option<ReasoningEffort>) -> ChatRequest {
         model: "test-model".to_string(),
         messages: vec![ChatMessage::text("user", "think")],
         temperature: Some(0.0),
+        top_p: None,
         reasoning_passback: false,
         include_empty_tools: false,
         tools: Vec::new(),

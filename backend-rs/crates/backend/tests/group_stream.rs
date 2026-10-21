@@ -1370,6 +1370,9 @@ async fn direct_chat_can_delegate_an_image_to_a_bound_vision_assistant() {
     assert!(system_prompt.contains("- source: conversation"));
     assert!(system_prompt.contains("- mode: conversation"));
     assert!(!system_prompt.contains("Group context:"));
+    assert!(system_prompt.contains("a plan or promise alone is not completion"));
+    assert!(system_prompt.contains("preserve unrelated user and peer changes"));
+    assert!(system_prompt.contains("check its effects before retrying"));
     assert!(main_request["tools"]
         .as_array()
         .unwrap()
@@ -8822,6 +8825,12 @@ async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() 
 
     let requests = requests.lock().await;
     let system_prompt = requests[0]["messages"][0]["content"].as_str().unwrap();
+    // The stored custom persona receives the same execution rules and only
+    // the guidance appropriate to this invocation's read-only tool catalog.
+    assert_eq!(system_prompt.matches("Operating rules:").count(), 1);
+    assert!(system_prompt.contains("checks proportionate to the change"));
+    assert!(system_prompt.contains("Use Read for text inspection"));
+    assert!(!system_prompt.contains("Use ShellOutput"));
     assert!(
         system_prompt.contains(&format!("Runtime: {} · shell ", std::env::consts::OS)),
         "got: {system_prompt}"
@@ -9544,13 +9553,19 @@ async fn model_override_reaches_the_provider_request() {
     let (base_url, captured) = recording_fake_provider(OK_SSE).await;
     let provider =
         seed_provider_with_models(&state, &owner, &base_url, &["test-model", "gpt-4o-mini"]).await;
-    seed_agent(
+    let agent = seed_agent(
         &state,
         &owner,
         &group,
         &provider,
         "Alpha",
         "2024-01-01T00:00:00Z",
+    )
+    .await;
+    set_agent_model_config(
+        &state,
+        &agent,
+        json!({"temperature": 0.4, "reasoning_effort": "high"}),
     )
     .await;
 
@@ -9565,6 +9580,14 @@ async fn model_override_reaches_the_provider_request() {
 
     let requests = captured.lock().await;
     assert_eq!(requests[0]["model"], "gpt-4o-mini");
+    // Capabilities follow the model this message selected, not the agent's
+    // saved one: gpt-4o-mini keeps sampling but rejects the effort field.
+    assert_eq!(requests[0]["temperature"], 0.4);
+    assert!(
+        requests[0].get("reasoning_effort").is_none(),
+        "{}",
+        requests[0]
+    );
 }
 
 #[tokio::test]
@@ -9746,6 +9769,84 @@ async fn a_per_message_effort_override_wins_over_the_agents_thinking_level() {
 }
 
 #[tokio::test]
+async fn effort_override_survives_approval_recovery_without_leaking_to_the_next_message() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "effort-approval-recovery@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("build.txt"), "artifact").unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"free_speech":true})).await;
+    let (url, requests) = recording_fake_provider_sequence(vec![
+        tool_body(vec![("call_rm", "Bash", json!({"command":"rm build.txt"}))]),
+        text_body("Approved work finished."),
+        text_body("Next answer."),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &url).await;
+    let agent = seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Cleaner",
+        "2024-01-01T00:00:00Z",
+        json!({"tools":{"bash":{"enabled":true}}}),
+    )
+    .await;
+    set_agent_model_config(&state, &agent, json!({"reasoning_effort":"low"})).await;
+    let paused = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content":"tidy the workspace","effort_override":"high"}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&paused, StreamEventKind::ApprovalRequired).len(),
+        1
+    );
+    let (thread, checkpoint): (String, String) = sqlx::query_as(
+        "SELECT thread_id,content_json FROM messages WHERE group_id=? AND status='interrupted'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&checkpoint).unwrap()["effort_override"],
+        "high"
+    );
+    let mut restarted = state.clone();
+    restarted.active_turns = qunica_backend::runtime::group_scheduler::ActiveTurnRegistry::new();
+    let app = qunica_backend::api::router(restarted);
+    let resumed = stream_events(
+        &app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &token,
+        json!({"approval":{"tool_call_id":"call_rm","approved":true}}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&resumed, StreamEventKind::AgentMessage)[0]["content"],
+        "Approved work finished."
+    );
+    assert!(!root.path().join("build.txt").exists());
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content":"another question","thread_id":thread}),
+    )
+    .await;
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0]["reasoning_effort"], "high");
+    assert_eq!(requests[1]["reasoning_effort"], "high");
+    assert_eq!(requests[2]["reasoning_effort"], "low");
+}
+
+#[tokio::test]
 async fn an_agent_left_on_the_default_thinking_level_omits_the_field() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "effort-default@example.com").await;
@@ -9776,6 +9877,217 @@ async fn an_agent_left_on_the_default_thinking_level_omits_the_field() {
     // a provider error.
     let requests = captured.lock().await;
     assert!(requests[0].get("reasoning_effort").is_none());
+}
+
+#[tokio::test]
+async fn the_agents_configured_temperature_reaches_the_provider_request() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "agent-temperature@example.com").await;
+    let owner = owner_id(&state, "agent-temperature@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let (base_url, captured) = recording_fake_provider(OK_SSE).await;
+    let provider = seed_provider(&state, &owner, &base_url).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    set_agent_model_config(&state, &agent, json!({"temperature": 0.55, "top_p": 0.8})).await;
+
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha hi"}),
+    )
+    .await;
+
+    // The sliders in the agent form are only meaningful if these reach the wire.
+    let requests = captured.lock().await;
+    assert_eq!(requests[0]["temperature"], 0.55);
+    assert_eq!(requests[0]["top_p"], 0.8);
+}
+
+#[tokio::test]
+async fn an_openai_reasoning_model_is_not_sent_sampling_parameters() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "agent-reasoning-model@example.com").await;
+    let owner = owner_id(&state, "agent-reasoning-model@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let (base_url, captured) = recording_fake_provider(OK_SSE).await;
+    let provider = seed_provider(&state, &owner, &base_url).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    set_agent_model_config(
+        &state,
+        &agent,
+        json!({"model": "o3-mini", "temperature": 0.7, "top_p": 0.9, "reasoning_effort": "high"}),
+    )
+    .await;
+
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha hi"}),
+    )
+    .await;
+
+    // The API answers HTTP 400 for any sampling parameter on this family; the
+    // thinking level itself is still valid and must survive.
+    let requests = captured.lock().await;
+    assert!(requests[0].get("temperature").is_none(), "{}", requests[0]);
+    assert!(requests[0].get("top_p").is_none(), "{}", requests[0]);
+    assert_eq!(requests[0]["reasoning_effort"], "high");
+}
+
+#[tokio::test]
+async fn a_classic_chat_model_does_not_receive_the_agents_stale_thinking_level() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "agent-classic-model@example.com").await;
+    let owner = owner_id(&state, "agent-classic-model@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let (base_url, captured) = recording_fake_provider(OK_SSE).await;
+    let provider = seed_provider(&state, &owner, &base_url).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    // The level was saved while a reasoning model was selected; the agent has
+    // since moved to a classic model that rejects the field outright.
+    set_agent_model_config(
+        &state,
+        &agent,
+        json!({"model": "gpt-4o-mini", "temperature": 0.4, "reasoning_effort": "high"}),
+    )
+    .await;
+
+    stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha hi"}),
+    )
+    .await;
+
+    let requests = captured.lock().await;
+    assert!(
+        requests[0].get("reasoning_effort").is_none(),
+        "{}",
+        requests[0]
+    );
+    assert_eq!(requests[0]["temperature"], 0.4);
+}
+
+#[tokio::test]
+async fn a_reasoning_passback_rejection_is_healed_with_one_retry() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "agent-passback-heal@example.com").await;
+    let owner = owner_id(&state, "agent-passback-heal@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let rejection = (
+        StatusCode::BAD_REQUEST,
+        json!({
+            "error": {
+                "message": "The `reasoning_content` in the thinking mode must be passed back to the API."
+            }
+        })
+        .to_string(),
+    );
+    let (base_url, captured) = recording_fake_provider_status_sequence(vec![
+        rejection,
+        (StatusCode::OK, OK_SSE.to_string()),
+    ])
+    .await;
+    let provider = seed_provider(&state, &owner, &base_url).await;
+    let agent = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alpha",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let thread = seed_thread(&state, &group, "active").await;
+    seed_message(
+        &state,
+        &group,
+        &thread,
+        1,
+        "visible",
+        "user",
+        Some(&owner),
+        "earlier question",
+        None,
+    )
+    .await;
+    seed_message(
+        &state,
+        &group,
+        &thread,
+        2,
+        "visible",
+        "agent",
+        Some(&agent),
+        "earlier answer",
+        Some(json!({"reasoning": ["earlier thinking"]})),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "@Alpha continue", "thread_id": thread}),
+    )
+    .await;
+
+    let requests = captured.lock().await;
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    let previous_answer = |request: &Value| {
+        request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| {
+                message["role"] == "assistant" && message["content"] == "earlier answer"
+            })
+            .cloned()
+            .expect("the previous answer is replayed")
+    };
+    assert!(
+        previous_answer(&requests[0])
+            .get("reasoning_content")
+            .is_none(),
+        "the first attempt has passback off: {}",
+        requests[0]
+    );
+    assert_eq!(
+        previous_answer(&requests[1])["reasoning_content"],
+        "earlier thinking"
+    );
+    assert!(!kinds(&events).iter().any(|kind| kind == "error"));
 }
 
 // ---------------------------------------------------------------------------

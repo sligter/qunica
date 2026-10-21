@@ -221,6 +221,9 @@ impl LlmProvider for GeminiProvider {
         if let Some(temp) = request.temperature {
             generation_config.insert("temperature".to_string(), json!(temp));
         }
+        if let Some(top_p) = request.top_p {
+            generation_config.insert("topP".to_string(), json!(top_p));
+        }
         if let Some(effort) = request.reasoning_effort {
             generation_config.insert(
                 "thinkingConfig".to_string(),

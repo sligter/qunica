@@ -9,8 +9,10 @@ A provider holds the credentials and model list for one LLM vendor. Every agent 
 - **base_url** — the API endpoint. Required for `openai-compatible`; the OpenAI Responses, Anthropic and Gemini defaults are built in.
 - **api_key** — the secret. Stored locally and never returned by the API; reads report only whether one is set, and the UI shows a masked form.
 - **default_model** — the model an agent uses when it does not name one itself.
-- **models** — the list offered in model pickers, each with an optional context window and output reserve.
-- **reasoning_passback** — configured per model; whether to send that model's own reasoning back on the next turn. Off by default. Turn it on when a model in thinking mode rejects a tool-calling turn with *"The `reasoning_content` in the thinking mode must be passed back to the API"*; leave it off for plain chat models and for DeepSeek's own `deepseek-reasoner`, which rejects the opposite. Applies to the `openai-compatible` kind.
+- **models** — the list offered in model pickers, each with an optional context window and output reserve. The request path infers sampling and thinking support from the model id — OpenAI reasoning families (`o1`/`o3`/`o4`/`gpt-5`+/`gpt-6`+) reject `temperature` and `top_p`, while classic chat models reject `reasoning_effort`. API clients can pin either answer per model with `supports_temperature` / `supports_reasoning_effort`.
+- **reasoning_passback** — configured per model; whether to send that model's own reasoning back on the next turn. Off by default. DeepSeek's thinking mode requires `reasoning_content` on every previous assistant message when `tools` is present, so a rejected turn is retried once with passback on automatically. Turn it on explicitly for a gateway that needs it on the first attempt; leave it off for plain chat models. Applies to the `openai-compatible` kind.
+
+Thinking is requested through `reasoning_effort` alone, which OpenAI and DeepSeek understand. A gateway that instead requires a separate `thinking` / `enable_thinking` toggle is not detected automatically; the level is ignored there rather than translated.
 
 ## Discovering models
 

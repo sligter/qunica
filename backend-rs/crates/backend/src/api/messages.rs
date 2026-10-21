@@ -46,7 +46,7 @@ pub struct MessageInput {
     /// starts, so a bad value is a normal 400 rather than an in-stream error.
     #[serde(default)]
     pub(crate) model_override: Option<String>,
-    /// Reasoning depth for this message: `low`, `medium`, or `high`.
+    /// Reasoning depth for this message: `low`, `medium`, `high`, `xhigh`, or `max`.
     #[serde(default)]
     pub(crate) effort_override: Option<String>,
 }

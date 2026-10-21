@@ -606,7 +606,23 @@ fn select_capability(
     category: &str,
     aliases: &[&str],
 ) -> Option<SelectCapability> {
-    let selected = config_options
+    let selected = select_config_option(config_options, category, aliases)?;
+
+    Some(SelectCapability {
+        choices: select_choices(selected),
+        current: selected
+            .get("currentValue")
+            .and_then(nonempty_str)
+            .map(str::to_string),
+    })
+}
+
+pub(super) fn select_config_option<'a>(
+    config_options: &'a [Value],
+    category: &str,
+    aliases: &[&str],
+) -> Option<&'a Value> {
+    config_options
         .iter()
         .find(|option| {
             is_select(option) && option.get("category").and_then(Value::as_str) == Some(category)
@@ -616,18 +632,11 @@ fn select_capability(
                 is_select(option)
                     && option
                         .get("id")
+                        .or_else(|| option.get("configId"))
                         .and_then(Value::as_str)
                         .is_some_and(|id| aliases.contains(&id))
             })
-        })?;
-
-    Some(SelectCapability {
-        choices: select_choices(selected),
-        current: selected
-            .get("currentValue")
-            .and_then(nonempty_str)
-            .map(str::to_string),
-    })
+        })
 }
 
 fn is_select(option: &Value) -> bool {

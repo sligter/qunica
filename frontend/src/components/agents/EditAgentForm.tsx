@@ -222,6 +222,18 @@ export function EditAgentForm({
       name: configured.id,
     },
   )
+  // The backend reports the capability it will actually honour. A model that
+  // does not accept the field must not keep the level the agent had saved for
+  // a previous model — sending it turns every turn into a provider error.
+  const selectedModelId = form.watch('model') || selectedProvider?.default_model || ''
+  const supportsReasoningEffort =
+    configuredModels.find((model) => model.id === selectedModelId)?.supports_reasoning_effort ?? true
+
+  useEffect(() => {
+    if (!supportsReasoningEffort && form.getValues('reasoning_effort') !== 'default') {
+      form.setValue('reasoning_effort', 'default', { shouldDirty: false })
+    }
+  }, [form, supportsReasoningEffort])
   const acpCapabilities = useCommittedAcpRuntimeCapabilities(
     {
       profile: form.watch('acp_profile'),
@@ -593,10 +605,12 @@ export function EditAgentForm({
                     onValueChange={([v]) => form.setValue('top_p', v, { shouldDirty: true })}
                   />
                 </div>
-                <ThinkingLevelControl
-                  value={form.watch('reasoning_effort')}
-                  onChange={(value) => form.setValue('reasoning_effort', value, { shouldDirty: true })}
-                />
+                {supportsReasoningEffort && (
+                  <ThinkingLevelControl
+                    value={form.watch('reasoning_effort')}
+                    onChange={(value) => form.setValue('reasoning_effort', value, { shouldDirty: true })}
+                  />
+                )}
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor="ea-context-window">{t('agents:fields.contextWindowOverride')}</Label>

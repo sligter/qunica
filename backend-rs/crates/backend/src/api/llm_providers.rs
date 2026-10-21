@@ -213,6 +213,7 @@ pub async fn create(
             context_window_tokens: body.context_window_tokens,
             context_output_reserve_ratio: body.context_output_reserve_ratio,
             supports_reasoning_effort: false,
+            supports_temperature: None,
             reasoning_passback: Some(legacy_reasoning_passback),
         }]
     });
@@ -365,6 +366,7 @@ pub async fn update(
             context_window_tokens,
             context_output_reserve_ratio,
             supports_reasoning_effort: false,
+            supports_temperature: None,
             reasoning_passback: Some(legacy_reasoning_passback),
         });
     }
@@ -470,6 +472,8 @@ pub async fn models(
         user_agent: provider.user_agent,
         default_model: provider.default_model,
         reasoning_passback: provider.reasoning_passback != 0,
+        supports_temperature: true,
+        supports_reasoning_effort: true,
         context_window_tokens: provider.context_window_tokens,
         context_output_reserve_ratio: provider.context_output_reserve_ratio,
     };
@@ -495,6 +499,8 @@ pub async fn discover(
             .transpose()?
             .unwrap_or_default(),
         reasoning_passback: false,
+        supports_temperature: true,
+        supports_reasoning_effort: true,
         context_window_tokens: None,
         context_output_reserve_ratio: None,
     };
@@ -543,6 +549,8 @@ pub async fn test_model(
         user_agent,
         default_model: validate_default_model(&body.model)?,
         reasoning_passback: false,
+        supports_temperature: true,
+        supports_reasoning_effort: true,
         context_window_tokens: None,
         context_output_reserve_ratio: None,
     };
@@ -559,6 +567,7 @@ async fn probe_model(config: ProviderConfig) -> TestModelResponse {
                 model,
                 messages: vec![ChatMessage::text("user", "Reply with OK only.")],
                 temperature: None,
+                top_p: None,
                 reasoning_passback: false,
                 include_empty_tools: false,
                 tools: Vec::new(),
@@ -848,11 +857,18 @@ fn stored_models(row: &ProviderRow) -> Vec<ProviderModelConfig> {
                 context_window_tokens: row.context_window_tokens,
                 context_output_reserve_ratio: row.context_output_reserve_ratio,
                 supports_reasoning_effort: false,
+                supports_temperature: None,
                 reasoning_passback: Some(fallback),
             }]
         });
     for model in &mut models {
         model.reasoning_passback.get_or_insert(fallback);
+        // Report the capability the request path will actually honour, not the
+        // stored opt-in: the control that uses it (the per-message thinking
+        // slider) has to appear for models whose family supports the field.
+        model.supports_reasoning_effort =
+            crate::llm::model_capabilities(&row.kind, row.models_json.as_deref(), &model.id)
+                .reasoning_effort;
     }
     models
 }

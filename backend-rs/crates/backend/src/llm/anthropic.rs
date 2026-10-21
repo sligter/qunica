@@ -331,11 +331,14 @@ impl LlmProvider for AnthropicProvider {
             "stream": true,
         });
         // Extended thinking fixes sampling: Anthropic rejects any temperature
-        // but 1 while it is on. Absent rather than null in every other case —
-        // the API validates the field's type, so a null is a rejected request,
-        // not an omitted setting.
+        // but 1 while it is on, and the same applies to the nucleus setting.
+        // Absent rather than null in every other case — the API validates the
+        // field's type, so a null is a rejected request, not an omitted setting.
         if let Some(temperature) = request.temperature.filter(|_| thinking.is_none()) {
             body["temperature"] = json!(temperature);
+        }
+        if let Some(top_p) = request.top_p.filter(|_| thinking.is_none()) {
+            body["top_p"] = json!(top_p);
         }
         if let Some(system) = system {
             body["system"] = system;

@@ -379,6 +379,8 @@ mod tests {
             user_agent: None,
             default_model: "saved-default".to_string(),
             reasoning_passback: false,
+            supports_temperature: true,
+            supports_reasoning_effort: true,
             context_window_tokens: None,
             context_output_reserve_ratio: None,
         }

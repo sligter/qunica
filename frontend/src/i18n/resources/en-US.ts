@@ -30,6 +30,20 @@ export const enUS = {
 
     title: 'Computers', description: 'Persistent computers for Agents and supported external runtimes.',
     notConfigured: 'This server has no Computer Supervisor configured. Connect one before creating a computer.',
+    setup: {
+      title: 'Setup guide', howTo: 'How to configure',
+      description: 'Configure the Supervisor on the machine running your Qunica server to enable controlled computers.',
+      prepareTitle: '1. Prepare Docker',
+      prepare: 'Start Docker and have Python and the Qunica source code available. On Windows, use Docker Desktop in Linux containers mode.',
+      deployTitle: '2. Start the server and Supervisor',
+      deploy: 'Run these commands from the project root on the server. They generate the shared credential, build the execution images and connect Qunica to the Supervisor.',
+      connectTitle: '3. Connect and create a computer',
+      connect: 'On the same machine, open http://127.0.0.1:18765 in a browser. In the desktop app, use the instance menu beside the logo to add the server with its configured HTTPS address. Sign in, then open Settings → Computers to create, start and bind a computer to a group or Agent.',
+      instancesTitle: 'Local and Docker use separate data',
+      instances: 'Desktop Local mode normally uses port 8765. The Docker server uses port 18765 with its own accounts, history and workspaces. Starting Docker does not connect the existing local instance to the Supervisor or migrate its data.',
+      existing: 'For an existing Docker deployment, use both Compose files above to enable the Supervisor. Existing named volumes are retained.',
+      documentation: 'Deployment details', backToSteps: 'Back to setup steps',
+    },
     capabilities: 'Files, Shell and browser use this computer’s persistent home. Open its desktop to observe or take control. OpenCode computer execution requires an API provider.',
     create: 'Create computer', creating: 'Creating…', name: 'Name', scope: 'Access', target: 'Bound to', choose: 'Choose a group or Agent',
     team: 'Team', private: 'Private', generation: 'Generation', execution: 'Execution binding', selected: 'Selected', unselected: 'Available',
@@ -302,6 +316,7 @@ export const enUS = {
     },
   },
   navigation: {
+    instances: { switch: 'Switch instance', saved: 'Saved instances', local: 'Local', add: 'Add server' },
     directChats: 'Chats',
     newDirectChat: 'New chat',
     searchConversations: 'Search conversations',
@@ -419,7 +434,7 @@ export const enUS = {
     },
     composer: {
       placeholder: 'Message your agents…', assistantPlaceholder: 'Tell the assistant what you want to get done…', message: 'Message', send: 'Send message', sendTitle: 'Send (Enter)', stop: 'Stop generating', stopTitle: 'Stop all', upload: 'Upload files to workspace uploads', uploadTitle: 'Upload files to uploads/', uploadUnsupportedTitle: 'External file uploads are not supported in direct chats', enhance: 'Enhance with group context', enhancing: 'Enhancing prompt…', enhanceFailed: 'Prompt enhancement failed: {{message}}', enhanceAgent: 'Enhancement member', enhanceAgentAuto: 'Auto-select member', enhanceWith: 'Enhance with {{name}}', closeEnhanceAgents: 'Close enhancement member list', dropZone: 'Message composer file drop area', resize: 'Resize the message box', resizeTitle: 'Drag to resize · double-click to fit the text', showMore: 'Show {{count}} more agents', mentionTitle: 'Insert @{{name}} into the composer', mentionEveryone: 'Everyone', membersCompact: 'Members', membersList: 'Group members', closeAgents: 'Close agent list',
-      effort: { label: 'Thinking effort', auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' },
+      effort: { label: 'Thinking effort', auto: 'Follow Agent', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' },
       drop: { ready: 'Drop workspace files to attach them or folders to insert their paths.', conversationReady: 'Drop to insert this conversation ID.', conversationInserted: 'Conversation ID inserted.', fileAdded_one: 'Workspace file added.', fileAdded_other: '{{count}} workspace files added.', directoryInserted_one: 'Folder path inserted.', directoryInserted_other: '{{count}} folder paths inserted.', unsupported: 'This dropped item is not supported.', uploadUnsupported: 'External file uploads are not supported in direct chats.', noWorkspace: 'This conversation has no local workspace.', unreadable: 'Unable to read that workspace item.', limitReached: 'You can attach up to {{count}} files.' }, queued_one: '{{count}} message queued — it sends when the current reply finishes', queued_other: '{{count}} messages queued — they send when the current reply finishes', clearQueued: 'Clear queue',
     },
     attachments: { uploading: 'Uploading…', uploaded: 'Uploaded', failed: 'Upload failed', workspace: 'Workspace file', unknownType: 'Unknown type', retry: 'Retry upload', remove: 'Remove attachment', open: 'Open attachment', retryNamed: 'Retry upload {{name}}', removeNamed: 'Remove {{name}}', openNamed: 'Open {{name}}', previewNamed: 'Preview {{name}}' },

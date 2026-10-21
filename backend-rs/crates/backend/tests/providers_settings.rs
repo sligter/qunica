@@ -396,6 +396,49 @@ async fn providers_settings_provider_multi_model_context_is_persisted() {
 }
 
 #[tokio::test]
+async fn providers_settings_reports_the_effective_thinking_capability() {
+    let app = app().await;
+    let token = register_and_login(&app, "provider-thinking-capability@example.com").await;
+    let (status, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/llm-providers",
+            &token,
+            json!({
+                "name": "Thinking",
+                "kind": "openai-compatible",
+                "base_url": "https://llm.example.test/v1",
+                "api_key": "thinking-secret",
+                "default_model": "gpt-5",
+                "models": [
+                    {"id": "gpt-4o"},
+                    {"id": "gpt-5"},
+                    {"id": "deepseek-reasoner"}
+                ]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let supports = |model: &str| {
+        created["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == model)
+            .and_then(|entry| entry["supports_reasoning_effort"].as_bool())
+            .expect("the model reports its capability")
+    };
+    // The composer/agent forms gate on this field; it must describe what the
+    // request path will actually send, not the stored opt-in default.
+    assert!(!supports("gpt-4o"));
+    assert!(supports("gpt-5"));
+    assert!(supports("deepseek-reasoner"));
+}
+
+#[tokio::test]
 async fn providers_settings_provider_patch_preserves_key_and_clears_nullable_fields() {
     let app = app().await;
     let token = register_and_login(&app, "provider-patch@example.com").await;

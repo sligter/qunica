@@ -710,6 +710,59 @@ async fn ended_run_retention_returns_explicit_resync_and_keeps_pending_approval_
 }
 
 #[tokio::test]
+async fn ended_run_retention_bounds_backlog_and_keeps_completion_until_fully_pruned() {
+    let (_, state, _, group) = fixture().await;
+    let thread = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO threads(id,group_id,status,next_seq,created_at,updated_at) VALUES(?,?,'active',1,'now','now')")
+        .bind(&thread).bind(&group).execute(state.db.pool()).await.unwrap();
+    let stream = Uuid::new_v4().to_string();
+    // More than one maintenance pass can reclaim, with a completion marker
+    // sorted before the payloads to exercise its independent retention rule.
+    sqlx::query("WITH RECURSIVE n(seq) AS (SELECT 0 UNION ALL SELECT seq+1 FROM n WHERE seq<1199) INSERT INTO stream_events(id,stream_id,thread_id,seq,event_id,kind,payload_json,created_at) SELECT printf('event-%04d',seq),?,?,seq,printf('event:%d',seq),'text_delta','{}','2000-01-01T00:00:00Z' FROM n")
+        .bind(&stream).bind(&thread).execute(state.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO stream_events(id,stream_id,thread_id,seq,event_id,kind,payload_json,created_at) VALUES('completion',?,?,1200,'completion:1200','done','{}','2000-01-01T00:00:00Z')")
+        .bind(&stream).bind(&thread).execute(state.db.pool()).await.unwrap();
+    api::account::prune(state.db.pool()).await.unwrap();
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stream_events WHERE stream_id=?")
+        .bind(&stream)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert!(
+        remaining > 0 && remaining < 1201,
+        "a pass must make bounded progress"
+    );
+    let done: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM stream_events WHERE stream_id=? AND kind='done')",
+    )
+    .bind(&stream)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert!(
+        done,
+        "partial cleanup must remain discoverable on the next pass"
+    );
+    // Foreground filesystem invalidations can still commit between passes.
+    sqlx::query("INSERT INTO workspace_event_intents(id,owner_id,kind,resource_id,group_id) SELECT 'foreground-upload',owner_id,'file.changed',id,id FROM groups WHERE id=?")
+        .bind(&group).execute(state.db.pool()).await.unwrap();
+    api::account::prune(state.db.pool()).await.unwrap();
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stream_events WHERE stream_id=?")
+        .bind(&stream)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
+    let floor: i64 =
+        sqlx::query_scalar("SELECT retained_after FROM run_replay_floors WHERE stream_id=?")
+            .bind(&stream)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(floor, 1200);
+}
+
+#[tokio::test]
 async fn terminal_socket_separates_observation_from_fenced_input_and_reports_missing_sessions() {
     use qunica_backend::{terminal::CreateTerminalOptions, tools::ShellPreference};
     let (app, state, token, group) = fixture().await;

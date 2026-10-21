@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Monitor, Plus, RefreshCcw } from 'lucide-react'
+import { BookOpen, Monitor, Plus, RefreshCcw } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { DetailShell } from '@/components/layout/DetailShell'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,7 @@ import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
 import { ComputerDesktop } from '@/components/computers/ComputerDesktop'
 import { ComputerArtifacts } from '@/components/computers/ComputerArtifacts'
+import { ComputerSetupGuide } from '@/components/computers/ComputerSetupGuide'
 import type { ComputerItem } from '@/types/api'
 
 function ComputerCard({ item, targetName }: { item: ComputerItem; targetName: string }) {
@@ -68,6 +69,7 @@ export function ComputersPage() {
   const groups = useGroups()
   const agents = useAgents()
   const computers = useComputers()
+  const [setupOpen, setSetupOpen] = useState(false)
   const [name, setName] = useState('')
   const [kind, setKind] = useState<'team' | 'private'>('team')
   const [target, setTarget] = useState('')
@@ -79,10 +81,11 @@ export function ComputersPage() {
     mutationFn: () => fetchJson('/computers', { method: 'POST', token, body: { id: intent, name: name.trim(), binding: { kind, id: target } } }),
     onSuccess: () => { setName(''); setIntent(crypto.randomUUID()); void queries.invalidateQueries({ queryKey: ['computers'] }) },
   })
-  return <DetailShell title={t('title')} subtitle={t('description')}>
+  return <DetailShell title={t('title')} subtitle={t('description')} actions={<Button size="sm" variant="outline" onClick={() => setSetupOpen(true)}><BookOpen className="h-3.5 w-3.5" aria-hidden="true" />{t('setup.title')}</Button>}>
+    <ComputerSetupGuide open={setupOpen} onOpenChange={setSetupOpen} />
     <div className="space-y-6 py-5">
       {computers.isError ? <p role="alert" className="text-sm text-destructive">{computers.error.message}</p> : null}
-      {computers.data?.configured === false ? <p role="status" className="rounded-lg border border-border bg-muted/40 p-4 text-sm text-muted-foreground">{t('notConfigured')}</p> : null}
+      {computers.data?.configured === false ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 p-4 text-sm text-muted-foreground"><p role="status">{t('notConfigured')}</p><Button size="sm" variant="link" className="h-auto p-0" onClick={() => setSetupOpen(true)}>{t('setup.howTo')}</Button></div> : null}
       <form className="space-y-4 rounded-lg border border-border p-4" onSubmit={(event) => { event.preventDefault(); create.mutate() }}>
         <h2 className="text-sm font-medium">{t('create')}</h2>
         <div className="grid gap-4 sm:grid-cols-3">

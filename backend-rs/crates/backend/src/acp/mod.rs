@@ -1571,13 +1571,53 @@ async fn apply_session_settings(
             warn_if_unsupported(conn, outcome, "mode", mode).await;
         }
         if let Some(effort) = config.thinking_effort.as_deref() {
-            let outcome = apply_first_config_option(
-                conn,
-                session_id,
-                &thinking_config_option_ids(config.profile),
-                &Value::String(effort.to_string()),
-            )
-            .await?;
+            let aliases = thinking_config_option_ids(config.profile);
+            let options = conn.config_options().await;
+            // Note: thought_level is a semantic category, not a config id.
+            // OpenCode and custom ACP agents can advertise a different id.
+            let outcome = if let Some(option) =
+                capabilities::select_config_option(&options, "thought_level", &aliases)
+            {
+                let id = option
+                    .get("id")
+                    .or_else(|| option.get("configId"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        ProtocolError::Malformed("ACP thinking option has no config id".into())
+                    })?;
+                let result = conn
+                    .request(
+                        METHOD_SESSION_SET_CONFIG_OPTION,
+                        config_option_params(id, session_id, &Value::String(effort.to_string())),
+                    )
+                    .await?;
+                if let Some(updated) = result
+                    .get("configOptions")
+                    .and_then(Value::as_array)
+                    .and_then(|options| {
+                        capabilities::select_config_option(options, "thought_level", &[id])
+                    })
+                {
+                    if updated
+                        .get("currentValue")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| value != effort)
+                    {
+                        return Err(ProtocolError::Malformed(
+                            "ACP runtime did not apply the requested thinking effort".into(),
+                        ));
+                    }
+                }
+                SettingOutcome::Applied
+            } else {
+                apply_first_config_option(
+                    conn,
+                    session_id,
+                    &aliases,
+                    &Value::String(effort.to_string()),
+                )
+                .await?
+            };
             warn_if_unsupported(conn, outcome, "thinking effort", effort).await;
         }
     }

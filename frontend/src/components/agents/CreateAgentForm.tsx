@@ -199,6 +199,15 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       name: configured.id,
     },
   )
+  const selectedModelId = form.watch('model') || selectedProvider?.default_model || ''
+  const supportsReasoningEffort =
+    configuredModels.find((model) => model.id === selectedModelId)?.supports_reasoning_effort ?? true
+
+  useEffect(() => {
+    if (!supportsReasoningEffort && form.getValues('reasoning_effort') !== 'default') {
+      form.setValue('reasoning_effort', 'default')
+    }
+  }, [form, supportsReasoningEffort])
   const acpCapabilities = useCommittedAcpRuntimeCapabilities(
     {
       profile: form.watch('acp_profile'),
@@ -593,10 +602,12 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
                     onValueChange={([v]) => form.setValue('top_p', v)}
                   />
                 </div>
-                <ThinkingLevelControl
-                  value={form.watch('reasoning_effort')}
-                  onChange={(value) => form.setValue('reasoning_effort', value)}
-                />
+                {supportsReasoningEffort && (
+                  <ThinkingLevelControl
+                    value={form.watch('reasoning_effort')}
+                    onChange={(value) => form.setValue('reasoning_effort', value)}
+                  />
+                )}
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <Label htmlFor="agent-context-window">{t('agents:fields.contextWindowOverride')}</Label>

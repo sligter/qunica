@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Composer } from '@/components/chat/Composer'
 import i18n from '@/i18n'
 import { CONVERSATION_ID_MIME } from '@/lib/conversationDrag'
+import * as runtime from '@/lib/runtime'
 import { encodeWorkspaceDragItems, WORKSPACE_ITEM_MIME } from '@/lib/workspaceDrag'
+import { useAuthStore } from '@/stores/authStore'
 import type {
   ConversationScope,
   ConversationWorkspaceFileRead,
@@ -48,6 +50,11 @@ const groupAgents: GroupAgentRead[] = [
     joined_at: '2026-07-18T00:00:00Z',
   },
 ]
+
+const currentUser = {
+  id: 'user-1', email: 'user@example.com', name: 'User',
+  avatar_url: null, created_at: '2026-10-19T00:00:00Z',
+}
 
 function workspaceFile(path: string, isDirectory = false): ConversationWorkspaceFileRead {
   const name = path.split('/').at(-1) ?? path
@@ -152,6 +159,7 @@ describe('Composer', () => {
   })
   beforeEach(() => {
     localStorage.clear()
+    useAuthStore.setState({ user: null })
     mocks.getFile.mockReset()
     mocks.getMetadata.mockReset()
     mocks.upload.mockReset()
@@ -160,6 +168,7 @@ describe('Composer', () => {
 
   afterEach(async () => {
     cleanup()
+    vi.restoreAllMocks()
     vi.unstubAllGlobals()
     await i18n.changeLanguage('en-US')
   })
@@ -184,9 +193,8 @@ describe('Composer', () => {
     const onSend = vi.fn()
     render(<Composer onSend={onSend} supportsReasoningEffort />)
 
-    fireEvent.change(screen.getByRole('slider', { name: /thinking/i }), {
-      target: { value: '3' },
-    })
+    await user.click(screen.getByRole('combobox', { name: /thinking/i }))
+    await user.click(screen.getByRole('option', { name: 'High' }))
     await user.type(screen.getByRole('textbox'), 'hard question')
     await user.click(screen.getByRole('button', { name: 'Send message' }))
 
@@ -201,7 +209,134 @@ describe('Composer', () => {
     // Sending the field to a model that rejects it turns a normal question
     // into a provider error.
     render(<Composer onSend={vi.fn()} />)
-    expect(screen.queryByRole('slider', { name: /thinking/i })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: /thinking/i })).toBeNull()
+  })
+
+  it('restores the effort after sending and reopening a chat, including clearing it', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    useAuthStore.setState({ user: currentUser })
+    const composer = <Composer scope="direct-chats" conversationId="chat-1" onSend={onSend} supportsReasoningEffort />
+    const first = render(composer)
+    await user.click(screen.getByRole('combobox', { name: /thinking/i }))
+    await user.click(screen.getByRole('option', { name: 'High' }))
+    await user.type(screen.getByRole('textbox'), 'first question')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+    first.unmount()
+
+    const second = render(composer)
+    const picker = screen.getByRole('combobox', { name: /thinking/i })
+    expect(picker).toHaveTextContent('High')
+    await user.type(screen.getByRole('textbox'), 'second question')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(onSend).toHaveBeenLastCalledWith(expect.objectContaining({ effort_override: 'high' })))
+    await user.click(picker)
+    await user.click(screen.getByRole('option', { name: 'Follow Agent' }))
+    second.unmount()
+
+    render(composer)
+    expect(screen.getByRole('combobox', { name: /thinking/i })).toHaveTextContent('Follow Agent')
+    await user.type(screen.getByRole('textbox'), 'Agent default')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(3))
+    expect(onSend.mock.lastCall![0]).not.toHaveProperty('effort_override')
+  })
+
+  it('keeps effort choices separate across chats, scopes, accounts and servers', async () => {
+    const user = userEvent.setup()
+    const origin = vi.spyOn(runtime, 'apiOrigin').mockReturnValue('https://first.example')
+    useAuthStore.setState({ user: currentUser })
+    const onSend = vi.fn()
+    const composer = (id = 'chat-1', scope: ConversationScope = 'direct-chats') => (
+      <Composer scope={scope} conversationId={id} onSend={onSend} supportsReasoningEffort />
+    )
+    const { rerender } = render(composer())
+    const picker = () => screen.getByRole('combobox', { name: /thinking/i })
+    await user.click(picker())
+    await user.click(screen.getByRole('option', { name: 'Max' }))
+
+    rerender(composer('chat-2'))
+    expect(picker()).toHaveTextContent('Follow Agent')
+    await user.click(picker())
+    await user.click(screen.getByRole('option', { name: 'Low' }))
+    rerender(composer())
+    expect(picker()).toHaveTextContent('Max')
+    rerender(composer('chat-1', 'groups'))
+    expect(picker()).toHaveTextContent('Follow Agent')
+    rerender(composer())
+    expect(picker()).toHaveTextContent('Max')
+
+    act(() => useAuthStore.setState({ user: { ...currentUser, id: 'user-2' } }))
+    expect(picker()).toHaveTextContent('Follow Agent')
+    await user.click(picker())
+    await user.click(screen.getByRole('option', { name: 'Medium' }))
+    act(() => useAuthStore.setState({ user: currentUser }))
+    expect(picker()).toHaveTextContent('Max')
+
+    origin.mockReturnValue('https://second.example')
+    rerender(composer())
+    expect(picker()).toHaveTextContent('Follow Agent')
+    await user.click(picker())
+    await user.click(screen.getByRole('option', { name: 'High' }))
+    origin.mockReturnValue('https://first.example')
+    rerender(composer())
+    expect(picker()).toHaveTextContent('Max')
+  })
+
+  it('ignores invalid stored effort and withholds saved effort from unsupported models', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    useAuthStore.setState({ user: currentUser })
+    const composer = (supported = true) => (
+      <Composer scope="direct-chats" conversationId="chat-1" onSend={onSend} supportsReasoningEffort={supported} />
+    )
+    const first = render(composer())
+    await user.click(screen.getByRole('combobox', { name: /thinking/i }))
+    await user.click(screen.getByRole('option', { name: 'High' }))
+    first.unmount()
+    const second = render(composer(false))
+    expect(screen.queryByRole('combobox', { name: /thinking/i })).toBeNull()
+    await user.type(screen.getByRole('textbox'), 'ordinary model')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+    expect(onSend.mock.lastCall![0]).not.toHaveProperty('effort_override')
+    second.rerender(composer())
+    expect(screen.getByRole('combobox', { name: /thinking/i })).toHaveTextContent('High')
+    second.unmount()
+    const key = Object.keys(localStorage).find(key => key.startsWith('qunica:composer-effort:'))!
+    localStorage.setItem(key, 'unknown-level')
+    render(composer())
+    expect(screen.getByRole('combobox', { name: /thinking/i })).toHaveTextContent('Follow Agent')
+  })
+
+  it('still selects and sends effort when browser storage is unavailable', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    useAuthStore.setState({ user: currentUser })
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked') })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked') })
+    render(<Composer scope="direct-chats" conversationId="chat-1" onSend={onSend} supportsReasoningEffort />)
+    await user.click(screen.getByRole('combobox', { name: /thinking/i }))
+    await user.click(screen.getByRole('option', { name: 'High' }))
+    await user.type(screen.getByRole('textbox'), 'question')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ effort_override: 'high' })))
+  })
+
+  it('follows the Agent again after clearing a per-message effort choice', async () => {
+    const user = userEvent.setup()
+    const onSend = vi.fn()
+    render(<Composer onSend={onSend} supportsReasoningEffort />)
+    const picker = screen.getByRole('combobox', { name: /thinking/i })
+    await user.click(picker)
+    await user.click(screen.getByRole('option', { name: 'Max' }))
+    await user.click(picker)
+    await user.click(screen.getByRole('option', { name: 'Follow Agent' }))
+    await user.type(screen.getByRole('textbox'), 'use the Agent setting')
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(onSend).toHaveBeenCalled())
+    expect(onSend.mock.calls[0][0]).not.toHaveProperty('effort_override')
   })
 
   it('localizes the composer placeholder and stream cancellation action', async () => {

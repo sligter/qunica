@@ -908,6 +908,73 @@ async fn acp_lifecycle_applies_session_settings_and_emits_updates() {
 }
 
 #[tokio::test]
+async fn acp_thinking_uses_the_runtime_declared_id_for_every_session_adapter() {
+    for profile in ["codex", "claude", "pi", "opencode", "custom"] {
+        assert_declared_thinking(profile, "thinking_declared", "runtime_effort", true).await;
+    }
+}
+
+#[tokio::test]
+async fn acp_thinking_uses_model_updated_options_and_rejects_ignored_values() {
+    assert_declared_thinking("custom", "thinking_updated", "model_effort", true).await;
+    assert_declared_thinking("custom", "thinking_ignored", "runtime_effort", false).await;
+}
+
+async fn assert_declared_thinking(profile: &str, mode: &str, expected_id: &str, succeeds: bool) {
+    let (pool, owner_id, agent_id, _, _) = seeded_db().await;
+    let cwd = tempfile::tempdir().unwrap();
+    let log = cwd.path().join("thinking.log");
+    let config = fake_child_config(
+        mode,
+        profile,
+        json!({
+            "timeout_seconds": 30, "model": "selected-model", "thinking_effort": "high",
+            "env": { "ACP_FAKE_LOG": log.to_string_lossy() },
+        }),
+    );
+    let mut run = run_acp_agent_stream(
+        pool.clone(),
+        AcpRunRequest {
+            notes: None,
+            owner_id,
+            group_id: None,
+            agent_id,
+            thread_id: None,
+            config,
+            cwd: cwd.path().to_path_buf(),
+            prompt: "hi".into(),
+            prompt_images: Vec::new(),
+            prompt_has_image_attachments: false,
+            incremental_prompt: None,
+            incremental_prompt_images: Vec::new(),
+            incremental_prompt_has_image_attachments: false,
+            context_hash: None,
+        },
+    )
+    .await
+    .expect("run starts");
+    while run.next_event().await.is_some() {}
+    assert_eq!(run.join().await.is_ok(), succeeds, "{profile} / {mode}");
+    let log = std::fs::read_to_string(log).unwrap();
+    let messages: Vec<Value> = log
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let applied = messages
+        .iter()
+        .find(|message| message["method"] == "session/set_config_option")
+        .unwrap();
+    assert_eq!(applied["params"]["configId"], expected_id);
+    assert_eq!(applied["params"]["value"], "high");
+    assert_eq!(
+        messages
+            .iter()
+            .any(|message| message["method"] == "session/prompt"),
+        succeeds
+    );
+}
+
+#[tokio::test]
 async fn acp_lifecycle_warns_instead_of_failing_when_settings_are_unimplemented() {
     let (pool, owner_id, agent_id, _group_id, _thread_id) = seeded_db().await;
     let cwd = tempfile::tempdir().unwrap();
@@ -1957,7 +2024,9 @@ fn run_fake_child(mode: &str) {
                         );
                     }
                 }
-                let result = if mode == "capabilities_reflection" {
+                let result = if mode.starts_with("thinking_") {
+                    json!({ "sessionId": "sess-fake", "configOptions": [declared_thinking_option("runtime_effort", "low")] })
+                } else if mode == "capabilities_reflection" {
                     capability_reflection_state(
                         &std::env::var("ACP_FAKE_SECRET").unwrap_or_default(),
                     )
@@ -2010,7 +2079,15 @@ fn run_fake_child(mode: &str) {
                 write_line(&stdout, &rpc_result(&id, json!({})));
             }
             "session/set_model" | "session/set_mode" => {
-                if mode == "settings"
+                if mode == "thinking_updated" {
+                    write_line(
+                        &stdout,
+                        &rpc_result(
+                            &id,
+                            json!({ "configOptions": [declared_thinking_option("model_effort", "low")] }),
+                        ),
+                    );
+                } else if mode == "settings"
                     || mode == "capabilities_fallback"
                     || mode == "settings_unsupported"
                     || mode == "settings_rejected"
@@ -2076,6 +2153,33 @@ fn run_fake_child(mode: &str) {
                 }
             }
             "session/set_config_option" => {
+                if mode.starts_with("thinking_") {
+                    let expected_id = if mode == "thinking_updated" {
+                        "model_effort"
+                    } else {
+                        "runtime_effort"
+                    };
+                    if params["configId"] != expected_id {
+                        write_line(
+                            &stdout,
+                            &rpc_error(&id, -32602, "unknown thinking config id"),
+                        );
+                    } else {
+                        let value = if mode == "thinking_ignored" {
+                            "low"
+                        } else {
+                            params["value"].as_str().unwrap_or("low")
+                        };
+                        write_line(
+                            &stdout,
+                            &rpc_result(
+                                &id,
+                                json!({ "configOptions": [declared_thinking_option(expected_id, value)] }),
+                            ),
+                        );
+                    }
+                    continue;
+                }
                 applied.push(params);
                 // A runtime whose ACP surface is prompt-only answers
                 // method-not-found for every setting; one that implements the
@@ -2336,6 +2440,11 @@ fn mode_config_option(mode: &str) -> Value {
         "currentValue": mode,
         "options": [{ "value": mode, "name": mode }],
     })
+}
+
+fn declared_thinking_option(id: &str, current: &str) -> Value {
+    json!({ "id": id, "category": "thought_level", "type": "select", "name": "Thinking",
+        "currentValue": current, "options": [{ "value": "low", "name": "Low" }, { "value": "high", "name": "High" }] })
 }
 
 fn capability_config_options(model: &str, effort: &str) -> Vec<Value> {

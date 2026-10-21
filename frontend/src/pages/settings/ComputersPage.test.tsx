@@ -65,3 +65,29 @@ it('explains a missing Supervisor and excludes unsupported ACP private targets',
   expect(screen.getByRole('option',{name:'Built-in'})).toBeInTheDocument()
   expect(screen.queryByRole('option',{name:'External'})).not.toBeInTheDocument()
 })
+
+it.each([false, true])('opens deployment help with Supervisor configured=%s', async (configured) => {
+  mocks.configured = configured
+  const user = page()
+  await user.click(screen.getByRole('button', { name: 'Setup guide' }))
+  const dialog = screen.getByRole('dialog', { name: 'Setup guide' })
+  expect(dialog).toHaveTextContent('python scripts/init-computer-supervisor.py')
+  expect(dialog).toHaveTextContent('docker compose -f docker-compose.yml -f docker-compose.computers.yml up -d --build')
+  expect(dialog).toHaveTextContent('Local and Docker use separate data')
+  expect(dialog).toHaveTextContent('18765')
+  expect(screen.getByRole('button', { name: 'Deployment details' })).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Close' }))
+  expect(screen.queryByRole('dialog')).toBeNull()
+  expect(mocks.request.mock.calls.some(([, opts]) => opts?.method === 'POST')).toBe(false)
+})
+
+it('reads the bundled deployment documentation and returns to the steps without leaving settings', async () => {
+  const user = page()
+  await user.click(screen.getByRole('button', { name: 'Setup guide' }))
+  await user.click(screen.getByRole('button', { name: 'Deployment details' }))
+  expect(screen.getByRole('article', { name: 'Deployment details' })).toHaveTextContent('QUNICA_SUPERVISOR_TOKEN_FILE')
+  expect(screen.getByRole('article', { name: 'Deployment details' })).toHaveTextContent('docker compose -f docker-compose.yml -f docker-compose.computers.yml up -d --build')
+  await user.click(screen.getByRole('button', { name: 'Back to setup steps' }))
+  expect(screen.getByText('Local and Docker use separate data')).toBeVisible()
+  expect(screen.getByRole('dialog', { name: 'Setup guide' })).toBeVisible()
+})

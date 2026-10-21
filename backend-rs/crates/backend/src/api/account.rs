@@ -245,17 +245,63 @@ pub async fn prune(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM realtime_tickets WHERE expires_at < unixepoch()")
         .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
+    // Release the writer between batches so uploads and message acceptance
+    // can proceed while a large legacy backlog is gradually reclaimed.
+    for _ in 0..4 {
+        if !prune_run_events(pool).await? {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    Ok(())
+}
+
+async fn prune_run_events(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
     let days = std::env::var("QUNICA_ENDED_RUN_EVENT_DAYS")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(7)
         .max(1);
     let interval = format!("-{days} days");
-    sqlx::query("INSERT INTO run_replay_floors(stream_id,group_id,thread_id,retained_after) SELECT e.stream_id,t.group_id,e.thread_id,MAX(e.seq) FROM stream_events e JOIN threads t ON t.id=e.thread_id WHERE e.created_at < strftime('%Y-%m-%dT%H:%M:%fZ','now',?) AND NOT EXISTS(SELECT 1 FROM execution_jobs j WHERE j.thread_id=e.thread_id AND j.status IN ('queued','running','waiting_for_user')) AND NOT EXISTS(SELECT 1 FROM pending_approvals a WHERE a.thread_id=e.thread_id AND a.status='pending') AND EXISTS(SELECT 1 FROM stream_events d WHERE d.stream_id=e.stream_id AND d.kind='done') GROUP BY e.stream_id ON CONFLICT(stream_id) DO UPDATE SET retained_after=MAX(retained_after,excluded.retained_after)")
-        .bind(interval).execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM stream_events WHERE seq<=(SELECT retained_after FROM run_replay_floors r WHERE r.stream_id=stream_events.stream_id)")
-        .execute(&mut *tx).await?;
-    tx.commit().await
+    // Note: legacy histories can contain gigabytes of payloads. Discover a
+    // bounded batch without the writer, then recheck protection under the lock.
+    // Keep `done` until the final batch so partially pruned runs remain eligible.
+    let candidates: Vec<(String, String, String, i64, String)> = sqlx::query_as(
+        "SELECT e.id,e.stream_id,e.thread_id,e.seq,t.group_id FROM stream_events e \
+         JOIN threads t ON t.id=e.thread_id \
+         WHERE e.created_at < strftime('%Y-%m-%dT%H:%M:%fZ','now',?) \
+         AND NOT EXISTS(SELECT 1 FROM execution_jobs j WHERE j.thread_id=e.thread_id AND j.status IN ('queued','running','waiting_for_user')) \
+         AND NOT EXISTS(SELECT 1 FROM pending_approvals a WHERE a.thread_id=e.thread_id AND a.status='pending') \
+         AND EXISTS(SELECT 1 FROM stream_events d WHERE d.stream_id=e.stream_id AND d.kind='done') \
+         AND (e.kind!='done' OR NOT EXISTS(SELECT 1 FROM stream_events r WHERE r.stream_id=e.stream_id AND r.kind!='done')) \
+         ORDER BY e.created_at,e.id LIMIT 256",
+    )
+    .bind(interval)
+    .fetch_all(pool)
+    .await?;
+    if candidates.is_empty() {
+        return Ok(false);
+    }
+    let mut tx = crate::db::begin_write(pool).await?;
+    for (id, stream, thread, seq, group) in candidates {
+        let deleted = sqlx::query(
+            "DELETE FROM stream_events WHERE id=? \
+             AND NOT EXISTS(SELECT 1 FROM execution_jobs WHERE thread_id=? AND status IN ('queued','running','waiting_for_user')) \
+             AND NOT EXISTS(SELECT 1 FROM pending_approvals WHERE thread_id=? AND status='pending')",
+        )
+        .bind(id)
+        .bind(&thread)
+        .bind(&thread)
+        .execute(&mut *tx)
+        .await?;
+        if deleted.rows_affected() > 0 {
+            sqlx::query("INSERT INTO run_replay_floors(stream_id,group_id,thread_id,retained_after) VALUES(?,?,?,?) ON CONFLICT(stream_id) DO UPDATE SET retained_after=MAX(retained_after,excluded.retained_after)")
+                .bind(stream).bind(group).bind(thread).bind(seq).execute(&mut *tx).await?;
+        }
+    }
+    tx.commit().await?;
+    Ok(true)
 }
 
 fn db_error(_: sqlx::Error) -> ApiError {

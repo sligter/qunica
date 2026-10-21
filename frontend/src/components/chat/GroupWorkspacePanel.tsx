@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
+import { CalendarClock, FolderOpen, GitBranch, Monitor } from 'lucide-react'
 
 import { ConversationWorkspacePanel } from '@/components/chat/ConversationWorkspacePanel'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -86,10 +87,18 @@ export function GroupWorkspacePanel({
       <Tabs value={tab} onValueChange={changeTab} className="flex min-h-0 flex-1 flex-col">
         <div className="flex h-11 shrink-0 items-center border-b border-border px-2">
           <TabsList className="grid h-8 w-full grid-cols-4 p-0.5">
-            <TabsTrigger value="files" className="h-7 min-w-0 px-1 py-0.5 text-xs">{t('workspace.files')}</TabsTrigger>
-            <TabsTrigger value="git" className="h-7 min-w-0 px-1 py-0.5 text-xs">{t('workspace.git')}</TabsTrigger>
-            <TabsTrigger value="computer" className="h-7 min-w-0 px-1 py-0.5 text-xs">{t('workspace.computer')}</TabsTrigger>
-            <TabsTrigger value="triggers" className="h-7 min-w-0 px-1 py-0.5 text-xs">{t('workspace.triggers')}</TabsTrigger>
+            <TabsTrigger value="files" aria-label={t('workspace.files')} title={t('workspace.files')} className="h-7 min-w-0 px-1 py-0.5">
+              <FolderOpen className="h-4 w-4" aria-hidden="true" />
+            </TabsTrigger>
+            <TabsTrigger value="git" aria-label={t('workspace.git')} title={t('workspace.git')} className="h-7 min-w-0 px-1 py-0.5">
+              <GitBranch className="h-4 w-4" aria-hidden="true" />
+            </TabsTrigger>
+            <TabsTrigger value="computer" aria-label={t('workspace.computer')} title={t('workspace.computer')} className="h-7 min-w-0 px-1 py-0.5">
+              <Monitor className="h-4 w-4" aria-hidden="true" />
+            </TabsTrigger>
+            <TabsTrigger value="triggers" aria-label={t('workspace.triggers')} title={t('workspace.triggers')} className="h-7 min-w-0 px-1 py-0.5">
+              <CalendarClock className="h-4 w-4" aria-hidden="true" />
+            </TabsTrigger>
           </TabsList>
         </div>
         <TabsContent value="files" className="mt-0 min-h-0 flex-1">

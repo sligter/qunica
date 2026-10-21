@@ -154,7 +154,11 @@ with HTTPS server selection; desktop pairing remains available. Selecting a dire
 server preserves the pinned pairing identity in Keystore, without reusing its
 account token. Restoring that pairing requires login again.
 
-Instance selection clears credentials, drafts, queries, message/activity state,
+Desktop first entry offers Local mode (embedded service, no Docker) or an existing
+server and remembers the choice. Continuing or retrying the same instance retains
+the login. A different server is checked after reload installs its connection policy.
+
+Changing instance clears credentials, drafts, queries, message/activity state,
 terminal metadata and cursors before changing origin. Token-origin binding rejects
 late requests sending an old credential to a new destination. Native shells
 install a connection policy limited to the selected HTTP/WS origin. Android's
@@ -207,3 +211,12 @@ leaves the other device's shell running. Desktop local PTYs retain the native ad
 Protocol, SQLite, frontend and native compile fixtures are local verification.
 Real VPS TLS, physical three-device interaction, the specified performance baseline
 and full Noise-device acceptance remain separate gates; local tests do not prove them.
+
+Ended-run retention discovers up to 256 old events outside the SQLite write
+transaction, then rechecks active jobs and pending approvals before atomically
+deleting each batch and advancing replay floors. Each maintenance tick runs at
+most four batches and releases the writer between them. Indexed completion
+markers remain until their payload events are gone so later ticks can continue
+cleanup. Expiration is gradual for a large backlog; messages and command receipts
+are unaffected. This prevents a full legacy history scan and deletion from
+monopolizing the writer used by message acceptance and attachment uploads.
