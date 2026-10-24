@@ -587,7 +587,7 @@ pub(crate) async fn cancel_queued_job_in_tx(
     if changed == 0 {
         return Ok(());
     }
-    sqlx::query("UPDATE execution_jobs SET status='cancelled',occupies_group=0,worker_active=0,updated_at=? WHERE id=? AND status='queued'")
+    sqlx::query("UPDATE execution_jobs SET status='cancelled',occupies_thread=0,worker_active=0,updated_at=? WHERE id=? AND status='queued'")
         .bind(&now)
         .bind(job_id)
         .execute(&mut **tx)
@@ -620,7 +620,7 @@ async fn accept_cancel(
     crate::runtime::group_scheduler::store::cancel_turn_in_tx(&mut tx, turn, &now())
         .await
         .map_err(|_| ApiError::internal("failed to cancel turn"))?;
-    sqlx::query("UPDATE execution_jobs SET status='cancelled',occupies_group=CASE WHEN worker_active=0 THEN 0 ELSE occupies_group END,updated_at=? WHERE turn_id=? AND status IN ('queued','running','waiting_for_user')").bind(now()).bind(turn).execute(&mut *tx).await.map_err(db_error)?;
+    sqlx::query("UPDATE execution_jobs SET status='cancelled',occupies_thread=CASE WHEN worker_active=0 THEN 0 ELSE occupies_thread END,updated_at=? WHERE turn_id=? AND status IN ('queued','running','waiting_for_user')").bind(now()).bind(turn).execute(&mut *tx).await.map_err(db_error)?;
     // Note: a thread can already contain a newer approval when an old turn's
     // cancel is delivered. The checkpoint identifies the question's own turn.
     sqlx::query("UPDATE pending_approvals SET status='cancelled',version=version+1,updated_at=? WHERE thread_id=? AND status='pending' AND EXISTS(SELECT 1 FROM messages m,json_each(CASE WHEN json_valid(m.content_json) THEN m.content_json ELSE '{}' END,'$.tool_calls') c WHERE m.thread_id=pending_approvals.thread_id AND m.turn_id=? AND json_extract(c.value,'$.tool_call_id')=pending_approvals.tool_call_id)")
@@ -639,10 +639,10 @@ async fn accept_cancel(
     Ok(response)
 }
 
-/// Release a group whose job was interrupted by a restart. The command records
+/// Release a thread whose job was interrupted by a restart. The command records
 /// an explicit human confirmation that the old worker and its external effects
 /// are stopped; it never retries the interrupted action itself. Claiming keeps
-/// treating every unconfirmed interrupted job as group-blocking.
+/// treating every unconfirmed interrupted job as blocking its own thread.
 async fn accept_acknowledge_stopped(
     state: &AppState,
     owner: &str,
@@ -669,7 +669,7 @@ async fn accept_acknowledge_stopped(
     }
     let jobs: Vec<String> = sqlx::query_scalar(
         "UPDATE execution_jobs \
-         SET error='effects_verified_stopped',occupies_group=0,worker_active=0,updated_at=? \
+         SET error='effects_verified_stopped',occupies_thread=0,worker_active=0,updated_at=? \
          WHERE turn_id=? AND status='interrupted' \
            AND COALESCE(error,'')!='effects_verified_stopped' \
          RETURNING id",
@@ -864,16 +864,42 @@ struct Job {
     generation: i64,
 }
 
-/// Atomically claim at most one queued job. Group occupancy is decided here:
-/// a waiting or interrupted-unconfirmed job blocks every other job in the same
-/// group, and manual jobs sort ahead of not-yet-started automatic work.
+/// Atomically claim at most one queued job. A waiting or interrupted-unconfirmed
+/// job reserves its own thread; independent tasks in the same group can run.
+/// Manual jobs sort ahead of not-yet-started automatic work.
 async fn claim_next(state: &AppState) -> Result<Option<Job>, sqlx::Error> {
     let mut tx = state.db.begin_write().await?;
-    sqlx::query("UPDATE execution_jobs SET occupies_group=1 WHERE id IN (SELECT w.id FROM execution_jobs w WHERE w.status='waiting_for_user' AND w.occupies_group=0 AND NOT EXISTS(SELECT 1 FROM execution_jobs a WHERE a.owner_id=w.owner_id AND a.group_id=w.group_id AND a.occupies_group=1) AND w.id=(SELECT f.id FROM execution_jobs f WHERE f.owner_id=w.owner_id AND f.group_id=w.group_id AND f.status='waiting_for_user' ORDER BY f.created_at,f.id LIMIT 1))").execute(&mut *tx).await?;
-    let row:Option<Job>=sqlx::query_as("UPDATE execution_jobs SET status='running',occupies_group=1,worker_active=1,generation=generation+1,updated_at=? WHERE id=(SELECT q.id FROM execution_jobs q WHERE q.status='queued' AND q.worker_active=0 AND NOT EXISTS(SELECT 1 FROM execution_jobs a WHERE a.owner_id=q.owner_id AND a.group_id=q.group_id AND a.id!=q.id AND (a.occupies_group=1 OR (a.status='interrupted' AND COALESCE(a.error,'')!='effects_verified_stopped'))) AND NOT EXISTS(SELECT 1 FROM group_turns t WHERE t.thread_id=q.thread_id AND t.id!=q.turn_id AND t.status IN ('pending','running','waiting_for_user')) ORDER BY q.occupies_group DESC,(q.automation_id IS NULL) DESC,q.created_at,q.id LIMIT 1) AND status='queued' RETURNING id,owner_id,group_id,thread_id,turn_id,stream_id,command_name,payload_json,generation").bind(now()).fetch_optional(&mut *tx).await?;
+    // Note: thread ownership also covers cancelled workers still cleaning up.
+    // Occurrences of the same automation retain their existing non-overlap rule.
+    // Shared computers retain their own exclusive lease; see src/docs/guide/groups.md.
+    sqlx::query("UPDATE execution_jobs SET occupies_thread=1 WHERE id IN (SELECT w.id FROM execution_jobs w WHERE w.status='waiting_for_user' AND w.occupies_thread=0 AND NOT EXISTS(SELECT 1 FROM execution_jobs a WHERE a.owner_id=w.owner_id AND a.thread_id=w.thread_id AND a.occupies_thread=1) AND w.id=(SELECT f.id FROM execution_jobs f WHERE f.owner_id=w.owner_id AND f.thread_id=w.thread_id AND f.status='waiting_for_user' ORDER BY f.created_at,f.id LIMIT 1))").execute(&mut *tx).await?;
+    let row: Option<Job> = sqlx::query_as(
+        "UPDATE execution_jobs SET status='running',occupies_thread=1,worker_active=1,\
+            generation=generation+1,updated_at=? \
+         WHERE id=(SELECT q.id FROM execution_jobs q \
+            WHERE q.status='queued' AND q.worker_active=0 \
+            AND NOT EXISTS(SELECT 1 FROM execution_jobs a \
+                WHERE a.owner_id=q.owner_id AND a.thread_id=q.thread_id AND a.id!=q.id \
+                AND (a.occupies_thread=1 OR a.worker_active=1 OR a.status='waiting_for_user' \
+                    OR (a.status='interrupted' AND COALESCE(a.error,'')!='effects_verified_stopped'))) \
+            AND NOT EXISTS(SELECT 1 FROM execution_jobs a \
+                WHERE q.automation_id IS NOT NULL AND a.automation_id=q.automation_id \
+                AND a.owner_id=q.owner_id AND a.id!=q.id \
+                AND (a.occupies_thread=1 OR a.worker_active=1 OR a.status='waiting_for_user' \
+                    OR (a.status='interrupted' AND COALESCE(a.error,'')!='effects_verified_stopped'))) \
+            AND NOT EXISTS(SELECT 1 FROM group_turns t \
+                WHERE t.thread_id=q.thread_id AND t.id!=q.turn_id \
+                AND t.status IN ('pending','running','waiting_for_user')) \
+            ORDER BY q.occupies_thread DESC,(q.automation_id IS NULL) DESC,q.created_at,q.id LIMIT 1) \
+         AND status='queued' \
+         RETURNING id,owner_id,group_id,thread_id,turn_id,stream_id,command_name,payload_json,generation",
+    )
+    .bind(now())
+    .fetch_optional(&mut *tx)
+    .await?;
     if let Some(job) = &row {
         // Note: a previous worker may have appended replies or compacted past
-        // the acceptance seq. Allocate history order only after owning the group.
+        // the acceptance seq. Allocate history order only after owning the thread.
         let unadmitted: Option<(String, i64)> = sqlx::query_as(
             "SELECT m.id,m.seq FROM messages m JOIN execution_jobs j ON j.message_id=m.id WHERE j.id=? AND m.context_admitted=0",
         )
@@ -1059,7 +1085,7 @@ async fn finish_job(state: &AppState, job: &Job, outcome: TurnOutcome) -> Result
     .fetch_one(&mut *tx)
     .await?;
     if uncertain {
-        sqlx::query("UPDATE execution_jobs SET status='interrupted',error='computer_execution_uncertain',worker_active=0,occupies_group=1,updated_at=? WHERE id=? AND generation=?").bind(now()).bind(&job.id).bind(job.generation).execute(&mut *tx).await?;
+        sqlx::query("UPDATE execution_jobs SET status='interrupted',error='computer_execution_uncertain',worker_active=0,occupies_thread=1,updated_at=? WHERE id=? AND generation=?").bind(now()).bind(&job.id).bind(job.generation).execute(&mut *tx).await?;
         sqlx::query("UPDATE group_turns SET status='failed',updated_at=? WHERE id=? AND status IN ('pending','running')").bind(now()).bind(&job.turn_id).execute(&mut *tx).await?;
         append_stream_terminal(
             &mut tx,
@@ -1085,7 +1111,7 @@ async fn finish_job(state: &AppState, job: &Job, outcome: TurnOutcome) -> Result
         sqlx::query("UPDATE execution_jobs SET status=?,updated_at=? WHERE id=? AND generation=? AND status='running'").bind(job_status).bind(now()).bind(&job.id).bind(job.generation).execute(&mut *tx).await?;
         sqlx::query("UPDATE group_turns SET status=?,updated_at=? WHERE id=? AND status IN ('pending','running')").bind(turn_status).bind(now()).bind(&job.turn_id).execute(&mut *tx).await?;
     }
-    sqlx::query("UPDATE execution_jobs SET worker_active=0,occupies_group=CASE WHEN status='waiting_for_user' THEN 1 ELSE 0 END WHERE id=? AND generation=?")
+    sqlx::query("UPDATE execution_jobs SET worker_active=0,occupies_thread=CASE WHEN status='waiting_for_user' THEN 1 ELSE 0 END WHERE id=? AND generation=?")
         .bind(&job.id).bind(job.generation).execute(&mut *tx).await?;
     tx.commit().await?;
     launch(state.clone());
@@ -1100,8 +1126,8 @@ pub async fn recover(state: &AppState) -> Result<(), sqlx::Error> {
     sqlx::query("UPDATE execution_jobs SET status=CASE WHEN EXISTS(SELECT 1 FROM group_turns r WHERE r.id=execution_jobs.turn_id AND r.status='waiting_for_user') THEN 'waiting_for_user' WHEN EXISTS(SELECT 1 FROM group_turns r WHERE r.id=execution_jobs.turn_id AND r.status='cancelled') THEN 'cancelled' WHEN EXISTS(SELECT 1 FROM group_turns r WHERE r.id=execution_jobs.turn_id AND r.status IN ('completed','silence','budget_exhausted','failure_budget_exhausted') AND EXISTS(SELECT 1 FROM stream_events e WHERE e.stream_id=execution_jobs.stream_id AND e.kind='done')) THEN 'succeeded' ELSE 'interrupted' END,error='server_restart',updated_at=? WHERE status='running'")
         .bind(now()).execute(&mut *tx).await?;
     sqlx::query("UPDATE execution_jobs SET status='interrupted',error='server_restart',updated_at=? WHERE status IN ('queued','cancelled') AND worker_active=1").bind(now()).execute(&mut *tx).await?;
-    sqlx::query("UPDATE execution_jobs SET status='interrupted',error='computer_execution_uncertain',occupies_group=1,updated_at=? WHERE turn_id IN (SELECT turn_id FROM computer_operations WHERE status='uncertain')").bind(now()).execute(&mut *tx).await?;
-    sqlx::query("UPDATE execution_jobs SET worker_active=0,occupies_group=CASE WHEN status IN ('succeeded','failed','cancelled') THEN 0 ELSE occupies_group END").execute(&mut *tx).await?;
+    sqlx::query("UPDATE execution_jobs SET status='interrupted',error='computer_execution_uncertain',occupies_thread=1,updated_at=? WHERE turn_id IN (SELECT turn_id FROM computer_operations WHERE status='uncertain')").bind(now()).execute(&mut *tx).await?;
+    sqlx::query("UPDATE execution_jobs SET worker_active=0,occupies_thread=CASE WHEN status IN ('succeeded','failed','cancelled') THEN 0 ELSE occupies_thread END").execute(&mut *tx).await?;
     sqlx::query("UPDATE execution_jobs SET error=NULL WHERE error='server_restart' AND status IN ('waiting_for_user','succeeded','cancelled')").execute(&mut *tx).await?;
     let interrupted:Vec<(String,String)>=sqlx::query_as("SELECT stream_id,thread_id FROM execution_jobs WHERE status='interrupted' AND error IN ('server_restart','computer_execution_uncertain')")
         .fetch_all(&mut *tx).await?;
@@ -1188,7 +1214,7 @@ mod claim_tests {
         worker: i64,
     ) {
         sqlx::query(
-            "INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,error,occupies_group,worker_active,automation_id,created_at,updated_at) \
+            "INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,error,occupies_thread,worker_active,automation_id,created_at,updated_at) \
              VALUES(?,? ,?,'message.send','group-1',?,?,?,'{}',?,?,?,?,?,?,?)",
         )
         .bind(id)
@@ -1210,12 +1236,12 @@ mod claim_tests {
     }
 
     #[tokio::test]
-    async fn manual_jobs_claim_before_older_automatic_jobs_and_group_is_exclusive() {
+    async fn manual_jobs_claim_before_older_automatic_jobs_and_thread_is_exclusive() {
         let state = state().await;
         job(
             &state,
             "auto",
-            "thread-auto",
+            "thread-shared",
             "2026-10-18T11:00:00Z",
             Some("automation-1"),
             "queued",
@@ -1227,7 +1253,7 @@ mod claim_tests {
         job(
             &state,
             "manual",
-            "thread-manual",
+            "thread-shared",
             "2026-10-18T11:59:00Z",
             None,
             "queued",
@@ -1239,11 +1265,17 @@ mod claim_tests {
 
         let claimed = claim_next(&state).await.unwrap().unwrap();
         assert_eq!(claimed.id, "manual");
-        // The claimed job now owns the group; newer work waits even if older.
+        // Ownership lasts until the worker settles, even after cancellation.
+        assert!(claim_next(&state).await.unwrap().is_none());
+
+        sqlx::query("UPDATE execution_jobs SET status='cancelled' WHERE id='manual'")
+            .execute(state.db.pool())
+            .await
+            .unwrap();
         assert!(claim_next(&state).await.unwrap().is_none());
 
         sqlx::query(
-            "UPDATE execution_jobs SET status='succeeded',occupies_group=0 WHERE id='manual'",
+            "UPDATE execution_jobs SET occupies_thread=0,worker_active=0 WHERE id='manual'",
         )
         .execute(state.db.pool())
         .await
@@ -1253,7 +1285,7 @@ mod claim_tests {
     }
 
     #[tokio::test]
-    async fn unconfirmed_interrupted_job_blocks_the_group_until_stopped() {
+    async fn unconfirmed_interrupted_job_blocks_only_its_thread_until_stopped() {
         let state = state().await;
         job(
             &state,
@@ -1270,7 +1302,7 @@ mod claim_tests {
         job(
             &state,
             "next",
-            "thread-next",
+            "thread-crashed",
             "2026-10-18T11:01:00Z",
             None,
             "queued",
@@ -1279,14 +1311,174 @@ mod claim_tests {
             0,
         )
         .await;
+        job(
+            &state,
+            "independent",
+            "thread-independent",
+            NOW,
+            None,
+            "queued",
+            None,
+            0,
+            0,
+        )
+        .await;
+        assert_eq!(claim_next(&state).await.unwrap().unwrap().id, "independent");
         assert!(claim_next(&state).await.unwrap().is_none());
 
-        sqlx::query("UPDATE execution_jobs SET error='effects_verified_stopped',occupies_group=0 WHERE id='crashed'")
+        sqlx::query("UPDATE execution_jobs SET error='effects_verified_stopped',occupies_thread=0 WHERE id='crashed'")
             .execute(state.db.pool())
             .await
             .unwrap();
         let claimed = claim_next(&state).await.unwrap().unwrap();
         assert_eq!(claimed.id, "next");
+    }
+
+    #[tokio::test]
+    async fn independent_threads_in_one_group_can_be_claimed_concurrently() {
+        let state = state().await;
+        for (id, thread) in [("first", "thread-first"), ("second", "thread-second")] {
+            job(&state, id, thread, NOW, None, "queued", None, 0, 0).await;
+        }
+
+        let (first, second) = tokio::join!(claim_next(&state), claim_next(&state));
+        let mut ids = [first.unwrap().unwrap().id, second.unwrap().unwrap().id];
+        ids.sort();
+        assert_eq!(ids, ["first", "second"]);
+        let running: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM execution_jobs WHERE status='running' AND occupies_thread=1 AND worker_active=1",
+        )
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+        assert_eq!(running, 2);
+        assert!(claim_next(&state).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn waiting_checkpoints_reserve_only_their_own_threads() {
+        let state = state().await;
+        // Legacy databases can have waiting checkpoints without the old group lease.
+        for thread in ["thread-first", "thread-second"] {
+            job(
+                &state,
+                &format!("waiting-{thread}"),
+                thread,
+                NOW,
+                None,
+                "waiting_for_user",
+                None,
+                0,
+                0,
+            )
+            .await;
+            job(
+                &state,
+                &format!("queued-{thread}"),
+                thread,
+                NOW,
+                None,
+                "queued",
+                None,
+                0,
+                0,
+            )
+            .await;
+        }
+        job(
+            &state,
+            "independent",
+            "thread-third",
+            NOW,
+            None,
+            "queued",
+            None,
+            0,
+            0,
+        )
+        .await;
+
+        assert_eq!(claim_next(&state).await.unwrap().unwrap().id, "independent");
+        assert!(claim_next(&state).await.unwrap().is_none());
+        let reserved: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM execution_jobs WHERE status='waiting_for_user' AND occupies_thread=1",
+        )
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+        assert_eq!(reserved, 2);
+    }
+
+    #[tokio::test]
+    async fn concurrent_claims_keep_one_worker_per_thread() {
+        let state = state().await;
+        for id in ["first", "second"] {
+            job(&state, id, "thread-shared", NOW, None, "queued", None, 0, 0).await;
+        }
+        let (first, second) = tokio::join!(claim_next(&state), claim_next(&state));
+        assert_eq!(
+            usize::from(first.unwrap().is_some()) + usize::from(second.unwrap().is_some()),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn automation_non_overlap_does_not_block_independent_tasks() {
+        let state = state().await;
+        job(
+            &state,
+            "running-auto",
+            "thread-auto",
+            NOW,
+            Some("automation-1"),
+            "running",
+            None,
+            1,
+            1,
+        )
+        .await;
+        job(
+            &state,
+            "next-auto",
+            "thread-next-auto",
+            NOW,
+            Some("automation-1"),
+            "queued",
+            None,
+            0,
+            0,
+        )
+        .await;
+        job(
+            &state,
+            "manual",
+            "thread-manual",
+            NOW,
+            None,
+            "queued",
+            None,
+            0,
+            0,
+        )
+        .await;
+        job(
+            &state,
+            "other-auto",
+            "thread-other-auto",
+            NOW,
+            Some("automation-2"),
+            "queued",
+            None,
+            0,
+            0,
+        )
+        .await;
+        assert_eq!(claim_next(&state).await.unwrap().unwrap().id, "manual");
+        assert_eq!(claim_next(&state).await.unwrap().unwrap().id, "other-auto");
+        assert!(claim_next(&state).await.unwrap().is_none());
+        sqlx::query("UPDATE execution_jobs SET status='succeeded',occupies_thread=0,worker_active=0 WHERE id='running-auto'")
+            .execute(state.db.pool()).await.unwrap();
+        assert_eq!(claim_next(&state).await.unwrap().unwrap().id, "next-auto");
     }
 
     #[tokio::test]
@@ -1321,7 +1513,7 @@ mod claim_tests {
                 .is_err()
         );
         let occupied: (i64, i64) = sqlx::query_as(
-            "SELECT occupies_group,worker_active FROM execution_jobs WHERE id='current'",
+            "SELECT occupies_thread,worker_active FROM execution_jobs WHERE id='current'",
         )
         .fetch_one(state.db.pool())
         .await
@@ -1337,7 +1529,7 @@ mod claim_tests {
             .unwrap()
             .unwrap();
         let job: (String, i64, i64) = sqlx::query_as(
-            "SELECT status,occupies_group,worker_active FROM execution_jobs WHERE id='current'",
+            "SELECT status,occupies_thread,worker_active FROM execution_jobs WHERE id='current'",
         )
         .fetch_one(state.db.pool())
         .await
@@ -1362,7 +1554,7 @@ mod claim_tests {
                 .unwrap();
         assert_eq!(status, "acknowledged");
         let occupied: i64 =
-            sqlx::query_scalar("SELECT occupies_group FROM execution_jobs WHERE id='current'")
+            sqlx::query_scalar("SELECT occupies_thread FROM execution_jobs WHERE id='current'")
                 .fetch_one(state.db.pool())
                 .await
                 .unwrap();

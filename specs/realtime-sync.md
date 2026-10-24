@@ -48,7 +48,7 @@ M1b 本地验证（2026-10-18）：后端阶段全量 944 项、前端最终全�
 }
 ```
 
-接收成功响应返回 `request_id`、`status: accepted`、`job_id`、`turn_id` 与 `stream_id`；这些标识在接收事务内确定。`accepted` 只表示已持久接收，不表示执行或交付已完成。客户端收到响应前断线，可用相同 request_id 查询或重试。M1 引入的 job 只是接收记录，不改变现有按 thread 的互斥和并发行为；群级活动 job 约束只在 M3 启用（见 6.4）。
+接收成功响应返回 `request_id`、`status: accepted`、`job_id`、`turn_id` 与 `stream_id`；这些标识在接收事务内确定。`accepted` 只表示已持久接收，不表示执行或交付已完成。客户端收到响应前断线，可用相同 request_id 查询或重试。job 的占用按 owner + thread 约束，同群不同任务线程可以并行；同线程审批、取消收尾与重启恢复仍按序处理，自动任务的发生项及共享电脑另有资源约束（见 [自动触发队列合同](automations.md#64-队列竞争与恢复)）。
 
 ### 4.3 两类订阅与事件
 

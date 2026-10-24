@@ -12,6 +12,10 @@ You can save an existing group's settings and Agent roster as a reusable templat
 
 Open the current task selector to switch between active and archived tasks. Each row has a **Rename task** action; renaming changes only the title and preserves messages, execution state, and Git bindings. Titles contain 1–80 characters after trimming whitespace.
 
+Different task threads in the same group run concurrently, including when they use the same Agent. Each thread has its own history, ACP session, execution lease, approvals, cancellation and restart confirmation. New messages in one thread wait for its current worker to finish; a waiting or interrupted task does not reserve the whole group. Occurrences of the same automation still run one at a time.
+
+Tasks using separate Git branches run in their existing worktrees. Tasks sharing a working directory can still edit the same files, so use separate branch tasks when file isolation is needed. A shared controlled computer retains its own exclusive execution lease; parallel task scheduling does not allow two turns to control it together.
+
 Archived rows also have **Delete task**, and the archived section has **Delete all archived**. Both ask for confirmation. Deletion removes the task and its messages from the app, keeps its Git branch, and attempts to remove its worktree. Bulk deletion uses the archived tasks shown when the confirmation opens; active tasks are untouched. If a deletion fails, completed deletions stay applied and the dialog allows retrying the remaining tasks.
 
 ## Who replies
@@ -31,7 +35,7 @@ In a bounded mesh turn without a moderator, an Agent's public `@mention` request
 - `hierarchical` — leaders go first.
 - `ring` — a fixed rotation, by `speaking_order`.
 
-Agents are dispatched one at a time, not in the background. A speaker must finish its response before the scheduler can advance. Writing a shared note or assigning work in prose shares context but does not itself dispatch another agent.
+Within one task turn, Agents are dispatched one at a time. A speaker must finish its response before that turn's scheduler can advance; other task threads can run concurrently. Writing a shared note or assigning work in prose shares context but does not itself dispatch another agent.
 
 Use `AgentAsTool` for structured delegation when it is available. `call` runs a helper privately and returns the result to the caller. In bounded mode, `handoff` instead transfers the public response to that helper. A pending public responder may be delegated to; doing so claims its scheduled slot so it does not run again later. Agents that already ran and helpers already claimed are excluded. Automatic mode permits `call` only because the moderator owns public dispatch.
 

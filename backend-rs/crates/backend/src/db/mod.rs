@@ -370,6 +370,67 @@ mod tests {
     use sqlx::SqlitePool;
 
     #[tokio::test]
+    async fn thread_job_migration_preserves_checkpoints_and_enforces_thread_ownership() {
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        let pool = db.pool();
+        for migration in super::MIGRATOR
+            .iter()
+            .filter(|migration| migration.version < 46)
+        {
+            sqlx::raw_sql(migration.sql.as_ref())
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO users(id,email,password_hash,name,created_at,updated_at) VALUES('owner','upgrade@example.test','hash','Owner','now','now')")
+            .execute(pool).await.unwrap();
+        for (id, thread, status, occupied) in [
+            ("running", "thread-a", "running", 1),
+            ("waiting", "thread-b", "waiting_for_user", 0),
+            ("queued", "thread-a", "queued", 0),
+        ] {
+            sqlx::query("INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,occupies_group,worker_active,created_at,updated_at) VALUES(?,'owner',?,'message.send','group',?,?,?,'{}',?,?,?,'now','now')")
+                .bind(id).bind(id).bind(thread).bind(id).bind(id).bind(status)
+                .bind(occupied).bind(occupied).execute(pool).await.unwrap();
+        }
+        assert!(
+            sqlx::query("UPDATE execution_jobs SET occupies_group=1 WHERE id='waiting'")
+                .execute(pool)
+                .await
+                .is_err()
+        );
+
+        sqlx::raw_sql(include_str!("migrations/0046_thread_job_ownership.sql"))
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE execution_jobs SET occupies_thread=1 WHERE id='waiting'")
+            .execute(pool)
+            .await
+            .unwrap();
+        assert!(
+            sqlx::query("UPDATE execution_jobs SET occupies_thread=1 WHERE id='queued'")
+                .execute(pool)
+                .await
+                .is_err()
+        );
+        let jobs: Vec<(String, String, i64, i64)> = sqlx::query_as(
+            "SELECT id,status,occupies_thread,worker_active FROM execution_jobs ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            jobs,
+            vec![
+                ("queued".into(), "queued".into(), 0, 0),
+                ("running".into(), "running".into(), 1, 1),
+                ("waiting".into(), "waiting_for_user".into(), 1, 0),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn repairs_legacy_appearance_checksum_when_schema_matches() {
         let pool = legacy_migration_pool(true).await;
         let old_checksum = applied_checksum(&pool).await;

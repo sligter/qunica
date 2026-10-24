@@ -121,11 +121,15 @@ The server claims queued jobs with an atomic generation update and drains runtim
 output independently of clients. Startup executes queued work and marks already
 started jobs interrupted; it does not replay uncertain external side effects.
 Generation and stream checks prevent an old worker from finalizing a continuation.
-M3 claims one job per group across manual and automatic entry points. Waiting and
-unconfirmed interrupted jobs keep their group reserved; manual work sorts ahead
-of automatic work that has not started. `turn.acknowledge_stopped` is the explicit
-human confirmation that releases a group after a restart, and it never retries the
-interrupted action. See [Automations](automations.md).
+Jobs reserve their task thread across manual and automatic entry points, so
+independent threads in the same group can execute concurrently. Waiting and
+unconfirmed interrupted jobs reserve only their own thread; cancelled workers
+keep that reservation until cleanup finishes. Occurrences of the same automation
+remain sequential, and shared computers retain their own exclusive lease.
+Manual work sorts ahead of automatic work that has not started.
+`turn.acknowledge_stopped` explicitly releases the interrupted thread after its
+old actions have stopped; it never retries the interrupted action. See
+[Groups](groups.md#managing-tasks) and [Automations](automations.md).
 
 ## Approvals and restart
 

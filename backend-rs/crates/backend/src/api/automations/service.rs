@@ -348,7 +348,7 @@ pub async fn history(
     ))
 }
 async fn cancel_queued(tx: &mut Transaction<'_, Sqlite>, automation: &str) -> Result<(), ApiError> {
-    let ids:Vec<String>=sqlx::query_scalar("SELECT id FROM execution_jobs WHERE automation_id=? AND status='queued' AND worker_active=0 AND occupies_group=0")
+    let ids:Vec<String>=sqlx::query_scalar("SELECT id FROM execution_jobs WHERE automation_id=? AND status='queued' AND worker_active=0 AND occupies_thread=0")
         .bind(automation).fetch_all(&mut **tx).await.map_err(db_error)?;
     for id in ids {
         commands::cancel_queued_job_in_tx(tx, &id)

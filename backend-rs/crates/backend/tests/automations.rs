@@ -1,4 +1,4 @@
-//! Durable trigger acceptance, timer recovery and group-level job arbitration.
+//! Durable trigger acceptance, timer recovery and thread-level job arbitration.
 //! These exercise the real API, SQLite schema and runtime worker instead of a
 //! mocked scheduler: the acceptance promise is that a 202 exists only after the
 //! occurrence, thread, message, turn, job and receipt are committed together.
@@ -624,11 +624,10 @@ async fn pausing_cancels_only_unclaimed_automatic_work() {
     )
     .await;
     let automation_id = automation["id"].as_str().unwrap();
-    let now = Utc.with_ymd_and_hms(2026, 10, 18, 12, 0, 3).unwrap();
-    set_due(&state, automation_id, now.timestamp() - 30).await;
-    // Another worker owns the group, so the new automation job must wait.
+    // Seed accepted work directly so pausing deterministically races neither
+    // the timer nor the worker that claims a newly committed occurrence.
     sqlx::query(
-        "INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,generation,occupies_group,worker_active,created_at,updated_at) \
+        "INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,generation,occupies_thread,worker_active,created_at,updated_at) \
          VALUES('busy-job',?, 'busy-request','message.send',?,'busy-thread','busy-turn','busy-stream','{}','running',1,1,1,'2026-10-18T11:59:00Z','2026-10-18T11:59:00Z')",
     )
     .bind(&owner)
@@ -637,10 +636,18 @@ async fn pausing_cancels_only_unclaimed_automatic_work() {
     .await
     .unwrap();
 
-    assert_eq!(automations::tick(&state, now, false).await.unwrap(), 1);
+    for (id, status, occupied) in [("unclaimed", "queued", 0), ("claimed", "running", 1)] {
+        sqlx::query("INSERT INTO threads(id,group_id,status,created_at,updated_at) VALUES(?,?,'active','now','now')")
+            .bind(id).bind(&group).execute(state.db.pool()).await.unwrap();
+        sqlx::query("INSERT INTO group_turns(id,thread_id,group_id,status,scheduler_strategy,config_snapshot_json,topology_snapshot_json,created_at,updated_at) VALUES(?,?,?,?,'bounded','{}','{}','now','now')")
+            .bind(id).bind(id).bind(&group).bind(status).execute(state.db.pool()).await.unwrap();
+        sqlx::query("INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,occupies_thread,worker_active,automation_id,created_at,updated_at) VALUES(?,?,?,'message.send',?,?,?,?,'{}',?,?,?,?,'now','now')")
+            .bind(id).bind(&owner).bind(id).bind(&group).bind(id).bind(id).bind(id)
+            .bind(status).bind(occupied).bind(occupied).bind(automation_id)
+            .execute(state.db.pool()).await.unwrap();
+    }
     let job: (String, i64) =
-        sqlx::query_as("SELECT status,occupies_group FROM execution_jobs WHERE automation_id=?")
-            .bind(automation_id)
+        sqlx::query_as("SELECT status,occupies_thread FROM execution_jobs WHERE id='unclaimed'")
             .fetch_one(state.db.pool())
             .await
             .unwrap();
@@ -657,9 +664,8 @@ async fn pausing_cancels_only_unclaimed_automatic_work() {
     assert_eq!(status, StatusCode::OK, "{paused}");
     let cancelled: (String, String) = sqlx::query_as(
         "SELECT j.status,g.status FROM execution_jobs j JOIN group_turns g ON g.id=j.turn_id \
-         WHERE j.automation_id=?",
+         WHERE j.id='unclaimed'",
     )
-    .bind(automation_id)
     .fetch_one(state.db.pool())
     .await
     .unwrap();
@@ -668,10 +674,13 @@ async fn pausing_cancels_only_unclaimed_automatic_work() {
         .fetch_one(state.db.pool())
         .await
         .unwrap();
-    assert_eq!(
-        busy, "running",
-        "pause must not stop another group's worker"
-    );
+    assert_eq!(busy, "running", "pause must not stop another task's worker");
+    let claimed: String =
+        sqlx::query_scalar("SELECT status FROM execution_jobs WHERE id='claimed'")
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(claimed, "running", "pause preserves claimed automatic work");
     let next_run: Option<i64> =
         sqlx::query_scalar("SELECT next_run_at FROM automations WHERE id=?")
             .bind(automation_id)
@@ -682,7 +691,7 @@ async fn pausing_cancels_only_unclaimed_automatic_work() {
 }
 
 #[tokio::test]
-async fn restart_preserves_queued_work_and_releases_the_group_after_stop_confirmation() {
+async fn restart_preserves_queued_work_and_blocks_only_the_interrupted_thread() {
     let directory = tempfile::tempdir().unwrap();
     let database_url = sqlite_url(&directory.path().join("automations.sqlite3"));
     let db = Db::connect(&database_url).await.unwrap();
@@ -728,6 +737,7 @@ async fn restart_preserves_queued_work_and_releases_the_group_after_stop_confirm
         ("turn-a", "thread-a", "group-a", "queued"),
         ("turn-b", "thread-b", "group-b", "running"),
         ("turn-b2", "thread-b2", "group-b", "queued"),
+        ("turn-b3", "thread-b", "group-b", "queued"),
     ] {
         sqlx::query(
             "INSERT INTO group_turns(id,thread_id,group_id,status,scheduler_strategy,config_snapshot_json,topology_snapshot_json,created_at,updated_at) \
@@ -745,9 +755,10 @@ async fn restart_preserves_queued_work_and_releases_the_group_after_stop_confirm
         ("job-a", "group-a", "thread-a", "turn-a", "queued", 0, 0),
         ("job-b", "group-b", "thread-b", "turn-b", "running", 1, 1),
         ("job-b2", "group-b", "thread-b2", "turn-b2", "queued", 0, 0),
+        ("job-b3", "group-b", "thread-b", "turn-b3", "queued", 0, 0),
     ] {
         sqlx::query(
-            "INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,generation,occupies_group,worker_active,created_at,updated_at) \
+            "INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,generation,occupies_thread,worker_active,created_at,updated_at) \
              VALUES(?,'owner-1',?,'message.send',?,?,?,?,'{\"content\":\"restart\",\"attachments\":[],\"model_override\":null,\"effort_override\":null}',?,?,?,?,'2026-10-18T11:00:00Z','2026-10-18T11:00:00Z')",
         )
         .bind(id)
@@ -783,6 +794,7 @@ async fn restart_preserves_queued_work_and_releases_the_group_after_stop_confirm
     let app = api::router(state.clone());
 
     wait_status(&state, "job-a", "succeeded").await;
+    wait_status(&state, "job-b2", "succeeded").await;
     assert_eq!(
         sqlx::query_scalar::<_, String>("SELECT status FROM execution_jobs WHERE id='job-b'")
             .fetch_one(state.db.pool())
@@ -790,14 +802,13 @@ async fn restart_preserves_queued_work_and_releases_the_group_after_stop_confirm
             .unwrap(),
         "interrupted"
     );
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert_eq!(
-        sqlx::query_scalar::<_, String>("SELECT status FROM execution_jobs WHERE id='job-b2'")
+        sqlx::query_scalar::<_, String>("SELECT status FROM execution_jobs WHERE id='job-b3'")
             .fetch_one(state.db.pool())
             .await
             .unwrap(),
         "queued",
-        "an unconfirmed interrupted job must keep the group blocked"
+        "an unconfirmed interrupted job blocks its own thread while other tasks run"
     );
 
     let (_, login) = request(
@@ -824,7 +835,7 @@ async fn restart_preserves_queued_work_and_releases_the_group_after_stop_confirm
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{acknowledged}");
     assert_eq!(acknowledged["jobs"], json!(["job-b"]));
-    wait_status(&state, "job-b2", "succeeded").await;
+    wait_status(&state, "job-b3", "succeeded").await;
 }
 
 async fn wait_status(state: &AppState, job: &str, expected: &str) {

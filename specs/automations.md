@@ -1,11 +1,13 @@
 # Qunica 自动触发 Spec
 
 Status: proposed
-Version: 0.6
+Version: 0.7
 Since: 2026-10-17
 Implementation: persistent queue, generic and GitHub Webhooks, background timer, client panel and manual stop confirmation implemented and locally verified; real-device and real-model acceptance pending
 
 跨阶段范围、已确认取舍与里程碑见 [总索引](server-sync-computer-automation.md)。
+
+当前队列合同见 [6.4](#64-队列竞争与恢复)：独立线程并行，线程级占用取代下列 2026-10-18 实现记录中的群级占用。
 
 实现进度（2026-10-18）：发生项、独立线程、消息、回合、job 与命令回执在同一写事务接收；CRUD、启停、secret 轮换/撤销、历史与 Webhook 路由已接入；后台每 5 秒 tick 与启动 recovering tick 使用服务端注入的 UTC 时间，无客户端在线也执行。五字段 cron/IANA 时区、夏令时缺失跳过与重复只取第一次、24 小时补跑、HMAC 原始字节与规范化摘要保留离线回归。群级活动 job 唯一约束覆盖人工和自动入口，人工未开始项优先；暂停取消未领取自动项，执行中的任务不受影响；重启后 queued 继续、running 标为 interrupted，需 `turn.acknowledge_stopped` 人工确认后释放群。自动化预算与群当前上限取交集，超时在安全检查点发出取消。客户端 `/settings/automations` 已提供列表、按群组筛选、创建/编辑、未来五次预览、启停、Webhook secret 轮换/撤销、运行历史与中英双语；编辑前的预览走只读 `POST /api/v2/automations/preview`，不产生发生项。GitHub 原生适配器使用 `X-Hub-Signature-256` 校验原始正文，`X-GitHub-Event` 做订阅过滤，`X-GitHub-Delivery` 作为发生项键；`ping` 默认忽略，空事件表接收除 `ping` 外全部事件。投递 ID 头不在 GitHub 签名范围内，因此额外按规范化 payload 摘要去重，改头重放不会创建第二个任务。停止确认界面已接入 Turn 详情，通过 `turn.acknowledge_stopped` 解除重启或不确定电脑操作造成的群阻塞。自动触发 API+SQLite 回归 7 项、领取/取消单元回归 3 项、日程 9 项、验签 8 项；前端新增 9 项页面回归，前端全量 927 项通过；后端全量 983 项通过、2 项 opt-in Docker 用例单独运行通过，Clippy（拒绝 warning）与格式检查通过，结果见 [本地验收记录](automations-local-acceptance.md)。真实三端与真实模型评测未运行。M3 本地实现不依赖 Docker，但不能据此宣称 P1 或整份 spec 已通过。
 
@@ -40,7 +42,7 @@ Implementation: persistent queue, generic and GitHub Webhooks, background timer,
 
 `execution_jobs` 作为统一执行接收记录，状态包括 queued、running、waiting_for_user、succeeded、failed、cancelled、interrupted。原有 turn/dispatch 状态保持事实来源，job 通过关联 ID 反映结果，不能用另一套调度器重新选人。
 
-提议新任务入口默认每群一个活动 job，包含人工和自动请求；这会把当前按 thread 的互斥扩展到群，是需要评审的新约定，只在 M3 随自动触发一起启用，M1/M2 不改变现有手动使用的并发行为。约束落在 `execution_jobs` 上（owner + group 的活动态唯一），`ux_group_turns_one_active_thread` 保持不变：一个群同时只跑一个 job，job 内仍可有多个按 thread 排队的回合，两者语义不同，不要合并成一个索引。人工任务优先于尚未开始的自动任务，不能隐式抢占正在执行的任务。所有入口共同参与入队和租约裁决，不能只限制定时器而让手动入口绕过。
+新任务入口按 owner + thread 占用，人工和自动请求共享线程级租约；同群不同任务线程可以同时执行，同线程仍依次运行。迁移 0046 将 `occupies_group` 改为 `occupies_thread`，用 `ux_execution_jobs_thread_owner` 取代群级唯一索引；`ux_group_turns_one_active_thread` 保留回合级约束。占用独立于状态，取消后的 worker 收尾期间仍阻塞同线程后继。审批等待、重启中断和停止确认仅阻塞或释放对应线程；同一自动任务的发生项仍依次执行，共享电脑仍保留资源级独占。人工任务优先于尚未开始的自动任务，不能隐式抢占正在执行的任务。所有入口共同参与入队和租约裁决，不能只限制定时器而让手动入口绕过。任务历史、ACP 会话与取消按线程隔离；共享目录的文件修改不自动隔离，需要文件隔离时使用现有分支任务/worktree。
 
 审批、停止、接管和继续是针对已有 job 的控制命令，不排在该 job 之后。回答等待中的问题时，消息显式关联等待的 job/问题，由统一入口续接该工作；不能创建一个被原 waiting_for_user job 阻塞的新任务。普通新任务不会自动顶替等待中的工作，用户可明确停止原工作后继续队列。
 

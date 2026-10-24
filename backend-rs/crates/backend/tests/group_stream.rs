@@ -1185,6 +1185,130 @@ async fn only_dispatch(state: &AppState, group_id: &str) -> (String, String) {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn independent_task_jobs_run_concurrently_with_isolated_history_and_cancellation() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "parallel-tasks@example.test").await;
+    let owner = owner_id(&state, "parallel-tasks@example.test").await;
+    let (_root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let (base_url, requests, started, release) =
+        controlled_recording_fake_provider(text_body("independent reply")).await;
+    let provider = seed_provider(&state, &owner, &base_url).await;
+    seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Solo",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let first_thread = seed_thread(&state, &group, "active").await;
+    let second_thread = seed_thread(&state, &group, "active").await;
+    let mut accepted = Vec::new();
+    for (thread, marker) in [
+        (&first_thread, "first-task-private-input"),
+        (&second_thread, "second-task-private-input"),
+    ] {
+        let (status, receipt) = send(
+            &app,
+            authed_json(
+                "POST",
+                "/api/v2/commands",
+                &token,
+                json!({"request_id":uuid::Uuid::new_v4().to_string(),"name":"message.send",
+                "target":{"conversation_id":group,"thread_id":thread},
+                "payload":{"content":format!("@Solo {marker}")}}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{receipt}");
+        tokio::time::timeout(Duration::from_secs(5), started.notified())
+            .await
+            .expect("each thread reaches its provider while the other request is still blocked");
+        accepted.push(receipt);
+    }
+    let captured = requests.lock().await;
+    assert_eq!(captured.len(), 2);
+    assert!(captured[0].to_string().contains("first-task-private-input"));
+    assert!(!captured[0]
+        .to_string()
+        .contains("second-task-private-input"));
+    assert!(captured[1]
+        .to_string()
+        .contains("second-task-private-input"));
+    assert!(!captured[1].to_string().contains("first-task-private-input"));
+    drop(captured);
+    let running: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM execution_jobs WHERE group_id=? AND status='running' AND worker_active=1 AND occupies_thread=1",
+    ).bind(&group).fetch_one(state.db.pool()).await.unwrap();
+    assert_eq!(running, 2);
+
+    let (status, cancelled) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/commands",
+            &token,
+            json!({"request_id":uuid::Uuid::new_v4().to_string(),"name":"turn.cancel",
+            "target":{"turn_id":accepted[0]["turn_id"]},"payload":{}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{cancelled}");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let settled: bool = sqlx::query_scalar(
+                "SELECT status='cancelled' AND worker_active=0 AND occupies_thread=0 FROM execution_jobs WHERE id=?",
+            ).bind(accepted[0]["job_id"].as_str().unwrap()).fetch_one(state.db.pool()).await.unwrap();
+            if settled { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    let second: (String, i64) =
+        sqlx::query_as("SELECT status,worker_active FROM execution_jobs WHERE id=?")
+            .bind(accepted[1]["job_id"].as_str().unwrap())
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(second, ("running".into(), 1));
+
+    release.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let settled: bool = sqlx::query_scalar(
+                "SELECT status='succeeded' AND worker_active=0 FROM execution_jobs WHERE id=?",
+            )
+            .bind(accepted[1]["job_id"].as_str().unwrap())
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+            if settled {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let first_history = load_conversation(state.db.pool(), &first_thread)
+        .await
+        .unwrap();
+    let second_history = load_conversation(state.db.pool(), &second_thread)
+        .await
+        .unwrap();
+    assert!(!first_history
+        .iter()
+        .any(|message| message.content.contains("independent reply")));
+    assert!(second_history
+        .iter()
+        .any(|message| message.content.contains("independent reply")));
+    assert!(!second_history
+        .iter()
+        .any(|message| message.content.contains("first-task-private-input")));
+}
+
+#[tokio::test]
 async fn compacted_context_is_reused_on_the_next_turn() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "compaction-checkpoint@example.com").await;

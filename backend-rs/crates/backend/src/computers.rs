@@ -220,8 +220,8 @@ impl ComputerExecution {
                 || (binding_kind == "private" && binding_id == agent),
             "Supervisor scope does not match the execution binding"
         );
-        // Note: a private Agent can appear in different groups. Group-level
-        // job exclusion alone cannot prevent two turns driving its computer.
+        // Note: independent task threads can run in parallel, and a private
+        // Agent can appear in different groups. The computer needs its own lease.
         let mut tx = crate::db::begin_write(pool).await?;
         let occupied:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM computer_run_bindings b JOIN group_turns t ON t.id=b.turn_id WHERE b.computer_id=? AND b.turn_id!=? AND (t.status IN ('pending','running','waiting_for_user') OR EXISTS(SELECT 1 FROM computer_operations o WHERE o.turn_id=b.turn_id AND o.computer_id=b.computer_id AND o.status IN ('running','uncertain'))))")
             .bind(&id).bind(turn).fetch_one(&mut *tx).await?;

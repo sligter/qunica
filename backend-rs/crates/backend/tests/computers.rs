@@ -192,7 +192,7 @@ async fn binding_is_explicit_scoped_and_rejects_unsupported_acp_and_active_rebin
         .fetch_one(state.db.pool())
         .await
         .unwrap();
-    sqlx::query("INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,worker_active,occupies_group,created_at,updated_at) VALUES('busy',?,'busy','message.send',?,'thread','turn','stream','{}','running',1,1,'now','now')").bind(owner).bind(&group).execute(state.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,worker_active,occupies_thread,created_at,updated_at) VALUES('busy',?,'busy','message.send',?,'thread','turn','stream','{}','running',1,1,'now','now')").bind(owner).bind(&group).execute(state.db.pool()).await.unwrap();
     assert_eq!(
         bind(&app, &token, "group", &group, Value::Null).await.0,
         StatusCode::CONFLICT

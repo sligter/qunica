@@ -101,7 +101,7 @@ async fn queued_input_enters_model_history_only_after_claim_and_after_older_repl
     sqlx::query("INSERT INTO threads(id,group_id,status,next_seq,created_at,updated_at) VALUES(?,?,'running',2,'now','now')").bind(&thread).bind(&group).execute(state.db.pool()).await.unwrap();
     sqlx::query("INSERT INTO messages(id,thread_id,group_id,seq,sender_type,message_type,content,status,created_at) VALUES('previous-input',?,?,1,'user','text','previous request','visible','now')").bind(&thread).bind(&group).execute(state.db.pool()).await.unwrap();
     sqlx::query("INSERT INTO group_turns(id,thread_id,group_id,status,scheduler_strategy,config_snapshot_json,topology_snapshot_json,created_at,updated_at) VALUES('previous-turn',?,?,'running','bounded','{}','{}','now','now')").bind(&thread).bind(&group).execute(state.db.pool()).await.unwrap();
-    sqlx::query("INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,generation,occupies_group,worker_active,created_at,updated_at) VALUES('previous-job',?,'previous-request','message.send',?,?,'previous-turn','previous-stream','{}','running',1,1,1,'now','now')").bind(&owner).bind(&group).bind(&thread).execute(state.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,generation,occupies_thread,worker_active,created_at,updated_at) VALUES('previous-job',?,'previous-request','message.send',?,?,'previous-turn','previous-stream','{}','running',1,1,1,'now','now')").bind(&owner).bind(&group).bind(&thread).execute(state.db.pool()).await.unwrap();
     let send = |content: &str| json!({"request_id":Uuid::new_v4().to_string(),"name":"message.send","target":{"conversation_id":group,"thread_id":thread},"payload":{"content":content}});
     let (status, accepted) = request(
         &app,
@@ -146,7 +146,7 @@ async fn queued_input_enters_model_history_only_after_claim_and_after_older_repl
         .execute(state.db.pool())
         .await
         .unwrap();
-    sqlx::query("UPDATE execution_jobs SET status='succeeded',occupies_group=0,worker_active=0 WHERE id='previous-job'").execute(state.db.pool()).await.unwrap();
+    sqlx::query("UPDATE execution_jobs SET status='succeeded',occupies_thread=0,worker_active=0 WHERE id='previous-job'").execute(state.db.pool()).await.unwrap();
     api::commands::launch(state.clone());
     wait_job(&state, accepted["job_id"].as_str().unwrap()).await;
     let history = load_conversation(state.db.pool(), &thread).await.unwrap();

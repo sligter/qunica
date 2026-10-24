@@ -202,9 +202,9 @@ pub async fn bind(
         }
     }
     let busy: bool = if table == "groups" {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM execution_jobs WHERE group_id=? AND (worker_active=1 OR occupies_group=1 OR (status='interrupted' AND COALESCE(error,'')!='effects_verified_stopped')))").bind(&target).fetch_one(&mut *tx).await.map_err(db)?
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM execution_jobs WHERE group_id=? AND (worker_active=1 OR occupies_thread=1 OR (status='interrupted' AND COALESCE(error,'')!='effects_verified_stopped')))").bind(&target).fetch_one(&mut *tx).await.map_err(db)?
     } else {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM group_agents ga JOIN execution_jobs j ON j.group_id=ga.group_id WHERE ga.agent_id=? AND (j.worker_active=1 OR j.occupies_group=1 OR (j.status='interrupted' AND COALESCE(j.error,'')!='effects_verified_stopped')))").bind(&target).fetch_one(&mut *tx).await.map_err(db)?
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM group_agents ga JOIN execution_jobs j ON j.group_id=ga.group_id WHERE ga.agent_id=? AND (j.worker_active=1 OR j.occupies_thread=1 OR (j.status='interrupted' AND COALESCE(j.error,'')!='effects_verified_stopped')))").bind(&target).fetch_one(&mut *tx).await.map_err(db)?
     };
     if busy {
         return Err(ApiError::conflict(

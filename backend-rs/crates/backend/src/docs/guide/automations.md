@@ -83,9 +83,12 @@ content returns `idempotency_conflict`.
 
 ## Queue and pause
 
-One group runs at most one job at a time, whether it came from a person or an
-automation. Manual work sorts ahead of automatic work that has not started.
-Waiting-for-user and interrupted jobs keep their group reserved.
+Independent task threads in one group run concurrently, whether they came from
+a person or an automation. Each thread runs at most one worker at a time.
+Occurrences of the same automation remain sequential. Manual work sorts ahead of
+automatic work that has not started. Waiting-for-user and interrupted jobs
+reserve their own thread; other tasks in the group can continue. Shared controlled
+computers retain their own exclusive execution lease.
 
 Pausing stops new occurrences and cancels automatic jobs that have not been
 claimed. It does not stop a run that is already executing; use the normal turn
@@ -99,8 +102,8 @@ the missed-run policy: `coalesce_latest` runs only the most recent occurrence
 inside 24 hours and journals the skipped range, while `skip` records the skip
 without running. A once task older than 24 hours is never replayed.
 
-A job that was running during shutdown becomes `interrupted`. Its group stays
+A job that was running during shutdown becomes `interrupted`. Its thread stays
 blocked until someone confirms the old worker and external effects are stopped:
 send the `turn.acknowledge_stopped` command with the turn id. The interrupted
-action is never retried automatically. Queued work survives the restart and is
-claimed afterwards.
+action is never retried automatically. Queued work survives the restart; jobs in
+independent threads can run while the interrupted thread awaits confirmation.
