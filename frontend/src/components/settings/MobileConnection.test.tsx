@@ -3,13 +3,22 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAuthStore } from '@/stores/authStore'
 import { MobileConnection } from './MobileConnection'
+import { useDesktopConnection } from '@/lib/desktopConnection'
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en-US' } }) }))
-afterEach(() => { cleanup(); mocks.invoke.mockReset(); localStorage.clear() })
+afterEach(() => { cleanup(); mocks.invoke.mockReset(); localStorage.clear(); useDesktopConnection.setState({ connection: { mode: 'local' } }) })
 beforeEach(() => { useAuthStore.setState({ token: 'desktop-token', user: null }) })
 const off = { endpoint: null, interfaces: [{ name: 'Wi-Fi', address: '192.168.1.2' }], devices: [] }
 describe('desktop phone pairing', () => {
+  it('shows the current remote server QR without handing its account token to the embedded pairing backend', () => {
+    useDesktopConnection.setState({ connection: { mode: 'remote', origin: 'https://qunica.example' } })
+    render(<MobileConnection />)
+    expect(screen.getByRole('textbox', { name: 'Server address' })).toHaveValue('https://qunica.example')
+    expect(screen.getByTitle('Server connection QR code').parentElement).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Enable and pair' })).toBeNull()
+    expect(mocks.invoke).not.toHaveBeenCalled()
+  })
   it('shows reported model, Android version and app version alongside legacy devices', async () => {
     mocks.invoke.mockResolvedValue({ ...off, devices: [
       { id: 'phone', name: 'OnePlus PKX110', created: 1, deviceInfo: { manufacturer: 'OnePlus', model: 'PKX110', systemVersion: '15', sdkVersion: 35, appVersion: '0.1.2' } },

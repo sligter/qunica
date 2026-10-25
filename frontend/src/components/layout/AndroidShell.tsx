@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Cable, ChevronLeft, Loader2, QrCode, ShieldCheck } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { androidDesktopAddress, changeAndroidDesktopEndpoint, changeAndroidServer, hasAndroidDesktopPairing, hasSavedAndroidPairing, initializeAndroidSession, pairAndroidDesktop, restoreAndroidPairing, retryAndroidPersistence, useAndroidSession } from '@/lib/androidSession'
+import { androidDesktopAddress, changeAndroidDesktopEndpoint, changeAndroidServer, hasAndroidDesktopPairing, hasSavedAndroidPairing, initializeAndroidSession, normalizeServerOrigin, pairAndroidDesktop, restoreAndroidPairing, retryAndroidPersistence, useAndroidSession } from '@/lib/androidSession'
 import { useAuthStore } from '@/stores/authStore'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,6 +10,8 @@ import { ServerConnectionForm } from './ServerConnectionForm'
 import { applyConnectionPolicy } from '@/lib/connectionPolicy'
 import { checkInstance } from '@/lib/realtime/instance'
 import { LAN_ORIGIN } from '@/lib/androidSession'
+import { MobileConnectionFeatures } from './MobileConnectionFeatures'
+import { AndroidConnectionContext } from './mobileChrome'
 
 export function AndroidShell({ children }: { children: ReactNode }) {
   const { i18n } = useTranslation()
@@ -44,6 +46,16 @@ export function AndroidShell({ children }: { children: ReactNode }) {
     setSessionReady(false)
     setBusy(true); setConnectionError(null)
     try {
+      // Server QR codes contain only an HTTPS origin; pairing links carry a
+      // one-use device identity. Both share the scanner without sharing tokens.
+      if (/^https:/i.test(offer.trim())) {
+        const origin = normalizeServerOrigin(offer)
+        if (origin === server) { setSessionReady(true); setEditing(false); return }
+        useAuthStore.getState().logout()
+        await changeAndroidServer(origin)
+        window.location.replace('/')
+        return
+      }
       const token = await pairAndroidDesktop(offer)
       clearComposerDrafts()
       // The vault already contains the handed-off login. Logout would erase it.
@@ -82,11 +94,17 @@ export function AndroidShell({ children }: { children: ReactNode }) {
       </header>
       <div className="mx-auto w-full max-w-md flex-1">
         {!pairing ? <div className="space-y-6">
-          <ServerConnectionForm onConnect={async origin => {
-            useAuthStore.getState().logout()
-            await changeAndroidServer(origin)
-            window.location.replace('/')
+          <ServerConnectionForm disabled={busy} onConnect={async origin => {
+            if (origin === server) { setEditing(false); return }
+            setBusy(true)
+            try {
+              useAuthStore.getState().logout()
+              await changeAndroidServer(origin)
+              window.location.replace('/')
+            } finally { setBusy(false) }
           }} />
+          <MobileConnectionFeatures />
+          <Button className="h-12 w-full gap-2" variant="outline" disabled={busy} onClick={() => void scanDesktop()}><QrCode className="h-4 w-4" />{zh ? '扫描连接二维码' : 'Scan a connection QR code'}</Button>
           <Button className="h-12 w-full gap-2" variant="outline" disabled={busy} onClick={() => setPairing(true)}><Cable className="h-4 w-4" />{zh ? '配对桌面工作台' : 'Pair a desktop workspace'}</Button>
           {hasSavedAndroidPairing() && <Button variant="ghost" className="w-full" disabled={busy} onClick={() => {
             setBusy(true)
@@ -100,6 +118,7 @@ export function AndroidShell({ children }: { children: ReactNode }) {
         <p className="mb-3 text-xs tracking-[0.2em] text-primary">YOUR DESKTOP, WITH YOU</p>
         <h1 className="mb-3 font-serif text-3xl leading-tight">{zh ? '连接你的工作台' : 'Connect your workspace'}</h1>
         <p className="mb-8 text-sm leading-6 text-muted-foreground">{zh ? '在桌面「设置 → 手机连接」选择局域网或 VPS 中继，生成二维码后扫码。外出使用需先配置 VPS 转发，无需证书。' : 'Choose LAN or VPS relay in desktop Settings → Phone connection and scan its QR. Remote access requires VPS forwarding, without certificates.'}</p>
+        <div className="mb-6"><MobileConnectionFeatures paired /></div>
         {!ready ? (
           <div role="status" className="space-y-3 text-sm">
             {error ? <><p>{zh ? '无法读取安全存储，请重试。' : 'Unable to read secure storage. Try again.'}</p><Button onClick={initialize}>{zh ? '重试' : 'Retry'}</Button></> : <Loader2 className="animate-spin" />}
@@ -130,9 +149,8 @@ export function AndroidShell({ children }: { children: ReactNode }) {
     </main>
   )
 
-  return <>
-    <div className="app-safe-area flex shrink-0 items-center justify-between gap-2 border-b border-border bg-background px-3 py-1 text-xs"><span className="truncate text-muted-foreground">{androidDesktopAddress()}</span><Button variant="ghost" size="sm" onClick={() => { setAddress(''); setPairing(false); setEditing(true) }}>{zh ? '切换连接' : 'Switch connection'}</Button></div>
+  return <AndroidConnectionContext.Provider value={{ address: androidDesktopAddress() ?? server, paired: hasAndroidDesktopPairing(), edit: () => { setAddress(''); setPairing(false); setEditing(true) } }}>
     {error ? <div role="alert" className="shrink-0 bg-destructive/10 px-3 py-2 text-sm">{zh ? '安全存储写入失败，请重试后再关闭应用。' : 'Secure storage failed. Retry before closing the app.'}<Button variant="ghost" onClick={() => { void retryAndroidPersistence().catch(() => undefined) }}>{zh ? '重试' : 'Retry'}</Button></div> : null}
     {children}
-  </>
+  </AndroidConnectionContext.Provider>
 }

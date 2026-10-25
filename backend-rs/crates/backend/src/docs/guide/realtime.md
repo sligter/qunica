@@ -158,6 +158,19 @@ with HTTPS server selection; desktop pairing remains available. Selecting a dire
 server preserves the pinned pairing identity in Keystore, without reusing its
 account token. Restoring that pairing requires login again.
 
+Remote desktop instances show a QR containing only their HTTPS origin in Phone
+connection settings; they never submit that instance's account token to the
+embedded pairing backend. Android's connection scanner accepts this origin or a
+one-use desktop pairing link. Re-entering or scanning the current server preserves
+its login. The mobile workspace labels Files, Git, Computer and Triggers explicitly.
+Android computer artifacts stream into private native staging in at most 64 KiB
+chunks before the system save picker opens, with progress and length validation.
+Account changes, view disposal or explicit cancellation abort incomplete transfers;
+picker cancellation discards staging. This supports the existing 1000 MiB artifact
+limit without constructing a whole-file JavaScript Blob. See the
+[Android connection guide](../../../../../../android/CONNECT.md) for capabilities
+and physical-device acceptance boundaries.
+
 Desktop first entry offers Local mode (embedded service, no Docker) or an existing
 server and remembers the choice. Continuing or retrying the same instance retains
 the login. A different server is checked after reload installs its connection policy.

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/sligter/qunica/releases/latest"><img src="https://img.shields.io/badge/version-0.1.5-c65d3b?style=flat-square" alt="0.1.4 版本"></a>
+  <a href="https://github.com/sligter/qunica/releases/latest"><img src="https://img.shields.io/badge/version-0.1.6-c65d3b?style=flat-square" alt="0.1.6 版本"></a>
   <img src="https://img.shields.io/badge/desktop-Windows%20%7C%20macOS%20%7C%20Linux-3f6f91?style=flat-square" alt="Windows | macOS | Linux">
   <img src="https://img.shields.io/badge/mobile-Android-3f6f91?style=flat-square" alt="Android">
   <img src="https://img.shields.io/badge/data-本地优先-4f7651?style=flat-square" alt="本地优先">
@@ -123,7 +123,7 @@ Qunica 没有托管服务。除了你配置的模型请求，没有任何数据�
 | Android 8+ | 手机选 `android-arm64-release.apk`，模拟器选 `android-x86_64-release.apk` |
 | 无界面服务器 | `qunica-server-*` 压缩包，支持 Windows、macOS、Linux |
 
-Android 端通过局域网扫码与桌面配对，外出时可走自建 TCP 中继。消息、审批与终端数据均经 Noise 端到端加密。手机不运行后端，也不运行任何 Agent CLI。详见 [android/README.md](android/README.md)。
+Android 端可直连 HTTPS 服务器并使用聊天、审批、独立任务并行、电脑桌面与定时任务，也可通过局域网扫码与桌面配对，外出时使用自建 TCP 中继。桌面配对链路使用 Noise 端到端加密；交付物通过系统文件选择器保存。手机不运行后端或 Agent CLI。详见 [Android 连接指南](android/CONNECT.md)。
 
 ## 首次使用
 
@@ -177,7 +177,7 @@ docker compose up -d --build
 | 模型服务、MCP 与 Skills | [模型服务](backend-rs/crates/backend/src/docs/guide/providers.md) · [MCP](backend-rs/crates/backend/src/docs/guide/mcp-servers.md) · [Skills](backend-rs/crates/backend/src/docs/guide/skills.md) |
 | 外部 CLI Agent | [外部 CLI Agent](backend-rs/crates/backend/src/docs/guide/external-cli-agents.md) |
 | 内置助手、终端与设置 | [助手](backend-rs/crates/backend/src/docs/guide/assistant.md) · [终端](backend-rs/crates/backend/src/docs/guide/terminal.md) · [设置](backend-rs/crates/backend/src/docs/guide/settings.md) |
-| Docker 与 Android | [DOCKER.md](DOCKER.md) · [android/README.md](android/README.md) |
+| Docker 与 Android | [DOCKER.md](DOCKER.md) · [Android 连接指南](android/CONNECT.md) |
 
 ## 常见问题
 

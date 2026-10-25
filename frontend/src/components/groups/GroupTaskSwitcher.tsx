@@ -35,7 +35,7 @@ export function GroupTaskSwitcher({
       <PopoverTrigger asChild>
         <Button
           variant="ghost"
-          className="h-8 w-32 justify-between gap-1 px-2 font-medium sm:w-48 lg:w-60"
+          className="chat-task-switcher h-8 w-32 justify-between gap-1 px-2 font-medium sm:w-48 lg:w-60"
           disabled={disabled || threads.length === 0}
           aria-label={t('tasks.switcher')}
           title={selectedThread ? label(selectedThread) : undefined}

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConversationChatView } from './ConversationChatView'
 import i18n from '@/i18n'
 import { useQueuedMessagesStore } from '@/stores/queuedMessagesStore'
+import { MobileHeaderContext } from '@/components/layout/mobileChrome'
 
 const terminalMocks = vi.hoisted(() => ({
   register: vi.fn(),
@@ -212,6 +213,24 @@ function renderConversation(options: ConversationRenderOptions = {}) {
 }
 
 describe('ConversationChatView', () => {
+  it('puts navigation and assistant in the chat header and keeps task controls in one separate row on phones', () => {
+    vi.stubGlobal('matchMedia', vi.fn((media: string) => ({ media, matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
+    const disposed = vi.fn()
+    const register = vi.fn(() => disposed)
+    try {
+      const view = render(<MobileHeaderContext.Provider value={{ navigation: <button>Open navigation</button>, assistant: <button>Assistant</button>, register }}>
+        {conversationElement({ scope: 'groups' })}
+      </MobileHeaderContext.Provider>)
+      const header = screen.getByRole('heading', { name: 'Direct chat' }).closest('header')
+      expect(screen.getByRole('button', { name: 'Open navigation' }).closest('header')).toBe(header)
+      expect(screen.getByRole('button', { name: 'Assistant' }).closest('header')).toBe(header)
+      expect(screen.getByRole('button', { name: 'Start new task' }).closest('header')).toBeNull()
+      expect(screen.getAllByRole('button', { name: 'Start new task' })).toHaveLength(1)
+      expect(register).toHaveBeenCalledTimes(1)
+      view.unmount()
+      expect(disposed).toHaveBeenCalledTimes(1)
+    } finally { vi.unstubAllGlobals() }
+  })
   beforeEach(async () => {
     await i18n.changeLanguage('en-US')
     terminalMocks.register.mockReset()

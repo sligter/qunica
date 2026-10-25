@@ -1,5 +1,5 @@
 import { CompactActions } from '@/components/layout/CompactActions'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Files, PanelRightClose, SquareTerminal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -14,6 +14,7 @@ import { VerticalResizeHandle } from '@/components/layout/VerticalResizeHandle'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useMobilePanel } from '@/components/layout/mobilePanels'
+import { MobileHeaderContext } from '@/components/layout/mobileChrome'
 import { useCompactLayout } from '@/hooks/useMediaQuery'
 import {
   type ConversationScope,
@@ -358,6 +359,13 @@ export function ConversationChatView({
     }
   }, [capabilities.showWorkspace, conversationId, fileNavRequest, setWorkspaceFilesOpenPersisted])
 
+  const mobileHeader = useContext(MobileHeaderContext)
+  const mobileMainHeader = compactLayout && !compact
+  const registerMobileHeader = mobileHeader?.register
+  useLayoutEffect(() => {
+    if (mobileMainHeader) return registerMobileHeader?.()
+  }, [mobileMainHeader, registerMobileHeader])
+  const headerContext = renderHeaderContext?.(isConversationStreaming)
   const hint = !agentIsSystem && agents.length === 0 ? t('composer.noAgents') : undefined
   return (
     <MobileActionContext.Provider value={compactLayout ? mobileActionTarget : null}>
@@ -365,9 +373,10 @@ export function ConversationChatView({
       <header
         className={cn(
           'flex shrink-0 items-center justify-between border-b border-border/60 bg-background',
-          compact ? 'h-11 gap-2 px-3' : 'min-h-14 gap-2 px-3 py-1 lg:h-14 lg:gap-4 lg:px-5 lg:py-0',
+          mobileMainHeader ? 'mobile-chat-header h-12 gap-0 px-1' : compact ? 'h-11 gap-2 px-3' : 'min-h-14 gap-2 px-3 py-1 lg:h-14 lg:gap-4 lg:px-5 lg:py-0',
         )}
       >
+        {mobileMainHeader ? mobileHeader?.navigation : null}
         <div className="chat-heading flex min-w-0 flex-1 items-center gap-2">
           <h1
             className={cn(
@@ -377,9 +386,10 @@ export function ConversationChatView({
           >
             {title}
           </h1>
-          {renderHeaderContext?.(isConversationStreaming)}
+          {!mobileMainHeader ? headerContext : null}
           {subtitle ? <span className="hidden text-xs text-muted-foreground lg:inline">{subtitle}</span> : null}
         </div>
+        {mobileMainHeader ? mobileHeader?.assistant : null}
         <CompactActions label={t('common:actions.more')}>
           {scope === 'direct-chats' ? (
             <DirectChatHeaderActions
@@ -417,6 +427,7 @@ export function ConversationChatView({
           {capabilities.showManage ? headerActions : null}
         </CompactActions>
       </header>
+      {mobileMainHeader && headerContext ? <div className="mobile-task-toolbar shrink-0 border-b border-border/60 bg-muted/25 px-3">{headerContext}</div> : null}
 
       {capabilities.showAnnouncement && announcement ? (
         <div className="shrink-0 border-b border-border/60 bg-card px-4 py-2 text-xs text-muted-foreground lg:px-5">
@@ -558,7 +569,7 @@ export function ConversationChatView({
       {capabilities.showWorkspace && compactLayout ? (
         <Sheet open={mobileWorkspaceOpen} onOpenChange={setMobileWorkspaceOpen}>
           <SheetContent className="mobile-sheet w-full" closeLabel={t('workspace.hide')} aria-describedby={undefined}>
-            <SheetTitle className="shrink-0 border-b border-border px-4 py-4 pr-16">{t('workspace.files')} / {t('workspace.git')}</SheetTitle>
+            <SheetTitle className="shrink-0 border-b border-border px-4 py-4 pr-16">{t('workspace.workspace')}</SheetTitle>
             <div className="min-h-0 flex-1 overflow-hidden">
               <GroupWorkspacePanel scope={scope} groupId={conversationId} threadId={threadId}
                 taskBranch={threadGitBranch} workspaceId={workspaceId} className="w-full border-l-0" />

@@ -16,6 +16,17 @@ vi.mock('@/components/assistant/AssistantDock', () => ({
   AssistantDock: () => <div data-testid="assistant-dock" />,
 }))
 
+vi.mock('@/pages/group/GroupChatPage', async () => {
+  const { useContext, useLayoutEffect } = await import('react')
+  const { MobileHeaderContext } = await import('./mobileChrome')
+  return { GroupChatPage: () => {
+    const chrome = useContext(MobileHeaderContext)
+    const register = chrome?.register
+    useLayoutEffect(() => register?.(), [register])
+    return <header>{chrome?.navigation}<h1>Conversation header</h1>{chrome?.assistant}</header>
+  } }
+})
+
 // `appChildren` replaces the old hand-rolled `<Route>` children, so provide the
 // context-menu test content on the eager home route rather than a lazy settings
 // page — the suite needs it synchronously, and lazy would suspend the first
@@ -95,6 +106,24 @@ async function renderAppLayout(
 }
 
 describe('AppLayout', () => {
+  it('uses one mobile header across chat and home routes and returns focus to the surviving navigation button', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((media: string) => ({ media, matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
+    try {
+      const { router, container } = await renderAppLayout('en-US', createFakeTransport())
+      await act(async () => { await router.navigate('/groups/group-1') })
+      expect(await screen.findByRole('heading', { name: 'Conversation header' })).toBeVisible()
+      expect(container.querySelector('.mobile-app-header')).toBeNull()
+      expect(screen.getAllByRole('button', { name: 'Open navigation' })).toHaveLength(1)
+      fireEvent.click(screen.getByRole('button', { name: 'Open navigation' }))
+      expect(await screen.findByRole('dialog', { name: 'Open navigation' })).toBeVisible()
+      await act(async () => { await router.navigate(-1) })
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+      expect(screen.getByRole('button', { name: 'Open navigation' })).toHaveFocus()
+      await act(async () => { await router.navigate('/') })
+      expect(container.querySelector('.mobile-app-header')).toBeVisible()
+      expect(screen.getAllByRole('button', { name: 'Open navigation' })).toHaveLength(1)
+    } finally { vi.unstubAllGlobals() }
+  })
   it('uses a mobile drawer, preserves native long press, and closes the drawer on Back', async () => {
     vi.stubGlobal('matchMedia', vi.fn((media: string) => ({
       media, matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn(),

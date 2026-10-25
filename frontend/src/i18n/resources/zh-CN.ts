@@ -21,6 +21,8 @@ export const zhCN: TranslationShape<typeof enUS> = {
     "download": "下载",
     "noArtifacts": "暂无已记录的浏览器下载。",
     "artifactUnavailable": "产物不可用，请启动电脑并刷新文件信息。",
+    artifactDownloading: '下载中 {{percent}}%',
+    artifactChooseDestination: '请在系统文件选择器中选择保存位置。',
 
     proxyProvider: "电脑执行的模型服务",
     proxyProviderOptional: "选择 API 服务；本地 CLI 可不选",

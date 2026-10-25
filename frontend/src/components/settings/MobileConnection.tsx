@@ -7,12 +7,39 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { SettingsSection } from '@/components/ui/settings-row'
 import { useAuthStore } from '@/stores/authStore'
+import { useDesktopConnection } from '@/lib/desktopConnection'
+import { MobileConnectionFeatures } from '@/components/layout/MobileConnectionFeatures'
 
 interface DeviceInfo { manufacturer: string; model: string; systemVersion: string; sdkVersion: number; appVersion: string }
 interface Status { endpoint: string | null; listen_endpoint?: string | null; interfaces: { name: string; address: string }[]; devices: { id: string; name: string; created: number; deviceInfo?: DeviceInfo }[] }
 interface Offer { uri: string; expiresAt: number }
 
 export function MobileConnection() {
+  const connection = useDesktopConnection(s => s.connection)
+  // Note: pairing serves the embedded backend. A remote instance's account
+  // token must never be handed to that different backend to generate an offer.
+  return connection.mode === 'remote' ? <ServerMobileConnection origin={connection.origin} /> : <DesktopMobileConnection />
+}
+
+function ServerMobileConnection({ origin }: { origin: string }) {
+  const { i18n } = useTranslation()
+  const zh = i18n.language.startsWith('zh')
+  return <SettingsSection title={zh ? '手机连接' : 'Phone connection'} description={zh ? '当前工作台连接远程服务器，手机可以直接连接同一实例。' : 'This workspace uses a remote server. Connect your phone to the same instance.'}>
+    <div className="space-y-5 py-4">
+      <div className="flex flex-wrap items-start gap-6 rounded-xl border border-border bg-muted/30 p-5">
+        <div className="rounded-lg bg-white p-4"><QRCodeSVG value={origin} size={200} level="M" title={zh ? '服务器连接二维码' : 'Server connection QR code'} /></div>
+        <div className="min-w-0 flex-1 basis-56 space-y-3 text-sm">
+          <p className="font-medium">{zh ? '在 Android 应用中扫码，或填写服务器地址' : 'Scan in the Android app, or enter the server address'}</p>
+          <Input aria-label={zh ? '服务器地址' : 'Server address'} readOnly value={origin} onFocus={event => event.currentTarget.select()} className="h-12 font-mono text-sm" />
+          <p className="text-muted-foreground">{zh ? '连接后登录同一账号，继续聊天、处理审批并使用电脑与定时任务。二维码只包含服务器地址，登录需要自己的账号。' : 'Sign in with the same account to continue chats, approvals, computers and scheduled tasks. The QR contains only the server address; sign-in is required.'}</p>
+        </div>
+      </div>
+      <MobileConnectionFeatures />
+    </div>
+  </SettingsSection>
+}
+
+function DesktopMobileConnection() {
   const { i18n } = useTranslation()
   const zh = i18n.language.startsWith('zh')
   const token = useAuthStore(s => s.token)
@@ -52,6 +79,7 @@ export function MobileConnection() {
   useEffect(() => { setOffer(null) }, [token])
   return <SettingsSection title={zh ? '手机连接' : 'Phone connection'} description={zh ? '通过局域网或自己的 VPS 扫码加密连接，无需证书或额外 VPN。' : 'Encrypted pairing over LAN or your own VPS, without certificates or another VPN.'}>
     <div className="space-y-5 py-4">
+      <MobileConnectionFeatures paired />
       {!status?.endpoint ? <div className="space-y-3">
         <div className="flex flex-wrap gap-2" role="group" aria-label={zh ? '连接方式' : 'Connection mode'}>
           <Button variant={relay ? 'outline' : 'default'} aria-pressed={!relay} disabled={busy} onClick={() => setRelay(false)}>{zh ? '同一局域网' : 'Local network'}</Button>
@@ -80,7 +108,7 @@ export function MobileConnection() {
       </div>
       {status?.listen_endpoint ? <p className="break-all text-xs text-muted-foreground">{zh ? '电脑监听' : 'Desktop listener'}: {status.listen_endpoint}{status.listen_endpoint !== status.endpoint ? (zh ? ' · VPS 可达性需在手机上验证' : ' · Verify VPS reachability on your phone') : ''}</p> : null}
       {status?.endpoint ? <div className="flex flex-wrap items-start gap-6 rounded-xl border border-border bg-muted/30 p-5">
-        {offer && remaining > 0 ? <div className="rounded-lg bg-white p-4"><QRCodeSVG value={offer.uri} size={224} level="M" title={zh ? '手机配对二维码' : 'Phone pairing code'} /></div> : <div className="flex h-56 w-56 items-center justify-center rounded-lg border border-dashed border-border px-6 text-center text-sm text-muted-foreground">{zh ? '生成新的配对二维码' : 'Generate a fresh pairing code'}</div>}
+        {offer && remaining > 0 ? <div className="rounded-lg bg-white p-4"><QRCodeSVG value={offer.uri} size={200} level="M" title={zh ? '手机配对二维码' : 'Phone pairing code'} /></div> : <div className="flex h-56 w-56 items-center justify-center rounded-lg border border-dashed border-border px-6 text-center text-sm text-muted-foreground">{zh ? '生成新的配对二维码' : 'Generate a fresh pairing code'}</div>}
         <div className="min-w-48 flex-1 space-y-3 text-sm">
           <p className="font-medium">{zh ? '在 Android 应用中选择「扫描桌面二维码」' : 'Choose “Scan desktop QR code” in the Android app'}</p>
           <p className="text-muted-foreground">{zh ? `扫码后直接登录当前账号${user ? `：${user.name}` : ''}。请仅让自己的手机扫码。` : `Scanning signs in to your current account${user ? `: ${user.name}` : ''}. Only scan with your own phone.`}</p>

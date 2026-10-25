@@ -5,9 +5,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { normalizeServerOrigin } from '@/lib/androidSession'
 
-export function ServerConnectionForm({ onConnect, onLocal }: {
+export function ServerConnectionForm({ onConnect, onLocal, disabled = false }: {
   onConnect: (origin: string) => Promise<void>
   onLocal?: () => Promise<void>
+  disabled?: boolean
 }) {
   const { i18n } = useTranslation()
   const zh = i18n.language.startsWith('zh')
@@ -15,6 +16,7 @@ export function ServerConnectionForm({ onConnect, onLocal }: {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   async function connect(local = false) {
+    if (busy || disabled) return
     setBusy(true); setError(null)
     try {
       if (local) { await onLocal?.(); return }
@@ -30,15 +32,15 @@ export function ServerConnectionForm({ onConnect, onLocal }: {
     {onLocal && <section className="space-y-3 rounded-xl border border-primary/30 bg-primary/5 p-5">
       <div className="flex items-center justify-between gap-3"><h2 className="font-medium">{zh ? 'Local 本地模式' : 'Local mode'}</h2><span className="text-xs text-primary">{zh ? '无需 Docker' : 'No Docker required'}</span></div>
       <p className="text-sm leading-6 text-muted-foreground">{zh ? '自动启动内置服务，使用这台电脑上的文件、Agent 和历史记录。模型调用仍需相应的网络与账号配置。' : 'Starts the built-in service with your files, agents and history on this computer. Model calls still require their network and account settings.'}</p>
-      <Button className="h-12 w-full justify-between" disabled={busy} onClick={() => void connect(true)}>{zh ? '进入本地模式' : 'Enter local mode'}{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}</Button>
+      <Button className="h-12 w-full justify-between" disabled={busy || disabled} onClick={() => void connect(true)}>{zh ? '进入本地模式' : 'Enter local mode'}{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}</Button>
       <p className="text-xs leading-5 text-muted-foreground">{zh ? '只有使用受控电脑时才需要 Docker / Supervisor；已有电脑绑定需在电脑设置中切换。' : 'Docker / Supervisor is only needed for controlled computers. Manage existing execution bindings in computer settings.'}</p>
     </section>}
     <form className="space-y-3" onSubmit={event => { event.preventDefault(); void connect() }}>
       <label htmlFor="qunica-server-origin" className="block text-sm font-medium">{zh ? '服务器地址' : 'Server address'}</label>
-      <Input id="qunica-server-origin" type="url" value={address} onChange={event => setAddress(event.target.value)} placeholder="https://qunica.example.com" autoCapitalize="none" autoCorrect="off" spellCheck={false} required disabled={busy} className="h-12 font-mono text-sm" />
+      <Input id="qunica-server-origin" type="url" value={address} onChange={event => setAddress(event.target.value)} placeholder="https://qunica.example.com" autoCapitalize="none" autoCorrect="off" spellCheck={false} required disabled={busy || disabled} className="h-12 font-mono text-sm" />
       <p className="text-xs leading-5 text-muted-foreground">{zh ? 'HTTPS 域名或受信任的 IP 地址，无需桌面在线。' : 'An HTTPS domain or trusted IP address. Your desktop can stay offline.'}</p>
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-      <Button type="submit" variant={onLocal ? 'outline' : 'default'} className="h-12 w-full justify-between" disabled={busy || !address.trim()}>{zh ? '连接并登录' : 'Connect and sign in'}{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}</Button>
+      <Button type="submit" variant={onLocal ? 'outline' : 'default'} className="h-12 w-full justify-between" disabled={busy || disabled || !address.trim()}>{zh ? '连接并登录' : 'Connect and sign in'}{busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}</Button>
     </form>
   </div>
 }

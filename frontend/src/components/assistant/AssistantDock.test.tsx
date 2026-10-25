@@ -5,6 +5,8 @@ import i18next from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useRef, useState } from 'react'
+import { MobilePanelContext, type MobilePanel } from '@/components/layout/mobilePanels'
 
 import { AssistantDock } from '@/components/assistant/AssistantDock'
 import {
@@ -16,6 +18,15 @@ import { zhCN } from '@/i18n/resources/zh-CN'
 import { useAuthStore } from '@/stores/authStore'
 
 const fetchJson = vi.hoisted(() => vi.fn())
+
+function MobileAssistantFixture() {
+  const [panel, setPanel] = useState<MobilePanel | null>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  return <MobilePanelContext.Provider value={{ panel, setPanel }}>
+    <header><button ref={trigger} onClick={() => setPanel('assistant')}>Assistant</button></header>
+    <AssistantDock mobileTriggerRef={trigger} />
+  </MobilePanelContext.Provider>
+}
 vi.mock('@/lib/api-v2/client', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api-v2/client')>(
     '@/lib/api-v2/client',
@@ -39,6 +50,7 @@ async function renderDock(
     provider_configured: true,
   },
   providers: Array<Record<string, unknown>> = [],
+  mobile = false,
 ) {
   fetchJson.mockImplementation((path: string, options?: { method?: string }) => {
     if (path === '/assistant') {
@@ -64,7 +76,7 @@ async function renderDock(
     <I18nextProvider i18n={i18n}>
       <QueryClientProvider client={client}>
         <MemoryRouter>
-          <AssistantDock />
+          {mobile ? <MobileAssistantFixture /> : <AssistantDock />}
         </MemoryRouter>
       </QueryClientProvider>
     </I18nextProvider>,
@@ -72,6 +84,20 @@ async function renderDock(
 }
 
 describe('AssistantDock', () => {
+  it('opens from one mobile header action and restores focus on close without a fixed launcher', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((media: string) => ({ media, matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
+    try {
+      await renderDock(undefined, [], true)
+      const trigger = screen.getByRole('button', { name: 'Assistant' })
+      expect(screen.getAllByRole('button', { name: /assistant/i })).toHaveLength(1)
+      expect(trigger.closest('header')).toBeInTheDocument()
+      await userEvent.click(trigger)
+      expect(await screen.findByRole('dialog')).toBeVisible()
+      await userEvent.keyboard('{Escape}')
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+      expect(trigger).toHaveFocus()
+    } finally { vi.unstubAllGlobals() }
+  })
   beforeEach(() => {
     localStorage.clear()
     useAuthStore.setState({ token: 'test-token' })

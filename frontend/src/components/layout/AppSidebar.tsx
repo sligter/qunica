@@ -31,6 +31,7 @@ import {
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { BrandMark } from '@/components/brand/BrandMark'
 import { DesktopInstanceSwitcher } from '@/components/layout/DesktopInstanceSwitcher'
+import { MobileConnectionStatus } from '@/components/layout/MobileConnectionStatus'
 import { ConversationStatusIndicator } from '@/components/chat/ConversationStatusDot'
 import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { OverlayNavLink, useOverlayLinkState } from '@/components/layout/overlayRouting'
@@ -728,6 +729,8 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean } = {}) {
           </button>
         </div>
       ) : null}
+
+      {!collapsed ? <MobileConnectionStatus /> : null}
 
       {/* Library — one entry, straight into the panel. The flyout menu that
           used to live here duplicated the ResourceRail 1:1 (same targets, same

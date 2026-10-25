@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/sligter/qunica/releases/latest"><img src="https://img.shields.io/badge/version-0.1.5-c65d3b?style=flat-square" alt="Version 0.1.4"></a>
+  <a href="https://github.com/sligter/qunica/releases/latest"><img src="https://img.shields.io/badge/version-0.1.6-c65d3b?style=flat-square" alt="Version 0.1.6"></a>
   <img src="https://img.shields.io/badge/desktop-Windows%20%7C%20macOS%20%7C%20Linux-3f6f91?style=flat-square" alt="Windows | macOS | Linux">
   <img src="https://img.shields.io/badge/mobile-Android-3f6f91?style=flat-square" alt="Android">
   <img src="https://img.shields.io/badge/data-local--first-4f7651?style=flat-square" alt="Local-first">
@@ -123,7 +123,7 @@ Grab the build for your platform from the [latest release](https://github.com/sl
 | Android 8+ | `android-arm64-release.apk` for phones, `android-x86_64-release.apk` for emulators |
 | Headless server | `qunica-server-*` archives for Windows, macOS, and Linux |
 
-The Android app pairs with the desktop by QR code over the LAN, or through a self-hosted TCP relay for remote use. Messages, approvals, and terminal data are end-to-end encrypted with Noise. The phone does not run a backend or any agent CLI. See [android/README.md](android/README.md).
+The Android app connects to an HTTPS server for chat, approvals, parallel tasks, computer desktops and scheduled tasks. It also supports desktop QR pairing over LAN or a self-hosted TCP relay, with Noise encryption on the paired connection. Artifacts save through the system file picker. The phone does not run a backend or any agent CLI. See the [Android connection guide](android/CONNECT.md).
 
 ## First run
 
@@ -173,7 +173,7 @@ Open <http://127.0.0.1:18765>; the container automatically uses its persistent `
 | Providers, MCP, and skills | [Providers](backend-rs/crates/backend/src/docs/guide/providers.md) · [MCP](backend-rs/crates/backend/src/docs/guide/mcp-servers.md) · [Skills](backend-rs/crates/backend/src/docs/guide/skills.md) |
 | External CLI agents | [External CLI agents](backend-rs/crates/backend/src/docs/guide/external-cli-agents.md) |
 | Built-in assistant, terminal, and settings | [Assistant](backend-rs/crates/backend/src/docs/guide/assistant.md) · [Terminal](backend-rs/crates/backend/src/docs/guide/terminal.md) · [Settings](backend-rs/crates/backend/src/docs/guide/settings.md) |
-| Docker and Android | [DOCKER.md](DOCKER.md) · [android/README.md](android/README.md) |
+| Docker and Android | [DOCKER.md](DOCKER.md) · [Android connection guide](android/CONNECT.md) |
 
 ## FAQ
 

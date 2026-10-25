@@ -798,6 +798,12 @@
 /* Compact surfaces share one breakpoint. These scoped overrides intentionally
    follow utilities so desktop sizing cannot squeeze the touch layouts. */
 @media (width < 1024px) {
+  /* Note: a 44px touch target also needs a 44px row; otherwise tabs overlap
+     content even though each button passes the minimum touch-size rule. */
+  .workspace-panel-tabs { height: 64px; }
+  .workspace-panel-tabs [role="tablist"] { height: 56px; padding: 4px; }
+  .workspace-panel-tabs [role="tab"] { height: 48px; flex-direction: column; gap: 3px; font-size: 11px; }
+  .workspace-panel-tabs .workspace-tab-label { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
   .compact-action-list { max-height: min(65dvh, 28rem); overflow-y: auto; }
   .compact-action-list > div { display: contents; }
   .compact-action-list :is(button, a)[aria-label] {
@@ -809,13 +815,14 @@
     content: attr(aria-label); white-space: normal; overflow-wrap: anywhere;
   }
   .compact-action-list svg { flex-shrink: 0; }
-  .chat-heading:has(.chat-thread-controls) { flex-wrap: wrap; gap: 0; padding-block: 4px; }
-  .chat-heading:has(.chat-thread-controls) > h1 { width: 100%; font-size: 14px; }
   .chat-thread-controls { width: 100%; gap: 4px; }
   .chat-thread-controls > svg { display: none; }
-  .chat-thread-controls > [role="combobox"] {
-    min-width: 0; width: auto; flex: 1; padding-left: 0; font-size: 14px;
+  .chat-thread-controls > .chat-task-switcher {
+    min-width: 0; width: auto; flex: 1; padding-left: 0; font-size: 13px;
   }
+  .mobile-chat-header .chat-heading { padding-inline: 8px; }
+  .mobile-chat-header .chat-heading > h1 { min-width: 0; font-size: 16px; }
+  .mobile-task-toolbar { height: 45px; }
   .chat-message[data-sender="agent"], .chat-stream-row {
     display: grid; grid-template-columns: 36px minmax(0, 1fr);
     column-gap: 8px; row-gap: 6px; align-items: center; padding: 10px 12px;

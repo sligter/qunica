@@ -21,6 +21,7 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
 import { Bot, Minus, Settings2, Sparkles } from 'lucide-react'
@@ -35,7 +36,7 @@ import {
 } from '@/components/assistant/useAssistantDockPlacement'
 import { ConversationChatView } from '@/components/chat/ConversationChatView'
 import { Button } from '@/components/ui/button'
-import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { useCompactLayout } from '@/hooks/useMediaQuery'
 import { useMobilePanel } from '@/components/layout/mobilePanels'
 import { useAssistant } from '@/hooks/useAssistant'
@@ -79,7 +80,7 @@ function clampSize(value: number, minimum: number): number {
   return Math.max(minimum, value)
 }
 
-export function AssistantDock() {
+export function AssistantDock({ mobileTriggerRef }: { mobileTriggerRef?: RefObject<HTMLButtonElement | null> } = {}) {
   const { t } = useTranslation('assistant')
   const token = useAuthStore((state) => state.token)
   // Desktop shells promote the dock to an always-on-top native window: a DOM
@@ -242,12 +243,7 @@ export function AssistantDock() {
   if (compactLayout && !desktop) {
     return (
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-        <SheetTrigger asChild>
-          <Button variant="ghost" size="icon" className="fixed right-2 top-[max(0.25rem,env(safe-area-inset-top))] z-30" aria-label={t('title')}>
-            <Sparkles className="h-5 w-5 text-primary" aria-hidden />
-          </Button>
-        </SheetTrigger>
-        <SheetContent className="mobile-sheet top-auto w-full rounded-t-2xl border-t" style={{ height: '92dvh' }} closeLabel={t('collapse')} aria-describedby={undefined}>
+        <SheetContent className="mobile-sheet top-auto w-full rounded-t-2xl border-t" style={{ height: '92dvh' }} closeLabel={t('collapse')} aria-describedby={undefined} onCloseAutoFocus={event => { if (mobileTriggerRef?.current) { event.preventDefault(); mobileTriggerRef.current.focus() } }}>
           <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 pr-16">
             <SheetTitle className="flex-1">{t('title')}</SheetTitle>
             <Button variant="ghost" size="icon" aria-label={t('settings.title')} aria-pressed={showSettings} onClick={() => setShowSettings(open => !open)}>

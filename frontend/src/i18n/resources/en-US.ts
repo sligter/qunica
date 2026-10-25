@@ -15,6 +15,8 @@ export const enUS = {
     "download": "Download",
     "noArtifacts": "No browser downloads recorded yet.",
     "artifactUnavailable": "Artifact unavailable. Start the computer and refresh its metadata.",
+    artifactDownloading: 'Downloading {{percent}}%',
+    artifactChooseDestination: 'Choose where to save the file in the system picker.',
 
     proxyProvider: "Model provider for computer execution",
     proxyProviderOptional: "Select an API provider; optional for local CLI",

@@ -428,7 +428,10 @@ impl ToolExecutor {
                 };
                 let filename = arg_str(&args, "filename")?;
                 let target = arg_str(&args, "target")?;
-                return match computer.publish_file(source, source_root, target, filename).await {
+                return match computer
+                    .publish_file(source, source_root, target, filename)
+                    .await
+                {
                     Ok(value) => Ok(ToolResult::completed(value.to_string())),
                     Err(error) => Ok(ToolResult {
                         status: ToolStatus::Failed,

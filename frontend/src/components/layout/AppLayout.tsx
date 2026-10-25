@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Menu } from 'lucide-react'
+import { Menu, Sparkles } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate, useRoutes, type Location } from 'react-router-dom'
 
@@ -28,8 +28,9 @@ import {
 import { TerminalSurface } from '@/terminal/TerminalDock'
 import { useCompactLayout } from '@/hooks/useMediaQuery'
 import { Button } from '@/components/ui/button'
-import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
+import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet'
 import { MobilePanelContext, type MobilePanel } from './mobilePanels'
+import { MobileHeaderContext } from './mobileChrome'
 import type { TerminalTransport } from '@/terminal/transport'
 
 export interface AppLayoutProps {
@@ -187,6 +188,13 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
   const location = useLocation()
   const auxiliaryWindow = isAuxiliaryDesktopWindow()
   const compactLayout = useCompactLayout()
+  const [mobileHeaderMounted, setMobileHeaderMounted] = useState(false)
+  const mobileNavigationRef = useRef<HTMLButtonElement>(null)
+  const mobileAssistantRef = useRef<HTMLButtonElement>(null)
+  const registerMobileHeader = useCallback(() => {
+    setMobileHeaderMounted(true)
+    return () => setMobileHeaderMounted(false)
+  }, [])
   const mobilePanel = (location.state as { mobilePanel?: MobilePanel } | null)?.mobilePanel ?? null
   const setMobilePanel = useCallback((panel: MobilePanel | null) => {
     if (panel === mobilePanel) return
@@ -200,6 +208,11 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
     }
   }, [location, mobilePanel, navigate])
   const mobilePanels = useMemo(() => ({ panel: mobilePanel, setPanel: setMobilePanel }), [mobilePanel, setMobilePanel])
+  const showAssistant = !auxiliaryWindow && !systemSettings.isLoading && systemSettings.data?.assistant_enabled !== false
+  // The fallback briefly coexists with a registering chat. Removing its button
+  // must not clear the ref to the surviving header's focus target.
+  const mobileNavigation = <Button ref={node => { if (node) mobileNavigationRef.current = node }} variant="ghost" size="icon" className="h-11 w-11" aria-label={t('mobile.navigation')} aria-haspopup="dialog" aria-expanded={mobilePanel === 'navigation'} onClick={() => setMobilePanel('navigation')}><Menu className="h-5 w-5" /></Button>
+  const mobileAssistant = showAssistant && !isDesktopRuntime() ? <Button ref={node => { if (node) mobileAssistantRef.current = node }} variant="ghost" size="icon" className="h-11 w-11" aria-label={t('assistant:title')} aria-haspopup="dialog" aria-expanded={mobilePanel === 'assistant'} onClick={() => setMobilePanel('assistant')}><Sparkles className="h-5 w-5 text-primary" aria-hidden /></Button> : null
 
   // The settings overlay is React Router's background-location pattern: the
   // real browser location is the overlay URL, and the conversation it was
@@ -472,6 +485,7 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
     <CommandPaletteProvider>
     <UnsavedChangesProvider>
       <MobilePanelContext.Provider value={mobilePanels}>
+      <MobileHeaderContext.Provider value={{ navigation: mobileNavigation, assistant: mobileAssistant, register: registerMobileHeader }}>
       <AppTerminalRuntimeBoundary
         enabled={!auxiliaryWindow}
         transport={terminalTransport}
@@ -486,18 +500,11 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
         {auxiliaryWindow || compactLayout ? null : <AppSidebar />}
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" inert={compactLayout && mobilePanel === 'terminal' || undefined}>
-          {!auxiliaryWindow && compactLayout && !isOverlayPath(stage.pathname) ? (
-            <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-card px-2">
-              <Sheet open={mobilePanel === 'navigation'} onOpenChange={open => setMobilePanel(open ? 'navigation' : null)}>
-                <SheetTrigger asChild>
-                  <Button variant="ghost" size="icon" aria-label={t('mobile.navigation')}><Menu className="h-5 w-5" /></Button>
-                </SheetTrigger>
-                <SheetContent className="mobile-sheet left-0 right-auto w-[min(88vw,22rem)]" closeLabel={t('actions.close')} aria-describedby={undefined}>
-                  <SheetTitle className="sr-only">{t('mobile.navigation')}</SheetTitle>
-                  <AppSidebar mobile />
-                </SheetContent>
-              </Sheet>
-              <span className="font-serif text-sm font-semibold tracking-tight">Qunica</span>
+          {!auxiliaryWindow && compactLayout && !mobileHeaderMounted ? (
+            <div className="mobile-app-header flex h-12 shrink-0 items-center gap-1 border-b border-border bg-background px-1">
+              {mobileNavigation}
+              <span className="min-w-0 flex-1 truncate font-serif text-sm font-semibold tracking-tight">Qunica</span>
+              {mobileAssistant}
             </div>
           ) : null}
           <div className="min-h-0 flex-1 overflow-hidden">
@@ -508,12 +515,18 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
         </main>
         {auxiliaryWindow ? null : <TerminalSurface mobile={compactLayout} />}
         </div>
+        {!auxiliaryWindow && compactLayout ? <Sheet open={mobilePanel === 'navigation'} onOpenChange={open => setMobilePanel(open ? 'navigation' : null)}>
+          <SheetContent className="mobile-sheet left-0 right-auto w-[min(88vw,22rem)]" closeLabel={t('actions.close')} aria-describedby={undefined} onCloseAutoFocus={event => { if (mobileNavigationRef.current) { event.preventDefault(); mobileNavigationRef.current.focus() } }}>
+            <SheetTitle className="sr-only">{t('mobile.navigation')}</SheetTitle>
+            <AppSidebar mobile />
+          </SheetContent>
+        </Sheet> : null}
         {/* Portals to document.body, so it floats over the whole shell rather
             than being clipped by the main column's overflow. Only mounted
             inside the authenticated tree: the login and register routes render
             outside AppLayout. Auxiliary windows keep their own surface. */}
-        {!auxiliaryWindow && !systemSettings.isLoading && systemSettings.data?.assistant_enabled !== false ? (
-          <AssistantDock />
+        {showAssistant ? (
+          <AssistantDock mobileTriggerRef={mobileAssistantRef} />
         ) : null}
       </div>
       {menu ? (
@@ -559,6 +572,7 @@ export function AppLayout({ terminalTransport }: AppLayoutProps = {}) {
         </OverlayProvider>
       ) : null}
       </AppTerminalRuntimeBoundary>
+      </MobileHeaderContext.Provider>
       </MobilePanelContext.Provider>
     </UnsavedChangesProvider>
     </CommandPaletteProvider>
