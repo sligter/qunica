@@ -28,7 +28,7 @@ use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use tempfile::NamedTempFile;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::{io::AsyncReadExt, sync::Mutex as AsyncMutex};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -799,10 +799,34 @@ pub async fn stream_workspace_file(
 ) -> Result<Response, ApiError> {
     let workspace = load_owned_local_workspace(pool, target).await?;
     let path = resolve_workspace_file(&workspace.root, relative)?;
-    let bytes =
-        fs::read(&path).map_err(|_| ApiError::invalid_input("workspace file could not be read"))?;
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|_| ApiError::invalid_input("workspace file could not be read"))?;
+    let size = file
+        .metadata()
+        .await
+        .map_err(|_| ApiError::invalid_input("workspace file could not be read"))?
+        .len();
     revalidate_resolved_file(&workspace.root, &path)?;
     let filename = workspace_file_name(&path)?;
+    // Note: published computer deliverables can reach 1000 MiB. Stream the
+    // opened file instead of blocking the runtime and allocating its full size.
+    let stream =
+        futures_util::stream::try_unfold((file, size), |(mut file, remaining)| async move {
+            if remaining == 0 {
+                return Ok(None);
+            }
+            let mut bytes = vec![0; remaining.min(64 * 1024) as usize];
+            let count = file.read(&mut bytes).await?;
+            if count == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "workspace file changed during download",
+                ));
+            }
+            bytes.truncate(count);
+            Ok(Some((bytes, (file, remaining - count as u64))))
+        });
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,
@@ -816,7 +840,12 @@ pub async fn stream_workspace_file(
         ))
         .map_err(|_| ApiError::internal("failed to build download headers"))?,
     );
-    Ok((headers, Body::from(bytes)).into_response())
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&size.to_string())
+            .map_err(|_| ApiError::internal("failed to build download headers"))?,
+    );
+    Ok((headers, Body::from_stream(stream)).into_response())
 }
 
 /// Validate and materialise immutable attachment metadata for either

@@ -10,6 +10,7 @@ export const enUS = {
       noDesktopTitle: 'Desktop unavailable', noDesktopBody: 'This computer is not ready to share its desktop. Refresh its status or open computer settings.',
     },
     desktopDirectOnly: 'Connect directly to the server to observe or control this desktop.',
+    executionNotSelected: 'This computer is not selected for execution. Connecting its desktop does not route Agent tools here. Click “Use for execution” to bind its group or Agent; an Agent’s Private computer takes priority over the Team computer.',
     "artifacts": "Task artifacts",
     "download": "Download",
     "noArtifacts": "No browser downloads recorded yet.",

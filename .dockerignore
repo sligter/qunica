@@ -12,7 +12,7 @@
 Notes/
 assets/
 landing/
-docs/
+/docs/
 
 # Build outputs and dependency trees — rebuilt inside the image.
 node_modules/

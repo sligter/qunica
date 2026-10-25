@@ -24,6 +24,11 @@ services:
       QUNICA_COMPUTER_SERVICES: "true"
       QUNICA_EGRESS_NETWORK: qunica-computer-egress
       QUNICA_PROXY_BACKEND: http://qunica:8766
+    # The host Docker socket is root:docker 0660 on this VPS. Add only its
+    # numeric group, plus app uid/gid 10001 for the read-only shared secret.
+    group_add:
+      - "${DOCKER_GID:?Set DOCKER_GID to the host Docker socket group id}"
+      - "10001"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - qunica-computer-state:/state
@@ -32,6 +37,8 @@ services:
     networks:
       - computer-control
     cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     read_only: true
     tmpfs:
       - /tmp:size=16m,nosuid,nodev

@@ -7059,8 +7059,13 @@ async fn build_invocation_context(
         .flat_map(|name| tool_definitions_for(name, executor.tool_dialect()))
         .collect::<Vec<_>>();
     if let Some(computer) = executor.computer() {
+        tools.push(ToolDefinition {
+            name: "PublishComputerFile".into(),
+            description: "Explicitly copy one file (up to 1000 MiB = 1,048,576,000 bytes) into the UI conversation workspace (target=conversation) or your shared own workspace (target=self, if permitted). source is relative to source_root: task (default) for file/Shell outputs, computer for browser artifact paths, including on branch tasks. Roots never fall back to one another. Filename is a plain leaf; existing files are never overwritten. Only published=true proves delivery; workspaces are otherwise separate.".into(),
+            input_schema: json!({"type":"object","properties":{"source":{"type":"string"},"source_root":{"type":"string","enum":["task","computer"],"default":"task"},"target":{"type":"string","enum":["conversation","self"]},"filename":{"type":"string"}},"required":["source","target","filename"],"additionalProperties":false}),
+        });
         if computer.capabilities["browser"] == true {
-            tools.push(ToolDefinition {name:"ComputerBrowser".into(),description:"Use the bound computer's persistent Chromium via Playwright MCP. First call tool=tools to learn its argument schemas. Get browser_snapshot before an element action. Every action consumes expected_page; stale references fail. Downloads appear as task artifacts.".into(),input_schema:json!({"type":"object","properties":{"tool":{"type":"string","enum":["tools","browser_navigate","browser_snapshot","browser_click","browser_type","browser_press_key","browser_select_option","browser_tabs","browser_file_upload","browser_wait_for","browser_handle_dialog"]},"args":{"type":"object"},"expected_page":{"type":"string"}},"required":["tool","args"]})});
+            tools.push(ToolDefinition {name:"ComputerBrowser".into(),description:"Use the bound computer's persistent Chromium via Playwright MCP. First call tool=tools to learn its argument schemas. Get browser_snapshot before an element action. Every action consumes expected_page; stale references fail. Downloads and screenshots appear as task artifacts. Use PublishComputerFile with source_root=computer and the returned artifact path to deliver a file into the UI conversation workspace before linking it in your reply.".into(),input_schema:json!({"type":"object","properties":{"tool":{"type":"string","enum":["tools","browser_navigate","browser_snapshot","browser_click","browser_type","browser_press_key","browser_select_option","browser_tabs","browser_file_upload","browser_wait_for","browser_handle_dialog","browser_take_screenshot"]},"args":{"type":"object"},"expected_page":{"type":"string"}},"required":["tool","args"]})});
             tools.push(ToolDefinition {
                 name: "RequestComputerTakeover".into(),
                 description: "Pause this task and ask the user to take control of its computer."
@@ -7634,7 +7639,7 @@ fn render_workspace_section(
     direct_chat: bool,
 ) -> String {
     if let Some(computer) = executor.computer() {
-        return format!("Workspace:\n- computer: {}\n- generation: {}\n- primary: {}\n- mounts: none\n- plain relative paths and Shell use the computer workspace",computer.id,computer.generation,computer.workspace_path());
+        return format!("Workspace:\n- computer: {}\n- generation: {}\n- primary: {}\n- mounts: none\n- plain relative paths and Shell use the computer workspace\n- this is NOT the UI conversation/group or private workspace; files are not automatically synchronized\n- use PublishComputerFile (up to 1000 MiB): source_root=task (default) for file/Shell outputs; source_root=computer for browser artifact paths, even on branch tasks; roots never fall back\n- wait for published=true before claiming delivery or posting a relative link\n- Glob proves only that a computer file exists, never that it was uploaded",computer.id,computer.generation,computer.workspace_path());
     }
     let mode_name = if direct_chat {
         match mode {

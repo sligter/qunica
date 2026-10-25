@@ -46,6 +46,7 @@ it('retries the same creation intent after a lost response and requires explicit
 it('binds explicitly and confirms a generation-fenced destroy before purging home',async()=>{
   mocks.items=[{id:'computer-1',name:'Build computer',binding:{kind:'team',id:'group-1'},selected:false}]
   const user=page()
+  expect(await screen.findByRole('note')).toHaveTextContent('Connecting its desktop does not route Agent tools here')
   await user.click(await screen.findByRole('button',{name:'Use for execution'}))
   await waitFor(()=>expect(mocks.request).toHaveBeenCalledWith('/execution-environments/binding',expect.objectContaining({method:'PUT',body:{scope:'group',target_id:'group-1',execution_environment_id:'computer-1'}})))
   await user.click(screen.getByRole('button',{name:'Destroy'}))

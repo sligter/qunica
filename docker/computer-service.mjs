@@ -3,8 +3,9 @@ import http from 'node:http'
 import net from 'node:net'
 import { spawn, execFileSync } from 'node:child_process'
 import { randomUUID, createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, readdirSync, statSync, realpathSync, openSync, readSync, closeSync } from 'node:fs'
-import { resolve, relative } from 'node:path'
+import { mkdirSync, readFileSync, statSync, realpathSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { artifactFiles, artifactChunk, workspaceFilename } from './computer-artifacts.mjs'
 const root = '/home/agent/workspace'
 let pageVersion = randomUUID(), screenVersion = randomUUID(), browser, acp
 const pending = new Map()
@@ -63,14 +64,10 @@ function rpc(method, params = {}) {
 }
 const allowed = new Set(['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press_key', 'browser_select_option', 'browser_tabs', 'browser_file_upload', 'browser_wait_for', 'browser_take_screenshot', 'browser_handle_dialog'])
 const readOnly = new Set(['browser_snapshot', 'browser_take_screenshot'])
-function artifacts() {
-  return readdirSync(root + '/artifacts').slice(0, 200).flatMap(name => {
-    const path = realpathSync(root + '/artifacts/' + name)
-    if (relative(root, path).startsWith('..')) return []
-    const stat = statSync(path)
-    return stat.isFile() ? [{ path: 'artifacts/' + name, size: stat.size }] : []
-  })
-}
+// MCP resolves explicit screenshot filenames against cwd, not --output-dir.
+// Track those outputs as well, without scanning or exporting the entire home.
+const browserOutputs = new Set()
+function artifacts() { return artifactFiles(root, [...browserOutputs]) }
 async function call(body) {
   switch (body.op) {
     case 'browser': {
@@ -80,11 +77,16 @@ async function call(body) {
       // Consume before dispatch: failed or repeated actions never reuse a ref.
       if (!readOnly.has(body.tool)) { pageVersion = randomUUID(); screenVersion = randomUUID() }
       const args = { ...(body.args || {}) }
+      if (args.filename !== undefined) workspaceFilename(root, args.filename)
       if (args.ref && !args.target) args.target = args.ref
       delete args.ref; delete args.element
       const signature = JSON.stringify([body.tool, args])
       if (!readOnly.has(body.tool) && signature === lastAction && unchangedActions >= 3) throw Object.assign(new Error('Repeated browser action has no effect; inspect the page or request human control'), { code: 'action_repeat_limit' })
       const result = await rpc('tools/call', { name: body.tool, arguments: args })
+      if (!result.isError && typeof args.filename === 'string') {
+        browserOutputs.add(args.filename)
+        if (browserOutputs.size > 200) browserOutputs.delete(browserOutputs.values().next().value)
+      }
       const after = pageHash(result)
       if (!readOnly.has(body.tool)) {
         const checksDom = ['browser_click', 'browser_type', 'browser_select_option', 'browser_navigate', 'browser_tabs'].includes(body.tool)
@@ -182,19 +184,7 @@ async function call(body) {
       const lines = acp.lines.splice(0, 128); acp.bytes -= lines.reduce((n, line) => n + Buffer.byteLength(line) + 1, 0)
       return { lines, closed: acp.closed }
     }
-    case 'artifact': {
-      const path = realpathSync(resolve(root, body.path))
-      if (relative(root, path).startsWith('..') || !path.startsWith(root + '/')) throw new Error('Artifact path denied')
-      const stat = statSync(path)
-      if (!stat.isFile() || stat.size > 8 * 1024 * 1024) throw new Error('Artifact exceeds 8 MiB')
-      const offset = Number.isInteger(body.offset) && body.offset >= 0 ? body.offset : 0
-      const file = openSync(path, 'r')
-      try {
-        const data = Buffer.alloc(49152)
-        const count = readSync(file, data, 0, data.length, offset)
-        return { path: relative(root, path), size: stat.size, data: data.subarray(0, count).toString('base64') }
-      } finally { closeSync(file) }
-    }
+    case 'artifact': return artifactChunk(root, body)
     default: throw new Error('Unsupported computer capability')
   }
 }

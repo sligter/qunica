@@ -1,5 +1,7 @@
 //! Narrow Supervisor client and per-invocation authorization. Never runs Docker
 //! or falls back to a local process. See docs/guide/computers.md.
+pub(crate) mod artifacts;
+mod publication;
 use std::{sync::Arc, time::Duration};
 
 use hmac::{Hmac, Mac};
@@ -293,7 +295,7 @@ impl ComputerExecution {
         if value["truncated"] == true {
             return Err(ApiError::conflict("Computer capability failed; inspect the computer or refresh its page/screen reference"));
         }
-        let result: Value = serde_json::from_str(value["stdout"].as_str().unwrap_or(""))
+        let mut result: Value = serde_json::from_str(value["stdout"].as_str().unwrap_or(""))
             .map_err(|_| ApiError::internal("invalid computer capability response"))?;
         if result["code"] == "action_repeat_limit" {
             return Err(ApiError::new(
@@ -305,13 +307,18 @@ impl ComputerExecution {
         if value["exit_code"] != 0 {
             return Err(ApiError::conflict("Computer capability failed; inspect the computer or refresh its page/screen reference"));
         }
+        let mut registered = Vec::new();
         if let Some(items) = result["artifacts"].as_array() {
             for item in items {
                 if let (Some(path), Some(size)) = (item["path"].as_str(), item["size"].as_i64()) {
-                    sqlx::query("INSERT INTO computer_artifacts(id,owner_id,computer_id,turn_id,generation,path,size) VALUES(?,?,?,?,?,?,?) ON CONFLICT(turn_id,computer_id,path) DO UPDATE SET size=excluded.size,generation=excluded.generation")
-                        .bind(uuid::Uuid::new_v4().to_string()).bind(&self.owner).bind(&self.id).bind(&self.turn).bind(&self.generation).bind(path).bind(size).execute(&self.pool).await.map_err(|_|ApiError::internal("artifact record unavailable"))?;
+                    let artifact_id: String = sqlx::query_scalar("INSERT INTO computer_artifacts(id,owner_id,computer_id,turn_id,generation,path,size) VALUES(?,?,?,?,?,?,?) ON CONFLICT(turn_id,computer_id,path) DO UPDATE SET size=excluded.size,generation=excluded.generation RETURNING id")
+                        .bind(uuid::Uuid::new_v4().to_string()).bind(&self.owner).bind(&self.id).bind(&self.turn).bind(&self.generation).bind(path).bind(size).fetch_one(&self.pool).await.map_err(|_|ApiError::internal("artifact record unavailable"))?;
+                    registered.push(json!({"id":artifact_id,"path":path,"size":size}));
                 }
             }
+        }
+        if !registered.is_empty() {
+            result["registered_artifacts"] = json!(registered);
         }
         Ok(result)
     }

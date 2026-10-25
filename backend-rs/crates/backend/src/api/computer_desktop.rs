@@ -1,6 +1,8 @@
 //! A separate, authenticated RFB channel; pixels never enter account events.
 use super::{auth, computers, error::ApiError, realtime, AppState};
+use crate::computers::artifacts::{copy_artifact, MAX_ARTIFACT_BYTES};
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         OriginalUri, Path, State,
@@ -13,6 +15,7 @@ use base64::Engine;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use uuid::Uuid;
 const PROTOCOL: &str = "qunica.desktop.v1";
 pub async fn control(
@@ -200,8 +203,10 @@ pub async fn download(
     .await
     .map_err(|_| ApiError::internal("Artifact unavailable"))?
     .ok_or_else(|| ApiError::not_found("Artifact not found"))?;
-    if !(0..=8 * 1024 * 1024).contains(&size) {
-        return Err(ApiError::invalid_input("Artifact exceeds download limit"));
+    if !(0..=MAX_ARTIFACT_BYTES as i64).contains(&size) {
+        return Err(ApiError::invalid_input(
+            "Artifact exceeds the 1000 MiB download limit",
+        ));
     }
     let client = state
         .computers
@@ -214,29 +219,44 @@ pub async fn download(
             None,
         )
         .await?;
-    let mut bytes = Vec::new();
-    while (bytes.len() as i64) < size {
-        let value=client.request(reqwest::Method::POST,&format!("/v1/computers/{computer}/call"),Some(&json!({"expected_generation":snapshot["generation"],"request":{"op":"artifact","path":path,"offset":bytes.len()}}))).await?;
-        if value["exit_code"] != 0 || value["truncated"] == true {
-            return Err(ApiError::conflict("Artifact read failed"));
+    let mut file = tokio::fs::File::from_std(
+        tempfile::tempfile()
+            .map_err(|_| ApiError::internal("failed to stage artifact download"))?,
+    );
+    let metadata = copy_artifact(&mut file, Some(size as u64), |offset| {
+        let body = json!({"expected_generation":snapshot["generation"],"request":{"op":"artifact","path":path,"offset":offset}});
+        let endpoint = format!("/v1/computers/{computer}/call");
+        async move {
+            let value = client.request(reqwest::Method::POST, &endpoint, Some(&body)).await?;
+            if value["exit_code"] != 0 || value["truncated"] == true {
+                return Err(ApiError::conflict("Artifact read failed"));
+            }
+            serde_json::from_str(value["stdout"].as_str().unwrap_or(""))
+                .map_err(|_| ApiError::internal("Artifact read failed"))
         }
-        let value: Value = serde_json::from_str(value["stdout"].as_str().unwrap_or(""))
-            .map_err(|_| ApiError::internal("Artifact read failed"))?;
-        let chunk = base64::engine::general_purpose::STANDARD
-            .decode(value["data"].as_str().unwrap_or(""))
-            .map_err(|_| ApiError::internal("Artifact read failed"))?;
-        if chunk.is_empty() || bytes.len() + chunk.len() > size as usize {
-            return Err(ApiError::conflict("Artifact changed; refresh its metadata"));
-        }
-        bytes.extend(chunk);
-    }
-    Ok((
+    }).await?;
+    file.rewind()
+        .await
+        .map_err(|_| ApiError::internal("failed to read staged artifact"))?;
+    // Note: return only verified bytes; dropping the response closes the
+    // anonymous temporary file, including on an interrupted download.
+    let stream = futures_util::stream::try_unfold(file, |mut file| async move {
+        let mut bytes = vec![0; 64 * 1024];
+        let count = file.read(&mut bytes).await?;
+        bytes.truncate(count);
+        Ok::<_, std::io::Error>((count > 0).then_some((bytes, file)))
+    });
+    let mut response = (
         [
             ("content-type", "application/octet-stream"),
             ("content-disposition", "attachment"),
             ("cache-control", "no-store"),
         ],
-        bytes,
+        Body::from_stream(stream),
     )
-        .into_response())
+        .into_response();
+    response
+        .headers_mut()
+        .insert("content-length", metadata.size.to_string().parse().unwrap());
+    Ok(response)
 }

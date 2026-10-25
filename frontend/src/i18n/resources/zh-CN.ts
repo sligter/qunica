@@ -16,6 +16,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
       noDesktopTitle: '桌面暂不可用', noDesktopBody: '电脑尚未就绪。可以刷新状态，或前往电脑设置检查。',
     },
     desktopDirectOnly: '观察或接管电脑桌面，请使用服务器直连。',
+    executionNotSelected: '此电脑尚未用于执行。连接桌面不代表 Agent 工具已在这里运行；请点击「用于执行」绑定其所属群组或 Agent。Agent 已选用的私有电脑优先于群组共享电脑。',
     "artifacts": "任务产物",
     "download": "下载",
     "noArtifacts": "暂无已记录的浏览器下载。",

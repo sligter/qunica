@@ -24,9 +24,15 @@ const VENDOR_KEY: &str = "vendor-secret-must-never-reach-computer";
 #[derive(Default)]
 struct Provider {
     calls: Mutex<Vec<ExecRequest>>,
+    artifact: Mutex<Option<Vec<u8>>>,
+    corrupt_artifact: std::sync::atomic::AtomicBool,
+    artifact_size_override: std::sync::atomic::AtomicU64,
 }
 #[async_trait]
 impl ComputerProvider for Provider {
+    fn capabilities(&self) -> Value {
+        json!({"desktop":true,"browser":true,"network":false,"acp_opencode":false})
+    }
     async fn create(&self, _: &Computer) -> Result<(), Error> {
         Ok(())
     }
@@ -43,10 +49,35 @@ impl ComputerProvider for Provider {
         Ok(())
     }
     async fn execute(&self, _: &Computer, request: ExecRequest) -> Result<ExecResult, Error> {
+        let mut stdout = "remote output".to_string();
+        if let Some(bytes) = self.artifact.lock().await.as_ref() {
+            use base64::Engine;
+            use sha2::{Digest, Sha256};
+            let body: Value = serde_json::from_str(request.argv.last().unwrap()).unwrap();
+            assert_eq!(body["op"], "artifact");
+            let offset = body["offset"].as_u64().unwrap() as usize;
+            let digest = if self
+                .corrupt_artifact
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                "0".repeat(64)
+            } else {
+                format!("{:x}", Sha256::digest(bytes))
+            };
+            let override_size = self
+                .artifact_size_override
+                .load(std::sync::atomic::Ordering::SeqCst);
+            let size = if override_size == 0 {
+                bytes.len() as u64
+            } else {
+                override_size
+            };
+            stdout = json!({"size":size,"sha256":digest,"data":base64::engine::general_purpose::STANDARD.encode(&bytes[offset.min(bytes.len())..(offset+49152).min(bytes.len())])}).to_string();
+        }
         self.calls.lock().await.push(request);
         Ok(ExecResult {
             exit_code: 0,
-            stdout: "remote output".into(),
+            stdout,
             stderr: String::new(),
             truncated: false,
         })
@@ -227,6 +258,436 @@ async fn binding_is_explicit_scoped_and_rejects_unsupported_acp_and_active_rebin
         StatusCode::NOT_FOUND
     );
     server.abort();
+}
+
+#[tokio::test]
+async fn publication_copies_binary_into_owned_ui_workspace_without_mounts_or_overwrites() {
+    let (app, state, token, owner, group, agent, provider, _root, server) = fixture().await;
+    let workspace = tempfile::tempdir().unwrap();
+    sqlx::query("INSERT INTO workspaces(id,owner_id,name,backend_type,local_path,status,created_at,updated_at) VALUES('publish-workspace',?,'Files','local',?,'active','now','now')")
+        .bind(&owner).bind(workspace.path().to_string_lossy().as_ref()).execute(state.db.pool()).await.unwrap();
+    sqlx::query("UPDATE groups SET workspace_id='publish-workspace' WHERE id=?")
+        .bind(&group)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO group_agents(group_id,agent_id,status,context_scope_json,joined_at,updated_at) VALUES(?,?,'active','{\"workspace_mode\":\"group\"}','now','now')")
+        .bind(&group).bind(&agent).execute(state.db.pool()).await.unwrap();
+    let computer = create(&app, &token, &group).await;
+    assert_eq!(
+        bind(
+            &app,
+            &token,
+            "group",
+            &group,
+            computer["spec"]["id"].clone()
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    sqlx::query("INSERT INTO threads(id,group_id,status,created_at,updated_at) VALUES('publish-thread',?,'running','now','now')").bind(&group).execute(state.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO group_turns(id,thread_id,group_id,status,scheduler_strategy,config_snapshot_json,topology_snapshot_json,created_at,updated_at) VALUES('publish-turn','publish-thread',?,'running','bounded','{}','{}','now','now')")
+        .bind(&group).execute(state.db.pool()).await.unwrap();
+    let execution = ComputerExecution::resolve(
+        state.db.pool(),
+        state.computers.clone(),
+        &owner,
+        &group,
+        &agent,
+        "publish-turn",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let bytes = (0..100_123).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+    *provider.artifact.lock().await = Some(bytes.clone());
+    let executor = ToolExecutor::new(None).unwrap().with_computer(execution);
+    for args in [
+        json!({"source":"../secret","target":"conversation","filename":"bad.png"}),
+        json!({"source":"google.png","target":"conversation","filename":"../bad.png"}),
+        json!({"source":"google.png","target":"self","filename":"bad.png"}),
+        json!({"source":"google.png","source_root":"other","target":"conversation","filename":"bad.png"}),
+        json!({"source":"google.png","source_root":null,"target":"conversation","filename":"bad.png"}),
+    ] {
+        assert_eq!(
+            executor.execute("PublishComputerFile", args).await.status,
+            ToolStatus::Failed
+        );
+    }
+    assert!(provider.calls.lock().await.is_empty());
+    let result = executor
+        .execute(
+            "PublishComputerFile",
+            json!({"source":"google.png","target":"conversation","filename":"shared.png"}),
+        )
+        .await;
+    assert_eq!(result.status, ToolStatus::Completed, "{}", result.output);
+    let result: Value = serde_json::from_str(&result.output).unwrap();
+    assert_eq!(result["published"], true);
+    assert_eq!(
+        std::fs::read(workspace.path().join("shared.png")).unwrap(),
+        bytes
+    );
+    assert_eq!(
+        provider.calls.lock().await.len(),
+        3,
+        "binary reads are chunked"
+    );
+    let download = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v2/groups/{group}/workspace-files/download?path=shared.png"
+                ))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(download.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(download.into_body(), 200_000)
+            .await
+            .unwrap()
+            .as_ref(),
+        bytes.as_slice()
+    );
+    let second = executor
+        .execute(
+            "PublishComputerFile",
+            json!({"source":"google.png","target":"conversation","filename":"shared.png"}),
+        )
+        .await;
+    assert_eq!(second.status, ToolStatus::Failed);
+    assert!(second.output.contains("already exists"));
+    assert_eq!(
+        std::fs::read(workspace.path().join("shared.png")).unwrap(),
+        bytes
+    );
+    provider
+        .corrupt_artifact
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let corrupt = executor
+        .execute(
+            "PublishComputerFile",
+            json!({"source":"google.png","target":"conversation","filename":"corrupt.png"}),
+        )
+        .await;
+    assert_eq!(corrupt.status, ToolStatus::Failed);
+    assert!(!workspace.path().join("corrupt.png").exists());
+    provider
+        .corrupt_artifact
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    *provider.artifact.lock().await = Some(vec![0; 9 * 1024 * 1024]);
+    let large = executor
+        .execute(
+            "PublishComputerFile",
+            json!({"source":"large.bin","target":"conversation","filename":"large.bin"}),
+        )
+        .await;
+    assert_eq!(large.status, ToolStatus::Completed, "{}", large.output);
+    assert_eq!(
+        std::fs::metadata(workspace.path().join("large.bin"))
+            .unwrap()
+            .len(),
+        9 * 1024 * 1024
+    );
+    let downloaded = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v2/groups/{group}/workspace-files/download?path=large.bin"
+                ))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(downloaded.status(), StatusCode::OK);
+    assert_eq!(
+        downloaded.headers()["content-length"],
+        (9 * 1024 * 1024).to_string()
+    );
+    let mut stream = downloaded.into_body().into_data_stream();
+    let mut received = 0;
+    let mut frames = 0;
+    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+        let chunk = chunk.unwrap();
+        assert!(chunk.len() <= 64 * 1024);
+        assert!(chunk.iter().all(|b| *b == 0));
+        received += chunk.len();
+        frames += 1;
+    }
+    assert_eq!(received, 9 * 1024 * 1024);
+    assert!(frames > 1, "workspace downloads stream bounded frames");
+    provider
+        .artifact_size_override
+        .store(1000 * 1024 * 1024 + 1, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        executor
+            .execute(
+                "PublishComputerFile",
+                json!({"source":"too-large.bin","target":"conversation","filename":"too-large.bin"})
+            )
+            .await
+            .status,
+        ToolStatus::Failed
+    );
+    assert!(!workspace.path().join("too-large.bin").exists());
+    provider
+        .artifact_size_override
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+    assert!(std::fs::read_dir(workspace.path())
+        .unwrap()
+        .all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".tmp")));
+    let private = tempfile::tempdir().unwrap();
+    sqlx::query("INSERT INTO workspaces(id,owner_id,name,backend_type,local_path,status,created_at,updated_at) VALUES('private-publish-workspace',?,'Private','local',?,'active','now','now')")
+        .bind(&owner).bind(private.path().to_string_lossy().as_ref()).execute(state.db.pool()).await.unwrap();
+    sqlx::query("UPDATE agents SET workspace_id='private-publish-workspace' WHERE id=?")
+        .bind(&agent)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE group_agents SET context_scope_json='{\"workspace_mode\":\"group_and_self\"}' WHERE group_id=? AND agent_id=?").bind(&group).bind(&agent).execute(state.db.pool()).await.unwrap();
+    *provider.artifact.lock().await = Some(bytes.clone());
+    let own = executor
+        .execute(
+            "PublishComputerFile",
+            json!({"source":"google.png","target":"self","filename":"own.png"}),
+        )
+        .await;
+    assert_eq!(own.status, ToolStatus::Completed, "{}", own.output);
+    assert_eq!(
+        std::fs::read(private.path().join("own.png")).unwrap(),
+        bytes
+    );
+    assert!(!workspace.path().join("own.png").exists());
+    *provider.artifact.lock().await = Some(Vec::new());
+    assert_eq!(
+        executor
+            .execute(
+                "PublishComputerFile",
+                json!({"source":"empty.txt","target":"conversation","filename":"empty.txt"})
+            )
+            .await
+            .status,
+        ToolStatus::Completed
+    );
+    assert_eq!(
+        std::fs::metadata(workspace.path().join("empty.txt"))
+            .unwrap()
+            .len(),
+        0
+    );
+    // Artifact downloads use the same size, chunk and checksum validation.
+    let artifact = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO computer_artifacts(id,owner_id,computer_id,turn_id,generation,path,size) VALUES(?,?,?,'publish-turn','1','large.bin',?)")
+        .bind(&artifact).bind(&owner).bind(computer["spec"]["id"].as_str().unwrap()).bind(9 * 1024 * 1024i64)
+        .execute(state.db.pool()).await.unwrap();
+    *provider.artifact.lock().await = Some(vec![37; 9 * 1024 * 1024]);
+    let download = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v2/computer-artifacts/{artifact}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(download.status(), StatusCode::OK);
+    assert_eq!(
+        download.headers()["content-length"],
+        (9 * 1024 * 1024).to_string()
+    );
+    assert!(axum::body::to_bytes(download.into_body(), 10 * 1024 * 1024)
+        .await
+        .unwrap()
+        .iter()
+        .all(|b| *b == 37));
+    provider
+        .corrupt_artifact
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let corrupt_download = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v2/computer-artifacts/{artifact}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(corrupt_download.status(), StatusCode::CONFLICT);
+    provider
+        .corrupt_artifact
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    for size in [0i64, 1000 * 1024 * 1024 + 1] {
+        sqlx::query("UPDATE computer_artifacts SET size=? WHERE id=?")
+            .bind(size)
+            .bind(&artifact)
+            .execute(state.db.pool())
+            .await
+            .unwrap();
+        *provider.artifact.lock().await = Some(Vec::new());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v2/computer-artifacts/{artifact}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            if size == 0 {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            }
+        );
+    }
+    sqlx::query("UPDATE group_agents SET status='removed' WHERE group_id=? AND agent_id=?")
+        .bind(&group)
+        .bind(&agent)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let revoked = executor
+        .execute(
+            "PublishComputerFile",
+            json!({"source":"google.png","target":"conversation","filename":"revoked.png"}),
+        )
+        .await;
+    assert_eq!(revoked.status, ToolStatus::Failed);
+    assert!(!workspace.path().join("revoked.png").exists());
+    let changes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM account_events WHERE owner_id=? AND kind='file.changed'",
+    )
+    .bind(&owner)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert!(changes >= 2);
+    server.abort();
+}
+
+#[tokio::test]
+#[ignore = "requires execution and egress Docker images; no paid model"]
+async fn docker_screenshot_publication_reaches_conversation_workspace() {
+    use futures_util::FutureExt;
+    use qunica_computer_supervisor::docker::DockerProvider;
+    let (app, mut state, token, owner, group, agent, _provider, _root, fake_server) =
+        fixture().await;
+    drop(app);
+    fake_server.abort();
+    let journal = tempfile::tempdir().unwrap();
+    let provider = Arc::new(
+        DockerProvider::connect(
+            std::env::var("QUNICA_TEST_COMPUTER_IMAGE")
+                .unwrap_or_else(|_| "qunica-computer:local".into()),
+        )
+        .await
+        .unwrap()
+        .with_services(true)
+        .with_attestation(TOKEN.into()),
+    );
+    let supervisor = Supervisor::open(journal.path().into(), TOKEN, provider)
+        .unwrap()
+        .router();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, supervisor).await.unwrap() });
+    let client =
+        Arc::new(SupervisorClient::new(&format!("http://{address}"), TOKEN.into()).unwrap());
+    state.computers = Some(client.clone());
+    let app = api::router(state.clone());
+    let workspace = tempfile::tempdir().unwrap();
+    sqlx::query("INSERT INTO workspaces(id,owner_id,name,backend_type,local_path,status,created_at,updated_at) VALUES('real-publish-workspace',?,'Files','local',?,'active','now','now')")
+        .bind(&owner).bind(workspace.path().to_string_lossy().as_ref()).execute(state.db.pool()).await.unwrap();
+    sqlx::query("UPDATE groups SET workspace_id='real-publish-workspace' WHERE id=?")
+        .bind(&group)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO group_agents(group_id,agent_id,status,context_scope_json,joined_at,updated_at) VALUES(?,?,'active','{\"workspace_mode\":\"group\"}','now','now')")
+        .bind(&group).bind(&agent).execute(state.db.pool()).await.unwrap();
+    let computer = create(&app, &token, &group).await;
+    let id = computer["spec"]["id"].as_str().unwrap();
+    let outcome = std::panic::AssertUnwindSafe(async {
+        assert_eq!(bind(&app, &token, "group", &group, json!(id)).await.0, StatusCode::OK);
+        let ready = client.request(reqwest::Method::POST, &format!("/v1/computers/{id}/exec"), Some(&json!({
+            "expected_generation":"1","argv":["python3","-c","import socket,time\nfor _ in range(100):\n try:\n  socket.create_connection(('127.0.0.1',8765),timeout=.1).close();break\n except OSError:time.sleep(.1)\nelse:raise RuntimeError('broker not ready')"],"timeout_seconds":20
+        }))).await.unwrap();
+        assert_eq!(ready["exit_code"],0,"{ready}");
+        let init = client.request(reqwest::Method::POST, &format!("/v1/computers/{id}/exec"), Some(&json!({
+            "expected_generation":"1","argv":["sh","-c","git init && git -c user.name=Fixture -c user.email=fixture@example.test commit --allow-empty -m initial"]
+        }))).await.unwrap();
+        assert_eq!(init["exit_code"], 0, "{init}");
+        for branch in [false, true] {
+            let thread = Uuid::new_v4().to_string();
+            let turn = Uuid::new_v4().to_string();
+            sqlx::query("INSERT INTO threads(id,group_id,status,git_branch,created_at,updated_at) VALUES(?,?,'running',?,'now','now')")
+                .bind(&thread).bind(&group).bind(branch.then_some("feature/publication")).execute(state.db.pool()).await.unwrap();
+            sqlx::query("INSERT INTO group_turns(id,thread_id,group_id,status,scheduler_strategy,config_snapshot_json,topology_snapshot_json,created_at,updated_at) VALUES(?,?,?,'running','bounded','{}','{}','now','now')")
+                .bind(&turn).bind(&thread).bind(&group).execute(state.db.pool()).await.unwrap();
+            let execution = ComputerExecution::resolve(state.db.pool(), state.computers.clone(), &owner, &group, &agent, &turn).await.unwrap().unwrap();
+            let executor = ToolExecutor::new(None).unwrap().with_computer(execution);
+            let opened = executor.execute("ComputerBrowser", json!({"tool":"browser_navigate","args":{"url":"about:blank"}})).await;
+            assert_eq!(opened.status, ToolStatus::Completed,"{}",opened.output);
+            let screenshot = executor.execute("ComputerBrowser", json!({"tool":"browser_take_screenshot","args":{"filename":"explicit-screenshot.png","scale":"css","fullPage":false}})).await;
+            assert_eq!(screenshot.status, ToolStatus::Completed,"{}",screenshot.output);
+            let output: Value = serde_json::from_str(&screenshot.output).unwrap();
+            let artifact = output["registered_artifacts"].as_array().unwrap().iter().find(|item| item["path"]=="explicit-screenshot.png").unwrap();
+            assert!(artifact["size"].as_u64().unwrap()>100);
+            let name = format!("published-{branch}.png");
+            if branch {
+                let missing = executor.execute("PublishComputerFile", json!({"source":"explicit-screenshot.png","target":"conversation","filename":"must-not-fallback.png"})).await;
+                assert_eq!(missing.status, ToolStatus::Failed, "task root must not silently select a browser output");
+                let written = executor.execute("Write", json!({"path":"explicit-screenshot.png","content":"task file, not the browser screenshot"})).await;
+                assert_eq!(written.status, ToolStatus::Completed, "{}", written.output);
+                let task = executor.execute("PublishComputerFile", json!({"source":"explicit-screenshot.png","target":"conversation","filename":"task.txt"})).await;
+                assert_eq!(task.status, ToolStatus::Completed, "{}", task.output);
+                assert_eq!(std::fs::read_to_string(workspace.path().join("task.txt")).unwrap(), "task file, not the browser screenshot");
+            }
+            let published = executor.execute("PublishComputerFile", json!({"source":"explicit-screenshot.png","source_root":"computer","target":"conversation","filename":name})).await;
+            assert_eq!(published.status,ToolStatus::Completed,"{}",published.output);
+            let bytes = std::fs::read(workspace.path().join(&name)).unwrap();
+            assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+            for path in [format!("/api/v2/groups/{group}/workspace-files/download?path={name}"),format!("/api/v2/computer-artifacts/{}",artifact["id"].as_str().unwrap())] {
+                let response = app.clone().oneshot(Request::builder().uri(path).header("authorization",format!("Bearer {token}")).body(Body::empty()).unwrap()).await.unwrap();
+                assert_eq!(response.status(),StatusCode::OK);
+                assert_eq!(axum::body::to_bytes(response.into_body(), 1024*1024).await.unwrap().as_ref(),bytes.as_slice());
+            }
+            let (status, listing) = request(&app,"GET",&format!("/api/v2/groups/{group}/workspace-files"),Some(&token),Value::Null).await;
+            assert_eq!(status,StatusCode::OK);
+            assert!(listing.as_array().unwrap().iter().any(|file| file["path"]==name));
+            sqlx::query("UPDATE group_turns SET status='completed' WHERE id=?").bind(&turn).execute(state.db.pool()).await.unwrap();
+        }
+    }).catch_unwind().await;
+    let cleanup = client.request(reqwest::Method::POST,&format!("/v1/computers/{id}/actions"),Some(&json!({"expected_generation":"1","action":"destroy","confirm":id,"purge_home":true}))).await;
+    server.abort();
+    assert!(
+        cleanup.is_ok(),
+        "failed to clean up isolated computer: {cleanup:?}"
+    );
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 #[tokio::test]

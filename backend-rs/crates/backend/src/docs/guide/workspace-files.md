@@ -2,6 +2,12 @@
 
 The workspace panel browses the folder bound to the current conversation, and edits text files in place.
 
+Files created inside a [controlled computer](computers.md#delivering-a-file-into-the-conversation)
+are separate from this folder. Built-in Agents use `PublishComputerFile` to copy a
+selected deliverable into the conversation workspace before posting its relative
+link. Computer artifacts can also be downloaded from the Computer tab. Nothing is
+automatically copied into an Agent's private workspace.
+
 ## Attaching files to a message
 
 Dragging a file from the panel into the composer attaches a **reference** to it: the path is recorded, not a copy of the contents, so there is no duplicate to keep in sync. The server re-checks on send that the path is inside the conversation's workspace.

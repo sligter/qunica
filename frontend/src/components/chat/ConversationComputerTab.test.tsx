@@ -45,8 +45,17 @@ it('shows only the current Team computer and active members’ Private computers
   expect(screen.queryByRole('option', { name: /Unrelated|Former member/ })).not.toBeInTheDocument()
   await user.selectOptions(screen.getByRole('combobox', { name: 'Conversation computer' }), 'private-1')
   expect(await screen.findByText('desktop:private-1')).toBeVisible()
+  expect(screen.getByRole('note')).toHaveTextContent('Connecting its desktop does not route Agent tools here')
+  expect(screen.getByRole('note')).toHaveTextContent('Private computer takes priority')
   await user.click(screen.getByRole('button', { name: 'Use for execution' }))
   await waitFor(() => expect(mocks.request).toHaveBeenCalledWith('/execution-environments/binding', expect.objectContaining({ method: 'PUT', body: { scope: 'agent', target_id: 'agent-1', execution_environment_id: 'private-1' } })))
+})
+
+it('does not show an unbound warning for the selected Team computer', async () => {
+  page()
+  expect(await screen.findByText('desktop:team-1')).toBeVisible()
+  expect(screen.queryByRole('note')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Use for execution' })).not.toBeInTheDocument()
 })
 
 it('uses the direct chat Agent’s computer without querying group membership', async () => {

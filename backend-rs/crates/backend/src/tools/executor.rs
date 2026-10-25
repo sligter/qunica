@@ -420,6 +420,22 @@ impl ToolExecutor {
     /// [`ToolError`] for [`execute`](Self::execute) to render.
     async fn dispatch(&self, name: &str, args: Value) -> Result<ToolResult, ToolError> {
         if let Some(computer) = &self.computer {
+            if name == "PublishComputerFile" {
+                let source = arg_str(&args, "source")?;
+                let source_root = match args.get("source_root") {
+                    None => "task",
+                    Some(_) => arg_str(&args, "source_root")?,
+                };
+                let filename = arg_str(&args, "filename")?;
+                let target = arg_str(&args, "target")?;
+                return match computer.publish_file(source, source_root, target, filename).await {
+                    Ok(value) => Ok(ToolResult::completed(value.to_string())),
+                    Err(error) => Ok(ToolResult {
+                        status: ToolStatus::Failed,
+                        output: error.message_text(),
+                    }),
+                };
+            }
             if matches!(name, "ComputerBrowser" | "ComputerScreen" | "ComputerInput") {
                 let request = match name {
                     "ComputerBrowser" => {

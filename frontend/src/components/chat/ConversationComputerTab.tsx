@@ -34,6 +34,7 @@ function ComputerView({ item }: { item: ComputerItem }) {
       <Button size="icon" variant="ghost" className="h-7 w-7" aria-label={t('refresh')} onClick={() => void state.refetch()} disabled={state.isFetching}><RefreshCw className="h-3.5 w-3.5" aria-hidden /></Button>
     </div>
     <div className="space-y-3 px-3 pb-4">
+      {!item.selected && status !== 'destroyed' ? <p role="note" className="rounded-md border border-border bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">{t('executionNotSelected')}</p> : null}
       {state.isError || action.isError ? <p role="alert" className="break-words text-xs text-destructive">{state.error?.message || action.error?.message}</p> : null}
       {state.data?.error_code ? <p role="alert" className="break-words text-xs text-destructive">{state.data.error_code}</p> : null}
       {running && state.data?.capabilities?.desktop ? <ComputerDesktop key={`${item.id}:${state.data.generation}`} embedded id={item.id} name={item.name} generation={state.data.generation} /> : (

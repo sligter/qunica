@@ -38,6 +38,7 @@ function ComputerCard({ item, targetName }: { item: ComputerItem; targetName: st
       <div><dt className="text-muted-foreground">{t('generation')}</dt><dd className="mt-1 font-mono">{state.data?.generation ?? '—'}</dd></div>
       <div><dt className="text-muted-foreground">{t('execution')}</dt><dd className="mt-1">{item.selected ? t('selected') : t('unselected')}</dd></div>
     </dl>
+    {!item.selected && status !== 'destroyed' ? <p role="note" className="mt-3 rounded-md border border-border bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">{t('executionNotSelected')}</p> : null}
     <p className="mt-3 truncate font-mono text-2xs text-muted-foreground" title={item.id}>{item.id}</p>
     {state.isError ? <p role="alert" className="mt-2 break-words text-xs text-destructive">{state.error.message}</p> : null}
     {state.data?.error_code ? <p className="mt-2 break-words text-xs text-destructive">{state.data.error_code}</p> : null}

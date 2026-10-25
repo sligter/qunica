@@ -112,6 +112,15 @@ The owner-scoped application API provides:
 | GET `/api/v2/computers/:id/artifacts` | Task/turn, path and size for recorded browser artifacts. |
 | GET `/api/v2/computer-artifacts/:id` | Authenticated, bounded file download. |
 
+Creating a computer assigns its Team/Private ownership; it does not select an
+execution environment. Viewing or taking over its desktop does not select it
+either. Click **Use for execution** in Settings → Computers or the conversation's
+Computer tab. A Team selection applies to that group's Agents unless an Agent
+has selected its own Private computer, which takes priority. Without either
+selection, tools retain the app's local execution environment, which in the
+server image has no graphical display or Chromium. Binding affects new calls;
+previous chat messages about the old environment remain in history.
+
 Settings → Computers exposes lifecycle, binding, desktop control and artifacts.
 The conversation's right-hand **Computer** tab shows its Team computer and
 active members' Private computers; a direct chat shows only its Agent's computer.
@@ -154,8 +163,40 @@ navigation, snapshots, element actions, tabs, upload and download on that same
 computer. Mutations consume `expected_page`; a stale snapshot or takeover cannot
 silently target fresh elements. Three repeated unchanged DOM actions or identical
 failures require user inspection; scrolling keys are not classified solely by DOM
-equality. Snapshot files and downloads are recorded as
-artifacts and can be read with the computer file tools or downloaded from settings.
+equality. Snapshot files, downloads and screenshots (including explicit filenames
+outside `artifacts/`) are recorded as artifacts and can be read with the computer
+file tools or downloaded from settings.
+
+### Delivering a file into the conversation
+
+The computer workspace and the UI conversation/Agent workspaces are separate.
+A file found by `Glob` on the computer has not been uploaded to either UI folder.
+For built-in Agents, `PublishComputerFile` explicitly copies one regular file of
+up to **1000 MiB (1,048,576,000 bytes, inclusive)** into a permitted UI workspace.
+The same size limit applies to computer artifact downloads in the UI.
+Use `target=conversation` for this group/direct chat, or `target=self` for the
+Agent's own workspace when its sharing mode permits it. `source` is relative to
+`source_root`: `task` (the default) selects the current task workspace for file
+and Shell outputs; `computer` selects `/home/agent/workspace` for paths returned
+by browser artifacts, including screenshots and downloads on branch tasks.
+Roots never fall back to one another, so a same-named task file cannot silently
+replace a browser deliverable. For example:
+
+```json
+{"source":"artifacts/report.pdf","source_root":"computer","target":"conversation","filename":"report.pdf"}
+```
+
+The destination `filename` is a plain filename, and existing files are never
+overwritten. Transfers use bounded buffers, incremental SHA256 verification and
+temporary files; they require free staging disk space, not file-sized memory.
+The broker caches a streaming digest by file identity and invalidates it on edits.
+Publication checks the live turn, membership, execution binding,
+workspace sharing and a SHA256 digest across the transfer. Only `published=true`
+confirms delivery. Link the returned `path` when publishing to the conversation;
+files published to `self` are browsed by selecting that Agent's workspace.
+Publishing does not mount the host directory or synchronize other workspaces.
+Container ACP runtimes retain their existing computer-local artifact workflow;
+this host-owned publication tool is advertised only to built-in Agents.
 Desktop image/input tools are exposed only when the model has image input enabled.
 Every ordered model input consumes the screen reference from its last observation.
 Images go to that model request and never into account events or turn trace text.
@@ -167,6 +208,16 @@ It never grants another driver when the old outcome is uncertain. Human leases
 last 60 seconds, renew every 20 seconds and are bound to computer generation.
 Release/expiry does not automatically resume the agent. Return control explicitly,
 then continue the task. An agent encountering held control waits for the user.
+
+The execution image waits for Xvfb, Openbox and both local VNC endpoints before
+starting its broker. An idle computer shows a blue background and a ready notice;
+X idle screen blanking is disabled because there is no physical monitor to wake.
+Chromium opens on the first browser-tool action, not on desktop connection.
+Startup failures stop the container instead of silently leaving a black desktop.
+Inspect `/tmp/qunica-desktop/{xvfb,openbox,vnc-5900,vnc-5901,welcome}.log`
+inside that computer for diagnostics; these temporary logs disappear on rebuild.
+After updating the execution image, explicitly rebuild the computer in Settings
+to use it. Its persistent home and browser identity are retained.
 
 The screen uses a separate noVNC/RFB WebSocket and server-side view-only endpoint.
 A writable connection must present the current control lease. Lease changes,
@@ -222,6 +273,22 @@ durable intent until their stop is confirmed.
 The [local acceptance record](../../../../../../specs/computers-local-acceptance.md)
 records the real Docker browser/download, desktop, persistent home backup/restore,
 native Runtime and proxied OpenCode fixtures separately from the ordinary test
-suite. Docker tests are opt-in and require both execution images. Physical device,
+suite. `python3 scripts/test-computer-desktop.py` checks startup order and failure
+handling with command stubs; `QUNICA_DOCKER_TESTS=1` additionally cold-starts three
+isolated computers and verifies real nonblank RFB pixels on both VNC endpoints.
+`node --test scripts/test-computer-artifacts.mjs` checks named-screenshot indexing
+and path containment, same-size edits and a sparse file at the exact 1000 MiB
+boundary with bounded memory. Backend computer tests cover binary publication,
+files above the old 8 MiB limit, sharing, revocation, checksums, no-overwrite and
+rejection above 1000 MiB without allocating a GiB. The opt-in
+`cargo test --manifest-path backend-rs/Cargo.toml -p qunica-backend --lib stages_exactly_1000_mib_with_bounded_buffers -- --ignored`
+additionally stages and verifies a full 1000 MiB file on disk. The ignored
+`docker_screenshot_publication_reaches_conversation_workspace` fixture checks real
+browser screenshots through both UI download APIs on ordinary and branch tasks,
+including same-named task/browser files, without paid models. Set
+`QUNICA_TEST_COMPUTER_IMAGE` to test a separately tagged execution image without
+replacing the deployed tag. Large transfers still use sequential bounded
+Supervisor calls; this is not a resumable or bulk streaming protocol.
+Docker tests are opt-in and require built execution images. Physical device,
 public TLS, real provider and load acceptance remain external gates; passing a
 local fixture does not mark those gates complete.

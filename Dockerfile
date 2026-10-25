@@ -30,6 +30,8 @@ RUN --mount=type=cache,id=qunica-pnpm,target=/pnpm-store \
     && pnpm install --frozen-lockfile
 
 COPY frontend/ frontend/
+# The frontend bundles this canonical guide into its setup dialog.
+COPY backend-rs/crates/backend/src/docs/guide/computers.md backend-rs/crates/backend/src/docs/guide/computers.md
 # VITE_API_BASE_URL stays unset on purpose: the bundle then calls the API with
 # same-origin relative paths, which is exactly how this image serves it.
 RUN pnpm --filter @qunica/frontend build
