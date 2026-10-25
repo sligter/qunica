@@ -298,7 +298,7 @@ jobs:
         if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils rpm
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils rpm squashfs-tools
 
       - name: Install Linux arm64 desktop cross dependencies
         if: ${{ matrix.target == 'aarch64-unknown-linux-gnu' }}
@@ -443,7 +443,10 @@ jobs:
           validation_dir="$(mktemp -d)"
           trap 'rm -rf -- "${validation_dir}"' EXIT
           cd "${validation_dir}"
-          "${appimage}" --appimage-extract >/dev/null
+          # Note: The runtime extractor can make nested directories private; unsquashfs restores the actual archive modes.
+          offset="$("${appimage}" --appimage-offset)"
+          [[ "${offset}" =~ ^[0-9]+$ ]]
+          unsquashfs -no-progress -o "${offset}" "${appimage}" >/dev/null
           for metadata in .DirIcon Qunica.desktop; do
             entry="squashfs-root/${metadata}"
             test -s "${entry}"
@@ -462,8 +465,7 @@ jobs:
             (( (8#${mode} & 0005) == 0005 ))
             printf '%s mode %s\n' "${launcher}" "${mode}"
           done
-          # Note: The runtime makes the extraction container private (0700); its mode is not the packaged root's mode.
-          inaccessible="$(find squashfs-root -mindepth 1 \( \( -type d ! -perm -0005 \) -o \( -type f ! -perm -0004 \) \) -print -quit)"
+          inaccessible="$(find squashfs-root \( \( -type d ! -perm -0005 \) -o \( -type f ! -perm -0004 \) \) -print -quit)"
           if [[ -n "${inaccessible}" ]]; then
             echo "AppImage entry is not readable or traversable by other users: ${inaccessible}" >&2
             exit 1
