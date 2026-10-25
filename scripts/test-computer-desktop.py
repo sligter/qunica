@@ -103,6 +103,7 @@ class StartupTests(unittest.TestCase):
 # desktop from a connected black framebuffer; inspect actual raw RFB pixels.
 PIXEL_CHECK = '''
 import socket, struct, time
+from collections import Counter
 
 def exact(s, n):
     result=b''
@@ -130,14 +131,16 @@ for port in [5900,5901]:
         for _ in range(30):
             s.sendall(struct.pack('>BBHHHH',3,0,240,220,800,360))
             update=exact(s,4); assert update[0]==0
-            colors=set()
+            colors=Counter()
             for _ in range(struct.unpack('>H',update[2:])[0]):
                 x,y,w,h,encoding=struct.unpack('>HHHHi',exact(s,12)); assert encoding==0
                 pixels=exact(s,w*h*4)
                 colors.update(pixels[i:i+3] for i in range(0,len(pixels),4))
-            if len(colors)>3: break
+            # Core X text may be monochrome: blue + black + white is a valid
+            # ready notice. Count visible text, not antialiased color diversity.
+            if colors.get(bytes([255,255,255]),0)>=100: break
             time.sleep(.1)
-        assert len(colors)>3, f'port {port} blank desktop: {colors}'
+        assert colors.get(bytes([255,255,255]),0)>=100, f'port {port} missing ready notice: {colors}'
         assert bytes([0x47,0x34,0x24]) in colors, f'port {port} missing idle background'
         print(f'port {port}: {width}x{height}, {len(colors)} pixel colors, visible desktop')
 '''
@@ -153,7 +156,7 @@ class DockerDesktopTests(unittest.TestCase):
                                 '--network', 'none', '--cap-drop', 'ALL',
                                 '--security-opt', 'no-new-privileges:true', '--user', '10001:10001',
                                 '--init', '--env', 'DISPLAY=:99', '--workdir', '/tmp',
-                                '--memory', '2g', '--pids-limit', '512',
+                                '--cpus', '2', '--memory', '4g', '--memory-swap', '4g', '--pids-limit', '512',
                                 '--tmpfs', '/tmp:rw,nosuid,nodev,size=134217728,mode=1777',
                                 '--tmpfs', '/home/agent:rw,nosuid,nodev,uid=10001,gid=10001',
                                 'qunica-computer:local'], check=True, capture_output=True)

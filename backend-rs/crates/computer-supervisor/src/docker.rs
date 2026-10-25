@@ -270,8 +270,11 @@ impl DockerProvider {
         } else if self.services {
             value["HostConfig"]["NetworkMode"] = json!(Self::network_name(computer));
             value["HostConfig"]["PidsLimit"] = json!(512);
-            value["HostConfig"]["Memory"] = json!(2147483648i64);
-            value["HostConfig"]["MemorySwap"] = json!(2147483648i64);
+            // Note: browser workloads use 2 CPU / 4 GiB; the equal combined
+            // memory+swap limit prevents extra swap. Lightweight/init jobs stay small.
+            value["HostConfig"]["NanoCpus"] = json!(2000000000i64);
+            value["HostConfig"]["Memory"] = json!(4294967296i64);
+            value["HostConfig"]["MemorySwap"] = json!(4294967296i64);
             value["Env"] = json!([
                 "HOME=/home/agent",
                 "DISPLAY=:99",
@@ -561,5 +564,56 @@ impl ComputerProvider for DockerProvider {
         request: ExecRequest,
     ) -> Result<ExecResult, Error> {
         self.run(computer, request).await
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::protocol::{Binding, ComputerSpec, Status};
+    use uuid::Uuid;
+
+    #[test]
+    fn browser_profile_uses_2_cpu_4_gib_without_widening_lightweight_or_init_jobs() {
+        // Building a config needs no running Docker daemon; Bollard only
+        // requires its socket path to exist until an API call is made.
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("docker.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let provider = DockerProvider::new(
+            Docker::connect_with_unix(socket.to_str().unwrap(), 120, bollard::API_DEFAULT_VERSION)
+                .unwrap(),
+            "fixture:local".into(),
+        )
+        .unwrap();
+        let computer = Computer {
+            supervisor_id: Uuid::new_v4(),
+            spec: ComputerSpec {
+                id: Uuid::new_v4(),
+                owner_id: Uuid::new_v4(),
+                binding: Binding::Team(Uuid::new_v4()),
+                name: "Resource fixture".into(),
+            },
+            generation: "1".into(),
+            status: Status::Running,
+            home_present: true,
+            error_code: None,
+        };
+        let lightweight = serde_json::to_value(provider.config(&computer, false).unwrap()).unwrap();
+        let provider = provider.with_services(true);
+        let browser = serde_json::to_value(provider.config(&computer, false).unwrap()).unwrap();
+        let initialize = serde_json::to_value(provider.config(&computer, true).unwrap()).unwrap();
+        for config in [&lightweight, &initialize] {
+            assert_eq!(config["HostConfig"]["NanoCpus"], 1_000_000_000i64);
+            assert_eq!(config["HostConfig"]["Memory"], 1_073_741_824i64);
+            assert_eq!(config["HostConfig"]["MemorySwap"], 1_073_741_824i64);
+            assert_eq!(config["HostConfig"]["PidsLimit"], 128);
+        }
+        assert_eq!(browser["HostConfig"]["NanoCpus"], 2_000_000_000i64);
+        assert_eq!(browser["HostConfig"]["Memory"], 4_294_967_296i64);
+        assert_eq!(browser["HostConfig"]["MemorySwap"], 4_294_967_296i64);
+        assert_eq!(browser["HostConfig"]["PidsLimit"], 512);
+        assert_eq!(browser["HostConfig"]["ReadonlyRootfs"], true);
+        assert_eq!(browser["User"], "10001:10001");
     }
 }

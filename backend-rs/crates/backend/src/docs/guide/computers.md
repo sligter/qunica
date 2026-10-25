@@ -55,8 +55,9 @@ to a computer or a browser.
 Each computer has a stable UUID, owner, Team or Private binding, decimal-string
 generation and distinct named home. Containers run as uid/gid 10001 with a
 read-only root, no Linux capabilities, no new privileges, no published ports and
-bounded CPU/memory/PIDs/tmpfs. The full browser profile uses 2 GiB and 512 PIDs;
-the file/Shell profile uses 1 GiB and 128 PIDs. The trusted volume initializer
+bounded CPU/memory/PIDs/tmpfs. The full browser profile uses a 2-CPU quota,
+4 GiB memory and 512 PIDs, with no extra swap allowance; the file/Shell profile
+uses a 1-CPU quota, 1 GiB memory and 128 PIDs. The trusted volume initializer
 alone runs as root with CHOWN and DAC_OVERRIDE to initialize the agent-owned home.
 The only persistent mount is its own home; the project root is
 `/home/agent/workspace`. Host workspaces, skills, MCP processes and CLI auth homes
@@ -216,6 +217,12 @@ Chromium opens on the first browser-tool action, not on desktop connection.
 Startup failures stop the container instead of silently leaving a black desktop.
 Inspect `/tmp/qunica-desktop/{xvfb,openbox,vnc-5900,vnc-5901,welcome}.log`
 inside that computer for diagnostics; these temporary logs disappear on rebuild.
+The image includes Noto CJK and color emoji system fonts, with a prebuilt
+fontconfig cache, so Chinese text renders in browser screenshots and desktop
+applications even when the page does not ship its own font. This does not
+change a site's CSS, browser language or page encoding. Missing-glyph squares
+in an older computer require rebuilding it with the updated image, not changing
+UTF-8 settings.
 After updating the execution image, explicitly rebuild the computer in Settings
 to use it. Its persistent home and browser identity are retained.
 
@@ -276,6 +283,12 @@ native Runtime and proxied OpenCode fixtures separately from the ordinary test
 suite. `python3 scripts/test-computer-desktop.py` checks startup order and failure
 handling with command stubs; `QUNICA_DOCKER_TESTS=1` additionally cold-starts three
 isolated computers and verifies real nonblank RFB pixels on both VNC endpoints.
+`QUNICA_DOCKER_TESTS=1 python3 scripts/test-computer-fonts.py` uses real headed
+Chromium offline and checks the actual platform fonts/glyph usage for simplified
+and traditional Chinese, serif/sans-serif/monospace fallbacks and color emoji.
+It also captures a PNG; set `QUNICA_FONT_SCREENSHOT` to retain it on the host and
+`QUNICA_TEST_COMPUTER_IMAGE` to select a candidate image. A successful screenshot
+or `document.fonts.check()` alone does not prove that missing glyphs are fixed.
 `node --test scripts/test-computer-artifacts.mjs` checks named-screenshot indexing
 and path containment, same-size edits and a sparse file at the exact 1000 MiB
 boundary with bounded memory. Backend computer tests cover binary publication,
