@@ -10,12 +10,18 @@ use uuid::Uuid;
 
 use crate::api::{auth::current_user_id, error::ApiError, AppState};
 use crate::decision::DecisionConnection;
-use crate::tools::{MediaGenerationConfig, ShellPreference, TavilySearchConfig};
+use crate::tools::{
+    DeepSeekSearchConfig, MediaGenerationConfig, ShellPreference, TavilySearchConfig,
+    WebSearchConfig,
+};
 
 const DEFAULT_WEB_SEARCH_PROVIDER: &str = "tavily";
 const DEFAULT_TAVILY_SEARCH_URL: &str = "https://api.tavily.com/search";
 const DEFAULT_TAVILY_MAX_RESULTS: i64 = 5;
 const DEFAULT_TAVILY_SEARCH_DEPTH: &str = "basic";
+const DEFAULT_DEEPSEEK_SEARCH_URL: &str = "https://api.deepseek.com/v1/tools/search";
+const DEFAULT_DEEPSEEK_FETCH_URL: &str = "https://api.deepseek.com/v1/tools/fetch";
+const DEFAULT_DEEPSEEK_MAX_RESULTS: i64 = 5;
 const DEFAULT_MEDIA_BASE_URL: &str = "https://api.openai.com";
 const DEFAULT_IMAGE_GENERATION_ENDPOINT: &str = "/v1/images/generations";
 const DEFAULT_VIDEO_GENERATION_ENDPOINT: &str = "/v1/videos";
@@ -28,7 +34,9 @@ const DEFAULT_REPLY_INSERT_MODE: &str = "instant";
 const SETTINGS_COLUMNS: &str =
     "id, owner_id, appearance, language, reply_insert_mode, assistant_enabled, assistant_auto_approve, onboarding_completed, group_workspace_root, shell_preference, web_search_provider, \
      tavily_api_key, tavily_search_url, tavily_max_results, tavily_search_depth, \
-     tavily_include_answer, tavily_include_raw_content, media_base_url, media_api_key, \
+     tavily_include_answer, tavily_include_raw_content, \
+     deepseek_api_key, deepseek_search_url, deepseek_fetch_url, deepseek_max_results, deepseek_need_content, \
+     media_base_url, media_api_key, \
      image_generation_model, image_generation_endpoint, video_generation_model, \
      video_generation_endpoint, video_status_endpoint, video_content_endpoint, \
      decision_endpoint, decision_api_key, decision_model, decision_min_confidence, \
@@ -66,6 +74,16 @@ pub struct UpdateRequest {
     tavily_include_answer: Option<Option<bool>>,
     #[serde(default, deserialize_with = "double_option")]
     tavily_include_raw_content: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "double_option")]
+    deepseek_api_key: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    deepseek_search_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    deepseek_fetch_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    deepseek_max_results: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "double_option")]
+    deepseek_need_content: Option<Option<bool>>,
     #[serde(default, deserialize_with = "double_option")]
     media_base_url: Option<Option<String>>,
     #[serde(default, deserialize_with = "double_option")]
@@ -111,6 +129,11 @@ pub struct SettingsResponse {
     tavily_search_depth: String,
     tavily_include_answer: bool,
     tavily_include_raw_content: bool,
+    deepseek_api_key_configured: bool,
+    deepseek_search_url: String,
+    deepseek_fetch_url: String,
+    deepseek_max_results: i64,
+    deepseek_need_content: bool,
     media_base_url: String,
     media_api_key_configured: bool,
     image_generation_model: Option<String>,
@@ -146,6 +169,11 @@ struct SettingsRow {
     tavily_search_depth: String,
     tavily_include_answer: i64,
     tavily_include_raw_content: i64,
+    deepseek_api_key: Option<String>,
+    deepseek_search_url: String,
+    deepseek_fetch_url: String,
+    deepseek_max_results: i64,
+    deepseek_need_content: i64,
     media_base_url: String,
     media_api_key: Option<String>,
     image_generation_model: Option<String>,
@@ -197,6 +225,14 @@ impl From<SettingsRow> for SettingsResponse {
             tavily_search_depth: row.tavily_search_depth,
             tavily_include_answer: row.tavily_include_answer != 0,
             tavily_include_raw_content: row.tavily_include_raw_content != 0,
+            deepseek_api_key_configured: row
+                .deepseek_api_key
+                .as_deref()
+                .is_some_and(|key| !key.trim().is_empty()),
+            deepseek_search_url: row.deepseek_search_url,
+            deepseek_fetch_url: row.deepseek_fetch_url,
+            deepseek_max_results: row.deepseek_max_results,
+            deepseek_need_content: row.deepseek_need_content != 0,
             media_base_url: row.media_base_url,
             media_api_key_configured: row
                 .media_api_key
@@ -227,29 +263,37 @@ pub(crate) async fn decision_connection(
     Ok(row.decision_connection())
 }
 
-pub(crate) async fn tavily_search_config(
+pub(crate) async fn web_search_config(
     pool: &SqlitePool,
     owner_id: &str,
-) -> Result<Option<TavilySearchConfig>, ApiError> {
+) -> Result<Option<WebSearchConfig>, ApiError> {
     let row = get_or_create(pool, owner_id).await?;
-    let Some(api_key) = row
-        .tavily_api_key
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty())
-    else {
-        return Ok(None);
-    };
-    if row.web_search_provider != DEFAULT_WEB_SEARCH_PROVIDER {
-        return Ok(None);
+    // Note: keys belong to each search provider, independently of chat model
+    // providers; switching never reuses another provider's saved credentials.
+    match row.web_search_provider.as_str() {
+        "tavily" => Ok(normalize_key(row.tavily_api_key.as_deref()).map(|api_key| {
+            WebSearchConfig::Tavily(TavilySearchConfig {
+                api_key,
+                search_url: row.tavily_search_url,
+                max_results: row.tavily_max_results.clamp(1, 20) as u32,
+                search_depth: row.tavily_search_depth,
+                include_answer: row.tavily_include_answer != 0,
+                include_raw_content: row.tavily_include_raw_content != 0,
+            })
+        })),
+        "deepseek" => Ok(
+            normalize_key(row.deepseek_api_key.as_deref()).map(|api_key| {
+                WebSearchConfig::DeepSeek(DeepSeekSearchConfig {
+                    api_key,
+                    search_url: row.deepseek_search_url,
+                    fetch_url: row.deepseek_fetch_url,
+                    max_results: row.deepseek_max_results.clamp(1, 50) as u32,
+                    need_content: row.deepseek_need_content != 0,
+                })
+            }),
+        ),
+        _ => Ok(None),
     }
-    Ok(Some(TavilySearchConfig {
-        api_key,
-        search_url: row.tavily_search_url,
-        max_results: row.tavily_max_results.clamp(1, 20) as u32,
-        search_depth: row.tavily_search_depth,
-        include_answer: row.tavily_include_answer != 0,
-        include_raw_content: row.tavily_include_raw_content != 0,
-    }))
 }
 
 /// The interpreter this account wants its shells started with.
@@ -389,6 +433,42 @@ pub async fn update(
         Some(None) => false,
         None => existing.tavily_include_raw_content != 0,
     };
+    let deepseek_api_key = match body.deepseek_api_key {
+        Some(ref value) => normalize_key(value.as_deref()),
+        None => existing.deepseek_api_key.clone(),
+    };
+    let deepseek_search_url = match body.deepseek_search_url {
+        Some(ref value) => normalize_http_url(
+            value.as_deref(),
+            DEFAULT_DEEPSEEK_SEARCH_URL,
+            "deepseek_search_url",
+        )?,
+        None => existing.deepseek_search_url.clone(),
+    };
+    let deepseek_fetch_url = match body.deepseek_fetch_url {
+        Some(ref value) => normalize_http_url(
+            value.as_deref(),
+            DEFAULT_DEEPSEEK_FETCH_URL,
+            "deepseek_fetch_url",
+        )?,
+        None => existing.deepseek_fetch_url.clone(),
+    };
+    let deepseek_max_results = match body.deepseek_max_results {
+        Some(value) => {
+            let value = value.unwrap_or(DEFAULT_DEEPSEEK_MAX_RESULTS);
+            if !(1..=50).contains(&value) {
+                return Err(ApiError::invalid_input(
+                    "deepseek_max_results must be between 1 and 50",
+                ));
+            }
+            value
+        }
+        None => existing.deepseek_max_results,
+    };
+    let deepseek_need_content = match body.deepseek_need_content {
+        Some(value) => value.unwrap_or(false),
+        None => existing.deepseek_need_content != 0,
+    };
     let media_base_url = match body.media_base_url {
         Some(ref value) => normalize_media_base_url(value.as_deref())?,
         None => existing.media_base_url.clone(),
@@ -464,7 +544,9 @@ pub async fn update(
         "UPDATE system_settings SET \
          appearance = ?, language = ?, reply_insert_mode = ?, assistant_enabled = ?, assistant_auto_approve = ?, onboarding_completed = ?, group_workspace_root = ?, shell_preference = ?, web_search_provider = ?, tavily_api_key = ?, \
          tavily_search_url = ?, tavily_max_results = ?, tavily_search_depth = ?, \
-         tavily_include_answer = ?, tavily_include_raw_content = ?, media_base_url = ?, media_api_key = ?, \
+         tavily_include_answer = ?, tavily_include_raw_content = ?, \
+         deepseek_api_key = ?, deepseek_search_url = ?, deepseek_fetch_url = ?, deepseek_max_results = ?, deepseek_need_content = ?, \
+         media_base_url = ?, media_api_key = ?, \
          image_generation_model = ?, image_generation_endpoint = ?, video_generation_model = ?, \
          video_generation_endpoint = ?, video_status_endpoint = ?, video_content_endpoint = ?, \
          decision_endpoint = ?, decision_api_key = ?, decision_model = ?, \
@@ -490,6 +572,11 @@ pub async fn update(
     } else {
         0_i64
     })
+    .bind(&deepseek_api_key)
+    .bind(&deepseek_search_url)
+    .bind(&deepseek_fetch_url)
+    .bind(deepseek_max_results)
+    .bind(if deepseek_need_content { 1_i64 } else { 0_i64 })
     .bind(&media_base_url)
     .bind(&media_api_key)
     .bind(&image_generation_model)
@@ -746,11 +833,11 @@ fn normalize_provider(raw: Option<&str>) -> Result<String, ApiError> {
         .filter(|value| !value.is_empty())
         .unwrap_or(DEFAULT_WEB_SEARCH_PROVIDER)
         .to_lowercase();
-    if provider == DEFAULT_WEB_SEARCH_PROVIDER {
+    if matches!(provider.as_str(), "tavily" | "deepseek") {
         Ok(provider)
     } else {
         Err(ApiError::invalid_input(
-            "web_search_provider must be 'tavily'",
+            "web_search_provider must be 'tavily' or 'deepseek'",
         ))
     }
 }

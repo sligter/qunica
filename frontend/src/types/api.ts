@@ -770,7 +770,7 @@ export interface GroupThread {
   updated_at: string
 }
 
-export type WebSearchProvider = 'tavily'
+export type WebSearchProvider = 'tavily' | 'deepseek'
 export type TavilySearchDepth = 'basic' | 'advanced'
 export type Appearance = 'light' | 'dark' | 'system'
 /** Which interpreter the app starts for shell tools and integrated terminals. */
@@ -823,6 +823,11 @@ export interface SystemSettingsRead {
   tavily_search_depth: TavilySearchDepth
   tavily_include_answer: boolean
   tavily_include_raw_content: boolean
+  deepseek_api_key_configured: boolean
+  deepseek_search_url: string
+  deepseek_fetch_url: string
+  deepseek_max_results: number
+  deepseek_need_content: boolean
   media_base_url: string
   media_api_key_configured: boolean
   image_generation_model: string | null
@@ -855,6 +860,11 @@ export interface SystemSettingsUpdate {
   tavily_search_depth?: TavilySearchDepth | null
   tavily_include_answer?: boolean | null
   tavily_include_raw_content?: boolean | null
+  deepseek_api_key?: string | null
+  deepseek_search_url?: string | null
+  deepseek_fetch_url?: string | null
+  deepseek_max_results?: number | null
+  deepseek_need_content?: boolean | null
   media_base_url?: string | null
   media_api_key?: string | null
   image_generation_model?: string | null

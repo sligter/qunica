@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import i18next from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
@@ -33,6 +33,11 @@ const settings: SystemSettingsRead = {
   tavily_search_depth: 'basic',
   tavily_include_answer: true,
   tavily_include_raw_content: false,
+  deepseek_api_key_configured: false,
+  deepseek_search_url: 'https://api.deepseek.com/v1/tools/search',
+  deepseek_fetch_url: 'https://api.deepseek.com/v1/tools/fetch',
+  deepseek_max_results: 5,
+  deepseek_need_content: false,
   media_base_url: 'https://api.openai.com',
   media_api_key_configured: false,
   image_generation_model: null,
@@ -122,6 +127,113 @@ describe('SystemSettingsPage preferences', () => {
       )
     })
     expect(screen.getByRole('alert')).toHaveTextContent('Language update failed.')
+  })
+
+  it('keeps provider drafts separate, saves DeepSeek and clears only its key', async () => {
+    useAuthStore.setState({ token: 'token' })
+    let current = { ...settings }
+    const patches: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      if (init?.method === 'PATCH') {
+        const { deepseek_api_key, tavily_api_key, ...patch } = JSON.parse(String(init.body))
+        patches.push(JSON.parse(String(init.body)))
+        current = {
+          ...current,
+          ...patch,
+          deepseek_api_key_configured: deepseek_api_key === undefined
+            ? current.deepseek_api_key_configured : Boolean(deepseek_api_key),
+          tavily_api_key_configured: tavily_api_key === undefined
+            ? current.tavily_api_key_configured : Boolean(tavily_api_key),
+        }
+      }
+      return jsonResponse(current)
+    }))
+    const user = userEvent.setup()
+    await renderSettingsPage()
+    const provider = await screen.findByRole('combobox', { name: 'Search provider' })
+    await waitFor(() => expect(provider).toBeEnabled())
+    const searchSection = screen.getByRole('heading', { name: 'Web search' }).closest('section')!
+    const save = () => within(searchSection).getByRole('button', { name: 'Save' })
+
+    await user.type(screen.getByLabelText('API key'), 'unsaved-tavily-key')
+    await user.clear(screen.getByLabelText('Service URL'))
+    await user.type(screen.getByLabelText('Service URL'), 'https://tavily.example.test/search')
+    await user.selectOptions(provider, 'deepseek')
+    await waitFor(() => expect(provider).toBeEnabled())
+    expect(patches[0]).toEqual({ web_search_provider: 'deepseek' })
+    expect(screen.getByLabelText('API key')).toHaveValue('')
+    expect(screen.queryByLabelText('Search depth')).toBeNull()
+    expect(screen.getByLabelText('Fetch URL')).toHaveValue(settings.deepseek_fetch_url)
+    expect(screen.getByLabelText('Max results')).toHaveAttribute('max', '50')
+
+    await user.type(screen.getByLabelText('API key'), 'deepseek-new-key')
+    await user.clear(screen.getByLabelText('Max results'))
+    await user.type(screen.getByLabelText('Max results'), '50')
+    await user.click(screen.getByRole('switch', { name: 'Include page content' }))
+    await waitFor(() => expect(provider).toBeEnabled())
+    expect(patches.at(-1)).toEqual({ deepseek_need_content: true })
+    await user.click(save())
+    await waitFor(() => expect(screen.getByLabelText('API key')).toHaveValue(''))
+    expect(patches.at(-1)).toEqual({
+      web_search_provider: 'deepseek',
+      deepseek_api_key: 'deepseek-new-key',
+      deepseek_search_url: settings.deepseek_search_url,
+      deepseek_fetch_url: settings.deepseek_fetch_url,
+      deepseek_max_results: 50,
+    })
+
+    await user.selectOptions(provider, 'tavily')
+    await waitFor(() => expect(provider).toBeEnabled())
+    expect(screen.getByLabelText('API key')).toHaveValue('unsaved-tavily-key')
+    expect(screen.getByLabelText('Service URL')).toHaveValue('https://tavily.example.test/search')
+    expect(screen.getByLabelText('Max results')).toHaveAttribute('max', '20')
+    await user.selectOptions(provider, 'deepseek')
+    await waitFor(() => expect(provider).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Clear key' }))
+    await user.click(save())
+    await waitFor(() => expect(save()).toBeDisabled())
+    expect(patches.at(-1)?.deepseek_api_key).toBeNull()
+    expect(patches.at(-1)).not.toHaveProperty('tavily_api_key')
+  })
+
+  it('reverts a failed search provider switch without losing its draft key', async () => {
+    useAuthStore.setState({ token: 'token' })
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(settings))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'invalid_input', message: 'Save failed.' } }, { status: 400 })))
+    const user = userEvent.setup()
+    await renderSettingsPage()
+    const provider = await screen.findByRole('combobox', { name: 'Search provider' })
+    await waitFor(() => expect(provider).toBeEnabled())
+    await user.type(screen.getByLabelText('API key'), 'keep-this-draft')
+    await user.selectOptions(provider, 'deepseek')
+    await waitFor(() => expect(provider).toHaveValue('tavily'))
+    expect(screen.getByLabelText('API key')).toHaveValue('keep-this-draft')
+    expect(screen.getByRole('alert')).toHaveTextContent('Save failed.')
+  })
+
+  it('reverts a failed DeepSeek content switch and omits an unchanged key on save', async () => {
+    useAuthStore.setState({ token: 'token' })
+    const configured: SystemSettingsRead = { ...settings, web_search_provider: 'deepseek', deepseek_api_key_configured: true }
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(configured))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'invalid_input', message: 'Save failed.' } }, { status: 400 }))
+      .mockResolvedValueOnce(jsonResponse({ ...configured, deepseek_search_url: 'https://proxy.example.test/search' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const user = userEvent.setup()
+    await renderSettingsPage()
+    const contentSwitch = await screen.findByRole('switch', { name: 'Include page content' })
+    await user.click(contentSwitch)
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Save failed.'))
+    expect(contentSwitch).toHaveAttribute('aria-checked', 'false')
+    await user.clear(screen.getByLabelText('Search URL'))
+    await user.type(screen.getByLabelText('Search URL'), 'https://proxy.example.test/search')
+    const section = screen.getByRole('heading', { name: 'Web search' }).closest('section')!
+    await user.click(within(section).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3))
+    const body = JSON.parse(String(fetchMock.mock.calls[2][1]?.body))
+    expect(body).not.toHaveProperty('deepseek_api_key')
+    expect(body.deepseek_search_url).toBe('https://proxy.example.test/search')
   })
 
   it('saves the current user avatar and updates auth state', async () => {

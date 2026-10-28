@@ -6972,8 +6972,11 @@ async fn build_invocation_context(
         }
         _ => decision::CapabilitySuggestion::default(),
     };
-    let web_search = if enabled_tools.iter().any(|name| name == "WebSearch") {
-        crate::api::system_settings::tavily_search_config(pool, &agent.owner_id)
+    let web_search = if enabled_tools
+        .iter()
+        .any(|name| matches!(name.as_str(), "WebSearch" | "Fetch"))
+    {
+        crate::api::system_settings::web_search_config(pool, &agent.owner_id)
             .await
             .map_err(|_| anyhow::anyhow!("failed to load web search settings"))?
     } else {
@@ -8322,7 +8325,7 @@ fn tool_definition(name: &str) -> Option<ToolDefinition> {
             ),
         ),
         "WebSearch" => (
-            "Search the web when a provider is configured; otherwise report setup required.",
+            "Search the web when a provider is configured; otherwise report setup required. DeepSeek: query up to 128 characters, max_results 1-50. Tavily: query up to 500 characters, max_results 1-20. Results are capped by account settings.",
             object_schema(
                 &[("query", "string"), ("max_results", "integer")],
                 &["query"],

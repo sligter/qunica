@@ -25,8 +25,8 @@ use super::{
         self,
         resolve::{process_shell, shell_for, ResolvedShell, ShellPreference},
     },
-    web_search, ApprovalGrants, FileEdit, MediaGenerationConfig, MountedSkill, TavilySearchConfig,
-    ToolError, ToolResult, ToolStatus, WorkspaceMount, WorkspaceTools, MAX_GLOB_RESULTS,
+    web_search, ApprovalGrants, FileEdit, MediaGenerationConfig, MountedSkill, ToolError,
+    ToolResult, ToolStatus, WebSearchConfig, WorkspaceMount, WorkspaceTools, MAX_GLOB_RESULTS,
     MAX_GREP_RESULTS, MAX_READ_LINES,
 };
 
@@ -167,8 +167,8 @@ pub struct ToolExecutor {
     group_notes: Option<WorkspaceTools>,
     /// Skill metadata/instructions mounted for the non-executing SkillManager.
     mounted_skills: Vec<MountedSkill>,
-    /// Tavily settings resolved for the agent owner, if configured.
-    web_search: Option<TavilySearchConfig>,
+    /// Search and fetch provider settings resolved for the agent owner, if configured.
+    web_search: Option<WebSearchConfig>,
     /// OpenAI-compatible image/video settings resolved for the agent owner.
     media_generation: Option<MediaGenerationConfig>,
     /// The MCP tools this agent may call.
@@ -354,7 +354,7 @@ impl ToolExecutor {
     }
 
     /// Bind the web-search settings resolved for this agent invocation.
-    pub(crate) fn with_web_search(mut self, config: Option<TavilySearchConfig>) -> Self {
+    pub(crate) fn with_web_search(mut self, config: Option<WebSearchConfig>) -> Self {
         self.web_search = config;
         self
     }
@@ -556,7 +556,7 @@ impl ToolExecutor {
                 let url = arg_str(&args, "url")?.to_string();
                 let timeout_seconds =
                     arg_u64(&args, "timeout_seconds", http::FETCH_TIMEOUT_SECONDS);
-                http::fetch(&url, timeout_seconds).await
+                web_search::fetch(self.web_search.as_ref(), &url, timeout_seconds).await
             }
             "WebSearch" => {
                 let query = arg_str(&args, "query")?;

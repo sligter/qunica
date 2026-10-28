@@ -38,6 +38,7 @@ import type {
   ShellPreference,
   SystemSettingsUpdate,
   TavilySearchDepth,
+  WebSearchProvider,
 } from '@/types/api'
 import {
   composePickedPath,
@@ -82,6 +83,13 @@ export function SystemSettingsPage() {
   const [notificationTested, setNotificationTested] = useState(false)
   const [root, setRoot] = useState('')
   const [shellPreference, setShellPreference] = useState<ShellPreference>('auto')
+  const [webSearchProvider, setWebSearchProvider] = useState<WebSearchProvider>('tavily')
+  const [deepseekApiKey, setDeepseekApiKey] = useState('')
+  const [deepseekSearchUrl, setDeepseekSearchUrl] = useState('')
+  const [deepseekFetchUrl, setDeepseekFetchUrl] = useState('')
+  const [deepseekMaxResults, setDeepseekMaxResults] = useState(5)
+  const [deepseekNeedContent, setDeepseekNeedContent] = useState(false)
+  const [clearDeepseekKey, setClearDeepseekKey] = useState(false)
   const [tavilyApiKey, setTavilyApiKey] = useState('')
   const [tavilySearchUrl, setTavilySearchUrl] = useState('')
   const [tavilyMaxResults, setTavilyMaxResults] = useState(5)
@@ -90,7 +98,7 @@ export function SystemSettingsPage() {
   const [tavilyIncludeRawContent, setTavilyIncludeRawContent] = useState(false)
   const [clearTavilyKey, setClearTavilyKey] = useState(false)
   const [rootError, setRootError] = useState<string | null>(null)
-  const [tavilyError, setTavilyError] = useState<string | null>(null)
+  const [webSearchError, setWebSearchError] = useState<string | null>(null)
   const [appearanceError, setAppearanceError] = useState<string | null>(null)
   const [languageError, setLanguageError] = useState<string | null>(null)
   const [assistantError, setAssistantError] = useState<string | null>(null)
@@ -124,6 +132,11 @@ export function SystemSettingsPage() {
   const serverReplyInsertMode = settings.data?.reply_insert_mode
   const serverRoot = settings.data?.group_workspace_root ?? ''
   const serverShellPreference = settings.data?.shell_preference
+  const serverWebSearchProvider = settings.data?.web_search_provider
+  const serverDeepseekSearchUrl = settings.data?.deepseek_search_url ?? 'https://api.deepseek.com/v1/tools/search'
+  const serverDeepseekFetchUrl = settings.data?.deepseek_fetch_url ?? 'https://api.deepseek.com/v1/tools/fetch'
+  const serverDeepseekMaxResults = settings.data?.deepseek_max_results ?? 5
+  const serverDeepseekNeedContent = settings.data?.deepseek_need_content ?? false
   const serverTavilyUrl = settings.data?.tavily_search_url ?? 'https://api.tavily.com/search'
   const serverTavilyMaxResults = settings.data?.tavily_max_results ?? 5
   const serverTavilyDepth = settings.data?.tavily_search_depth ?? 'basic'
@@ -149,6 +162,21 @@ export function SystemSettingsPage() {
   useEffect(() => {
     if (serverShellPreference !== undefined) setShellPreference(serverShellPreference)
   }, [serverShellPreference])
+  useEffect(() => {
+    if (serverWebSearchProvider !== undefined) setWebSearchProvider(serverWebSearchProvider)
+  }, [serverWebSearchProvider])
+  useEffect(() => {
+    if (loaded) setDeepseekSearchUrl(serverDeepseekSearchUrl)
+  }, [loaded, serverDeepseekSearchUrl])
+  useEffect(() => {
+    if (loaded) setDeepseekFetchUrl(serverDeepseekFetchUrl)
+  }, [loaded, serverDeepseekFetchUrl])
+  useEffect(() => {
+    if (loaded) setDeepseekMaxResults(serverDeepseekMaxResults)
+  }, [loaded, serverDeepseekMaxResults])
+  useEffect(() => {
+    if (loaded) setDeepseekNeedContent(serverDeepseekNeedContent)
+  }, [loaded, serverDeepseekNeedContent])
   useEffect(() => {
     if (loaded) setTavilySearchUrl(serverTavilyUrl)
   }, [loaded, serverTavilyUrl])
@@ -357,46 +385,79 @@ export function SystemSettingsPage() {
     }
   }
 
-  // Text-like Tavily fields save via the section Save button; switches and the
-  // depth select save instantly (with revert on error) below.
-  const tavilyDirty =
+  // Text fields save explicitly; provider, switches and depth save instantly.
+  // Keep drafts per provider so switching does not discard unsaved credentials.
+  const isDeepseek = webSearchProvider === 'deepseek'
+  const searchApiKey = isDeepseek ? deepseekApiKey : tavilyApiKey
+  const clearSearchKey = isDeepseek ? clearDeepseekKey : clearTavilyKey
+  const searchKeyConfigured = isDeepseek
+    ? settings.data?.deepseek_api_key_configured
+    : settings.data?.tavily_api_key_configured
+  const setSearchApiKey = isDeepseek ? setDeepseekApiKey : setTavilyApiKey
+  const setClearSearchKey = isDeepseek ? setClearDeepseekKey : setClearTavilyKey
+  const searchDirty = isDeepseek ? (
+    deepseekApiKey.trim().length > 0 || clearDeepseekKey ||
+    deepseekSearchUrl.trim() !== serverDeepseekSearchUrl ||
+    deepseekFetchUrl.trim() !== serverDeepseekFetchUrl ||
+    deepseekMaxResults !== serverDeepseekMaxResults
+  ) : (
     tavilyApiKey.trim().length > 0 ||
     clearTavilyKey ||
     tavilySearchUrl.trim() !== serverTavilyUrl ||
     tavilyMaxResults !== serverTavilyMaxResults
+  )
 
-  const onSaveTavily = async () => {
-    setTavilyError(null)
+  const onSaveWebSearch = async () => {
+    setWebSearchError(null)
     try {
-      const nextKey = tavilyApiKey.trim()
-      await update.mutateAsync({
+      const nextKey = searchApiKey.trim()
+      await update.mutateAsync(isDeepseek ? {
+        web_search_provider: 'deepseek',
+        deepseek_api_key: clearDeepseekKey ? null : nextKey || undefined,
+        deepseek_search_url: deepseekSearchUrl.trim() || null,
+        deepseek_fetch_url: deepseekFetchUrl.trim() || null,
+        deepseek_max_results: deepseekMaxResults,
+      } : {
         web_search_provider: 'tavily',
         tavily_api_key: clearTavilyKey ? null : nextKey || undefined,
         tavily_search_url: tavilySearchUrl.trim() || null,
         tavily_max_results: tavilyMaxResults,
       })
-      setTavilyApiKey('')
-      setClearTavilyKey(false)
+      setSearchApiKey('')
+      setClearSearchKey(false)
     } catch (err) {
-      setTavilyError(errorMessage(err, t('errors.network')))
+      setWebSearchError(errorMessage(err, t('errors.network')))
     }
   }
 
-  const saveTavilyInstant = async (patch: SystemSettingsUpdate, revert: () => void) => {
-    setTavilyError(null)
+  const saveWebSearchInstant = async (patch: SystemSettingsUpdate, revert: () => void) => {
+    setWebSearchError(null)
     try {
-      await update.mutateAsync({ web_search_provider: 'tavily', ...patch })
+      await update.mutateAsync(patch)
     } catch (err) {
       revert()
-      setTavilyError(errorMessage(err, t('errors.network')))
+      setWebSearchError(errorMessage(err, t('errors.network')))
     }
+  }
+
+  const onSearchProviderChange = (value: string) => {
+    if ((value !== 'tavily' && value !== 'deepseek') || update.isPending) return
+    const previous = webSearchProvider
+    setWebSearchProvider(value)
+    void saveWebSearchInstant({ web_search_provider: value }, () => setWebSearchProvider(previous))
+  }
+
+  const onDeepseekNeedContentChange = (next: boolean) => {
+    const previous = deepseekNeedContent
+    setDeepseekNeedContent(next)
+    void saveWebSearchInstant({ deepseek_need_content: next }, () => setDeepseekNeedContent(previous))
   }
 
   const onTavilyDepthChange = (value: string) => {
     if (value !== 'basic' && value !== 'advanced') return
     const previous = tavilySearchDepth
     setTavilySearchDepth(value)
-    void saveTavilyInstant({ tavily_search_depth: value }, () =>
+    void saveWebSearchInstant({ tavily_search_depth: value }, () =>
       setTavilySearchDepth(previous),
     )
   }
@@ -404,7 +465,7 @@ export function SystemSettingsPage() {
   const onTavilyIncludeAnswerChange = (next: boolean) => {
     const previous = tavilyIncludeAnswer
     setTavilyIncludeAnswer(next)
-    void saveTavilyInstant({ tavily_include_answer: next }, () =>
+    void saveWebSearchInstant({ tavily_include_answer: next }, () =>
       setTavilyIncludeAnswer(previous),
     )
   }
@@ -412,7 +473,7 @@ export function SystemSettingsPage() {
   const onTavilyIncludeRawContentChange = (next: boolean) => {
     const previous = tavilyIncludeRawContent
     setTavilyIncludeRawContent(next)
-    void saveTavilyInstant({ tavily_include_raw_content: next }, () =>
+    void saveWebSearchInstant({ tavily_include_raw_content: next }, () =>
       setTavilyIncludeRawContent(previous),
     )
   }
@@ -778,41 +839,58 @@ export function SystemSettingsPage() {
         </SettingsSection>
 
         <SettingsSection
-          title={t('tavily.title')}
-          description={t('tavily.description')}
+          title={t('webSearch.title')}
+          description={t('webSearch.description')}
           aside={
             <Button
               size="sm"
-              onClick={() => void onSaveTavily()}
-              disabled={!tavilyDirty || update.isPending}
+              onClick={() => void onSaveWebSearch()}
+              disabled={!searchDirty || update.isPending}
             >
               {update.isPending ? t('common:actions.saving') : t('common:actions.save')}
             </Button>
           }
         >
           <SettingsRow
+            label={t('webSearch.provider')}
+            description={isDeepseek ? t('deepseek.description') : t('tavily.description')}
+            htmlFor="ss-search-provider"
+          >
+            <select
+              id="ss-search-provider"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              value={webSearchProvider}
+              disabled={!loaded || update.isPending}
+              onChange={(event) => onSearchProviderChange(event.target.value)}
+            >
+              <option value="tavily">Tavily</option>
+              <option value="deepseek">DeepSeek</option>
+            </select>
+          </SettingsRow>
+
+          <SettingsRow
             label={t('tavily.apiKey')}
             description={
-              clearTavilyKey
+              clearSearchKey
                 ? t('tavily.keyWillClear')
-                : settings.data?.tavily_api_key_configured
+                : searchKeyConfigured
                   ? t('tavily.keyConfigured')
-                  : t('tavily.keyMissing')
+                  : isDeepseek ? t('deepseek.keyMissing') : t('tavily.keyMissing')
             }
-            htmlFor="ss-tavily-key"
+            htmlFor="ss-search-key"
           >
             <Input
-              id="ss-tavily-key"
+              id="ss-search-key"
               type="password"
-              value={tavilyApiKey}
+              value={searchApiKey}
               onChange={(event) => {
-                setTavilyApiKey(event.target.value)
-                setClearTavilyKey(false)
+                setSearchApiKey(event.target.value)
+                setClearSearchKey(false)
               }}
               placeholder={
-                settings.data?.tavily_api_key_configured
+                searchKeyConfigured
                   ? t('tavily.configuredPlaceholder')
-                  : 'tvly-...'
+                  : isDeepseek ? 'sk-...' : 'tvly-...'
               }
               className="min-w-0 flex-1"
             />
@@ -821,89 +899,121 @@ export function SystemSettingsPage() {
               variant="ghost"
               size="sm"
               onClick={() => {
-                setTavilyApiKey('')
-                setClearTavilyKey(true)
+                setSearchApiKey('')
+                setClearSearchKey(true)
               }}
-              disabled={!settings.data?.tavily_api_key_configured || update.isPending}
+              disabled={!searchKeyConfigured || update.isPending}
             >
               {t('tavily.clearKey')}
             </Button>
           </SettingsRow>
 
           <SettingsRow
-            label={t('tavily.serviceUrl')}
+            label={isDeepseek ? t('deepseek.searchUrl') : t('tavily.serviceUrl')}
             description={t('tavily.serviceUrlDescription')}
-            htmlFor="ss-tavily-url"
+            htmlFor="ss-search-url"
           >
             <Input
-              id="ss-tavily-url"
-              value={tavilySearchUrl}
-              onChange={(event) => setTavilySearchUrl(event.target.value)}
-              placeholder="https://api.tavily.com/search"
+              id="ss-search-url"
+              value={isDeepseek ? deepseekSearchUrl : tavilySearchUrl}
+              onChange={(event) => (isDeepseek ? setDeepseekSearchUrl : setTavilySearchUrl)(event.target.value)}
+              placeholder={isDeepseek ? 'https://api.deepseek.com/v1/tools/search' : 'https://api.tavily.com/search'}
               className="w-full"
             />
           </SettingsRow>
 
+          {isDeepseek ? (
+            <SettingsRow
+              label={t('deepseek.fetchUrl')}
+              description={t('deepseek.fetchUrlDescription')}
+              htmlFor="ss-deepseek-fetch-url"
+            >
+              <Input
+                id="ss-deepseek-fetch-url"
+                value={deepseekFetchUrl}
+                onChange={(event) => setDeepseekFetchUrl(event.target.value)}
+                placeholder="https://api.deepseek.com/v1/tools/fetch"
+                className="w-full"
+              />
+            </SettingsRow>
+          ) : null}
+
           <SettingsRow
             label={t('tavily.maxResults')}
-            description={t('tavily.maxResultsDescription')}
-            htmlFor="ss-tavily-max-results"
+            description={isDeepseek ? t('deepseek.maxResultsDescription') : t('tavily.maxResultsDescription')}
+            htmlFor="ss-search-max-results"
           >
             <Input
-              id="ss-tavily-max-results"
+              id="ss-search-max-results"
               type="number"
               min={1}
-              max={20}
-              value={tavilyMaxResults}
-              onChange={(event) => setTavilyMaxResults(Number(event.target.value))}
+              max={isDeepseek ? 50 : 20}
+              value={isDeepseek ? deepseekMaxResults : tavilyMaxResults}
+              onChange={(event) => (isDeepseek ? setDeepseekMaxResults : setTavilyMaxResults)(Number(event.target.value))}
               className="w-24"
             />
           </SettingsRow>
 
-          <SettingsRow
-            label={t('tavily.searchDepth')}
-            description={t('tavily.searchDepthDescription')}
-            htmlFor="ss-tavily-depth"
-          >
-            <select
-              id="ss-tavily-depth"
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              value={tavilySearchDepth}
-              disabled={update.isPending}
-              onChange={(event) => onTavilyDepthChange(event.target.value)}
+          {isDeepseek ? (
+            <SettingsRow
+              label={t('deepseek.needContent')}
+              description={t('deepseek.needContentDescription')}
             >
-              <option value="basic">{t('tavily.basic')}</option>
-              <option value="advanced">{t('tavily.advanced')}</option>
-            </select>
-          </SettingsRow>
+              <Switch
+                checked={deepseekNeedContent}
+                onCheckedChange={onDeepseekNeedContentChange}
+                disabled={update.isPending}
+                aria-label={t('deepseek.needContent')}
+              />
+            </SettingsRow>
+          ) : (
+            <>
+              <SettingsRow
+                label={t('tavily.searchDepth')}
+                description={t('tavily.searchDepthDescription')}
+                htmlFor="ss-tavily-depth"
+              >
+                <select
+                  id="ss-tavily-depth"
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={tavilySearchDepth}
+                  disabled={update.isPending}
+                  onChange={(event) => onTavilyDepthChange(event.target.value)}
+                >
+                  <option value="basic">{t('tavily.basic')}</option>
+                  <option value="advanced">{t('tavily.advanced')}</option>
+                </select>
+              </SettingsRow>
 
-          <SettingsRow
-            label={t('tavily.includeAnswer')}
-            description={t('tavily.includeAnswerDescription')}
-          >
-            <Switch
-              checked={tavilyIncludeAnswer}
-              onCheckedChange={onTavilyIncludeAnswerChange}
-              disabled={update.isPending}
-              aria-label={t('tavily.includeAnswer')}
-            />
-          </SettingsRow>
+              <SettingsRow
+                label={t('tavily.includeAnswer')}
+                description={t('tavily.includeAnswerDescription')}
+              >
+                <Switch
+                  checked={tavilyIncludeAnswer}
+                  onCheckedChange={onTavilyIncludeAnswerChange}
+                  disabled={update.isPending}
+                  aria-label={t('tavily.includeAnswer')}
+                />
+              </SettingsRow>
 
-          <SettingsRow
-            label={t('tavily.includeRawContent')}
-            description={t('tavily.includeRawContentDescription')}
-          >
-            <Switch
-              checked={tavilyIncludeRawContent}
-              onCheckedChange={onTavilyIncludeRawContentChange}
-              disabled={update.isPending}
-              aria-label={t('tavily.includeRawContent')}
-            />
-          </SettingsRow>
+              <SettingsRow
+                label={t('tavily.includeRawContent')}
+                description={t('tavily.includeRawContentDescription')}
+              >
+                <Switch
+                  checked={tavilyIncludeRawContent}
+                  onCheckedChange={onTavilyIncludeRawContentChange}
+                  disabled={update.isPending}
+                  aria-label={t('tavily.includeRawContent')}
+                />
+              </SettingsRow>
+            </>
+          )}
 
-          {tavilyError ? (
+          {webSearchError ? (
             <p className="py-2 text-sm text-destructive" role="alert">
-              {tavilyError}
+              {webSearchError}
             </p>
           ) : null}
         </SettingsSection>

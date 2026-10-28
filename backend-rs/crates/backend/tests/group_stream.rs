@@ -935,6 +935,52 @@ async fn recording_fake_tavily() -> (String, Arc<Mutex<Vec<Value>>>, Arc<AtomicB
     (format!("http://{addr}/search"), requests, authorized)
 }
 
+async fn recording_fake_deepseek() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new().fallback({
+        let requests = Arc::clone(&requests);
+        move |request: Request<Body>| {
+            let requests = Arc::clone(&requests);
+            async move {
+                let path = request.uri().path().to_string();
+                let method = request.method().to_string();
+                let authorization = request
+                    .headers()
+                    .get(header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let body: Value = serde_json::from_slice(&bytes).unwrap();
+                requests.lock().await.push(json!({
+                    "path": path, "method": method, "authorization": authorization, "body": body
+                }));
+                let response = match path.as_str() {
+                    "/v1/tools/search" => json!({"results": [{
+                        "title": "DeepSeek result", "url": "https://example.test/article",
+                        "snippet": "short snippet", "summary": "long search summary", "content": ""
+                    }]}),
+                    "/v1/tools/fetch" => {
+                        json!({"title": "Article", "content": "# Article\n\nMarkdown body."})
+                    }
+                    _ => panic!("unexpected DeepSeek path: {path}"),
+                };
+                (
+                    [(header::CONTENT_TYPE, "application/json")],
+                    response.to_string(),
+                )
+                    .into_response()
+            }
+        }
+    });
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), requests)
+}
+
 async fn fake_provider_status_sequence(responses: Vec<(StatusCode, String)>) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3716,6 +3762,111 @@ async fn group_stream_web_search_uses_saved_tavily_settings() {
     assert_eq!(requests[0]["api_key"], "tavily-test-key");
     assert_eq!(requests[0]["max_results"], 3);
     assert_eq!(requests[0]["search_depth"], "advanced");
+}
+
+#[tokio::test]
+async fn group_stream_deepseek_uses_saved_search_and_fetch_settings() {
+    assert_deepseek_tools(true).await;
+}
+
+#[tokio::test]
+async fn group_stream_deepseek_fetch_works_without_web_search_enabled() {
+    assert_deepseek_tools(false).await;
+}
+
+async fn assert_deepseek_tools(search_enabled: bool) {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "deepseek-tools@example.com";
+    let token = register_and_login(&app, email).await;
+    let owner = owner_id(&state, email).await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+    let (base_url, requests) = recording_fake_deepseek().await;
+    let (status, saved) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            "/api/v2/settings/system",
+            &token,
+            json!({
+                "web_search_provider": "deepseek",
+                "deepseek_api_key": "deepseek-test-key",
+                "tavily_api_key": "unused-tavily-key",
+                "deepseek_search_url": format!("{base_url}/v1/tools/search"),
+                "deepseek_fetch_url": format!("{base_url}/v1/tools/fetch"),
+                "deepseek_max_results": 2,
+                "deepseek_need_content": true
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved["deepseek_api_key_configured"], true);
+
+    let mut calls = Vec::new();
+    if search_enabled {
+        calls.push((
+            "call_search",
+            "WebSearch",
+            json!({"query": "latest site:example.test", "max_results": 50}),
+        ));
+    }
+    calls.push((
+        "call_fetch",
+        "Fetch",
+        json!({"url": "https://example.test/article"}),
+    ));
+    let provider_url =
+        fake_provider_sequence(vec![tool_body(calls), text_body("Research complete.")]).await;
+    let provider = seed_provider(&state, &owner, &provider_url).await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Researcher",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"web_search": {"enabled": search_enabled}, "fetch": {"enabled": true}}}),
+    )
+    .await;
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "read the article"}),
+    )
+    .await;
+    let results = payloads_of_kind(&events, StreamEventKind::ToolCallResult);
+    let expected_count = if search_enabled { 2 } else { 1 };
+    assert_eq!(results.len(), expected_count, "{results:?}");
+    for result in &results {
+        assert_eq!(result["status"], "completed");
+        let output: Value = serde_json::from_str(result["output"].as_str().unwrap()).unwrap();
+        assert_eq!(output["provider"], "deepseek");
+        if output["tool"] == "WebSearch" {
+            assert_eq!(output["results"][0]["content"], "long search summary");
+        } else {
+            assert_eq!(output["content"], "# Article\n\nMarkdown body.");
+            assert_eq!(output["truncated"], false);
+        }
+    }
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), expected_count);
+    for request in requests.iter() {
+        assert_eq!(request["method"], "POST");
+        assert_eq!(request["authorization"], "Bearer deepseek-test-key");
+        if request["path"] == "/v1/tools/search" {
+            assert_eq!(
+                request["body"],
+                json!({"query": "latest site:example.test", "count": 2, "need_content": true})
+            );
+        } else {
+            assert_eq!(
+                request["body"],
+                json!({"url": "https://example.test/article"})
+            );
+        }
+    }
 }
 
 #[tokio::test]

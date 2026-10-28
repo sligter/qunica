@@ -370,6 +370,54 @@ mod tests {
     use sqlx::SqlitePool;
 
     #[tokio::test]
+    async fn deepseek_migration_preserves_existing_tavily_configuration() {
+        let db = Db::connect("sqlite::memory:").await.unwrap();
+        let pool = db.pool();
+        for migration in super::MIGRATOR
+            .iter()
+            .filter(|migration| migration.version < 47)
+        {
+            sqlx::raw_sql(migration.sql.as_ref())
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO users(id,email,password_hash,name,created_at,updated_at) VALUES('owner','deepseek-upgrade@example.test','hash','Owner','now','now')")
+            .execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO system_settings(id,owner_id,web_search_provider,tavily_api_key,tavily_search_url,tavily_max_results,created_at,updated_at) VALUES('settings','owner','tavily','saved-tavily-key','https://proxy.example.test/search',12,'now','now')")
+            .execute(pool).await.unwrap();
+        sqlx::raw_sql(include_str!("migrations/0047_deepseek_web_search.sql"))
+            .execute(pool)
+            .await
+            .unwrap();
+        let original: (String, String, String, i64) = sqlx::query_as(
+            "SELECT web_search_provider,tavily_api_key,tavily_search_url,tavily_max_results FROM system_settings WHERE owner_id='owner'",
+        ).fetch_one(pool).await.unwrap();
+        assert_eq!(
+            original,
+            (
+                "tavily".into(),
+                "saved-tavily-key".into(),
+                "https://proxy.example.test/search".into(),
+                12
+            )
+        );
+        let added: (Option<String>, String, String, i64, i64) = sqlx::query_as(
+            "SELECT deepseek_api_key,deepseek_search_url,deepseek_fetch_url,deepseek_max_results,deepseek_need_content FROM system_settings WHERE owner_id='owner'",
+        ).fetch_one(pool).await.unwrap();
+        assert_eq!(
+            added,
+            (
+                None,
+                "https://api.deepseek.com/v1/tools/search".into(),
+                "https://api.deepseek.com/v1/tools/fetch".into(),
+                5,
+                0
+            )
+        );
+    }
+
+    #[tokio::test]
     async fn thread_job_migration_preserves_checkpoints_and_enforces_thread_ownership() {
         let db = Db::connect("sqlite::memory:").await.unwrap();
         let pool = db.pool();

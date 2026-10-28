@@ -1192,6 +1192,31 @@ async fn prefill_returns_a_route_and_stages_nothing() {
 }
 
 #[tokio::test]
+async fn deepseek_credentials_are_never_staged_or_prefilled() {
+    let (app, state) = router_with_state_for_tests().await;
+    register(&app, "deepseek-prefill@example.com").await;
+    let owner = owner_id(&state, "deepseek-prefill@example.com").await;
+    let executor = executor_for(&state, &owner);
+    for (tool, arguments) in [
+        (
+            "AppPrefill",
+            json!({"target_kind": "settings", "action": "update",
+            "fields": {"deepseek_api_key": "secret-do-not-echo"}}),
+        ),
+        (
+            "AppPropose",
+            json!({"target_kind": "skill", "action": "create",
+            "payload": {"name": "Search", "body_markdown": "# Search", "deepseek_api_key": "secret-do-not-echo"}}),
+        ),
+    ] {
+        let result = executor.execute(tool, arguments).await;
+        assert_eq!(result.status, ToolStatus::Failed);
+        assert!(!result.output.contains("secret-do-not-echo"));
+    }
+    assert_eq!(pending_count(&state, &owner).await, 0);
+}
+
+#[tokio::test]
 async fn the_action_list_shows_history_newest_first() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register(&app, "history@example.com").await;

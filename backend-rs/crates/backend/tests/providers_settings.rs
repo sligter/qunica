@@ -1592,6 +1592,108 @@ async fn providers_settings_system_settings_concurrent_get_or_create_is_idempote
 }
 
 #[tokio::test]
+async fn deepseek_settings_preserve_provider_keys_and_support_clear_and_reset() {
+    let app = app().await;
+    let token = register_and_login(&app, "deepseek-settings@example.com").await;
+    let (status, defaults) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(defaults["web_search_provider"], "tavily");
+    assert_eq!(defaults["deepseek_api_key_configured"], false);
+    assert_eq!(
+        defaults["deepseek_search_url"],
+        "https://api.deepseek.com/v1/tools/search"
+    );
+    assert_eq!(
+        defaults["deepseek_fetch_url"],
+        "https://api.deepseek.com/v1/tools/fetch"
+    );
+    assert_eq!(defaults["deepseek_max_results"], 5);
+    assert_eq!(defaults["deepseek_need_content"], false);
+
+    let (status, saved) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            "/api/v2/settings/system",
+            &token,
+            json!({
+                "web_search_provider": " DeepSeek ",
+                "tavily_api_key": "tavily-secret",
+                "deepseek_api_key": " deepseek-secret ",
+                "deepseek_search_url": " https://proxy.example.test/search/ ",
+                "deepseek_fetch_url": "https://proxy.example.test/fetch/",
+                "deepseek_max_results": 50,
+                "deepseek_need_content": true
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(saved["web_search_provider"], "deepseek");
+    assert_eq!(saved["deepseek_api_key_configured"], true);
+    assert_eq!(saved["tavily_api_key_configured"], true);
+    assert_eq!(
+        saved["deepseek_search_url"],
+        "https://proxy.example.test/search"
+    );
+    assert_eq!(
+        saved["deepseek_fetch_url"],
+        "https://proxy.example.test/fetch"
+    );
+    assert_eq!(saved["deepseek_max_results"], 50);
+    assert_eq!(saved["deepseek_need_content"], true);
+    assert!(saved.get("deepseek_api_key").is_none());
+    assert!(!saved.to_string().contains("deepseek-secret"));
+
+    for provider in ["tavily", "deepseek"] {
+        let (status, switched) = send(
+            &app,
+            authed_json(
+                "PATCH",
+                "/api/v2/settings/system",
+                &token,
+                json!({"web_search_provider": provider}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(switched["deepseek_api_key_configured"], true);
+        assert_eq!(switched["tavily_api_key_configured"], true);
+        assert_eq!(switched["deepseek_max_results"], 50);
+    }
+    let (_, fetched) = send(&app, authed("GET", "/api/v2/settings/system", &token)).await;
+    assert_eq!(fetched["deepseek_api_key_configured"], true);
+    assert!(!fetched.to_string().contains("deepseek-secret"));
+
+    let (status, reset) = send(
+        &app,
+        authed_json(
+            "PATCH",
+            "/api/v2/settings/system",
+            &token,
+            json!({
+                "deepseek_api_key": null,
+                "deepseek_search_url": null,
+                "deepseek_fetch_url": null,
+                "deepseek_max_results": null,
+                "deepseek_need_content": null
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(reset["deepseek_api_key_configured"], false);
+    assert_eq!(reset["tavily_api_key_configured"], true);
+    assert_eq!(
+        reset["deepseek_search_url"],
+        defaults["deepseek_search_url"]
+    );
+    assert_eq!(reset["deepseek_fetch_url"], defaults["deepseek_fetch_url"]);
+    assert_eq!(reset["deepseek_max_results"], 5);
+    assert_eq!(reset["deepseek_need_content"], false);
+}
+
+#[tokio::test]
 async fn providers_settings_system_settings_validation_rejects_invalid_values() {
     let app = app().await;
     let token = register_and_login(&app, "settings-validation@example.com").await;
@@ -1606,6 +1708,10 @@ async fn providers_settings_system_settings_validation_rejects_invalid_values() 
         json!({"tavily_max_results": 21}),
         json!({"tavily_search_url": "ftp://example.test/search"}),
         json!({"tavily_search_url": "not-a-url"}),
+        json!({"deepseek_max_results": 0}),
+        json!({"deepseek_max_results": 51}),
+        json!({"deepseek_search_url": "ftp://example.test/search"}),
+        json!({"deepseek_fetch_url": "not-a-url"}),
         json!({"media_base_url": "ftp://example.test"}),
         json!({"image_generation_endpoint": "not-a-path"}),
         json!({"video_status_endpoint": "/v1/videos/status"}),

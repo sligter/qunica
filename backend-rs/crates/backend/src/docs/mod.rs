@@ -116,7 +116,7 @@ static DOCS: &[Doc] = &[
     doc!(
         "settings",
         "Settings",
-        "settings appearance theme dark light language locale web search tavily logs data \
+        "settings appearance theme dark light language locale web search tavily deepseek fetch logs data \
          directory sqlite tray"
     ),
     doc!(

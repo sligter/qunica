@@ -71,8 +71,8 @@ proposal accurately. Assess actual actions and checks, not just final wording.
 | `Bash` | yes | Run a guarded shell command in the root |
 | `ReadGroupNotes` | group local workspace | Read the shared note index or one note |
 | `EditGroupNote` | group local workspace | Exact-match edits to one shared note |
-| `WebSearch` | no | Search the web; needs a Tavily key in Settings |
-| `Fetch` | no | Read one HTTP(S) URL, bounded |
+| `WebSearch` | no | Search the web; needs a Tavily or DeepSeek key in Settings |
+| `Fetch` | no | Read one HTTP(S) URL, bounded; uses Markdown via DeepSeek when selected and configured |
 | `GenerateImage` | yes | Generate an image and save it under `generations/`; needs Settings → Media |
 | `GenerateVideo` | yes | Generate a video and save it under `generations/`; needs Settings → Media |
 | `AskUser` | no | Pause and ask the user a question |

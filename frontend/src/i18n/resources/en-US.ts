@@ -991,6 +991,21 @@ export const enUS = {
       placeholder: 'D:/workspaces/groups',
       pickFolder: 'Pick folder',
     },
+    webSearch: {
+      title: 'Web search',
+      description: 'Choose a provider for built-in web search and page fetching. Switching preserves each provider’s settings.',
+      provider: 'Search provider',
+    },
+    deepseek: {
+      description: 'Search live web results and fetch pages as Markdown through DeepSeek.',
+      keyMissing: 'No DeepSeek API key saved.',
+      searchUrl: 'Search URL',
+      fetchUrl: 'Fetch URL',
+      fetchUrlDescription: 'Page fetching uses this endpoint when an API key is configured.',
+      maxResultsDescription: 'Maximum results per query (1–50).',
+      needContent: 'Include page content',
+      needContentDescription: 'Include page text in search results; otherwise use search summaries.',
+    },
     tavily: {
       title: 'WebSearch (Tavily)',
       description: 'Connect the built-in WebSearch tool to Tavily for live results.',

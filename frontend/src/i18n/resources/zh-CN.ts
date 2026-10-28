@@ -891,6 +891,21 @@ export const zhCN: TranslationShape<typeof enUS> = {
       placeholder: 'D:/workspaces/groups',
       pickFolder: '选择文件夹',
     },
+    webSearch: {
+      title: '网页搜索',
+      description: '为内置网页搜索与抓取工具选择提供商。切换时保留各提供商的配置。',
+      provider: '搜索提供商',
+    },
+    deepseek: {
+      description: '通过 DeepSeek 搜索实时网页，并将网页抓取为 Markdown 正文。',
+      keyMissing: '尚未保存 DeepSeek API 密钥。',
+      searchUrl: '搜索地址',
+      fetchUrl: '抓取地址',
+      fetchUrlDescription: '已配置密钥时，网页抓取使用此地址。',
+      maxResultsDescription: '每次查询返回的结果数上限（1–50）。',
+      needContent: '包含网页正文',
+      needContentDescription: '搜索结果中附带网页正文；关闭时使用搜索摘要。',
+    },
     tavily: {
       title: '网页搜索（Tavily）',
       description: '将内置网页搜索工具连接到 Tavily，获取实时结果。',

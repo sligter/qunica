@@ -11,7 +11,7 @@ The assistant is the floating panel that helps you configure Qunica, explains ho
 - Inspect group members and propose adding or removing an Agent or user. User accounts are selected by exact email address.
 - Save an existing group as a reusable template, or create and update shared group notes, after you approve the action.
 - Read and write files, and run shell commands, inside its own scratch workspace.
-- Search the web and fetch a page. `WebSearch` needs a provider configured under **Settings → Web search** first; `Fetch` works without one.
+- Search the web and fetch a page. `WebSearch` needs Tavily or DeepSeek configured under **Settings → Web search** first. `Fetch` uses DeepSeek Markdown when selected and configured, and otherwise works through direct HTTP without a key.
 
 ## Its scratch workspace
 

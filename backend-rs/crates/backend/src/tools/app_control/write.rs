@@ -27,8 +27,7 @@ use crate::tools::{ToolError, ToolResult, ToolStatus};
 ///   key, and a model must never be able to set one.
 /// - **MCP** allows only `http`/`sse`. A `stdio` server launches a local
 ///   process with attacker-chosen argv and environment.
-/// - **Settings** is absent: its writable fields are the Tavily key and the
-///   workspace root, one secret and one filesystem path.
+/// - **Settings** is absent: it contains provider credentials and workspace paths.
 fn is_allowed(kind: TargetKind, action: Action) -> bool {
     matches!(
         (kind, action),
@@ -236,7 +235,10 @@ fn reject_forbidden_fields(kind: TargetKind, payload: &Value) -> Result<(), Tool
         return Ok(());
     };
 
-    if object.contains_key("api_key") || object.contains_key("tavily_api_key") {
+    if ["api_key", "tavily_api_key", "deepseek_api_key"]
+        .iter()
+        .any(|key| object.contains_key(*key))
+    {
         return Err(ToolError::invalid(
             "a proposal must not carry an API key. Use AppPrefill so the user enters it \
              themselves.",
@@ -278,7 +280,13 @@ fn reject_secret_fields(fields: &Value) -> Result<(), ToolError> {
     let Some(object) = fields.as_object() else {
         return Ok(());
     };
-    for key in ["api_key", "tavily_api_key", "headers", "env"] {
+    for key in [
+        "api_key",
+        "tavily_api_key",
+        "deepseek_api_key",
+        "headers",
+        "env",
+    ] {
         if object.contains_key(key) {
             return Err(ToolError::invalid(format!(
                 "do not suggest a value for '{key}'; leave it for the user to enter"

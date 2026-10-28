@@ -12,10 +12,22 @@ Global configuration, under **Settings** in the sidebar.
 
 The `WebSearch` tool needs a provider configured here; without one it reports that setup is required.
 
-- **web_search_provider** — currently `tavily`.
+- **web_search_provider** — `tavily` (default) or `deepseek`. Switching preserves each provider's saved settings and credentials. Search credentials are independent of chat model provider credentials.
 - **tavily_api_key** — write-only, like a provider key. Reads report only whether one is set.
 - **tavily_search_url**, **tavily_max_results**, **tavily_search_depth** (`basic` or `advanced`)
 - **tavily_include_answer**, **tavily_include_raw_content**
+
+DeepSeek uses the [Search](https://api-docs.deepseek.com/zh-cn/api/search) and [Fetch](https://api-docs.deepseek.com/zh-cn/api/fetch) APIs with Bearer authentication:
+
+- **deepseek_api_key** — write-only; reads expose only `deepseek_api_key_configured`. An omitted key preserves the saved value; `null` clears it.
+- **deepseek_search_url** — `https://api.deepseek.com/v1/tools/search` by default.
+- **deepseek_fetch_url** — `https://api.deepseek.com/v1/tools/fetch` by default.
+- **deepseek_max_results** — 1–50, default 5. Caps the tool's requested result count.
+- **deepseek_need_content** — default `false`. Search returns summaries unless enabled; the adapter uses page content when available, then the long summary, then the snippet.
+
+DeepSeek queries support up to 128 Unicode characters (Tavily: 500); `WebSearch.max_results` accepts 1–50 with DeepSeek (Tavily: 1–20). Results retain the tool's `title`, `url`, and `content` fields. With DeepSeek selected and a key configured, `Fetch` returns bounded Markdown through DeepSeek, including when only `Fetch` is enabled on the agent. Otherwise, `Fetch` uses the existing direct HTTP reader. DeepSeek fetch targets must be HTTP(S) URLs without credentials, up to 8192 characters.
+
+Both provider adapters enforce request timeouts, a 5 MB response cap and output length limits. Provider error responses are not echoed, preventing accidental disclosure of credentials or service internals. Fetch preserves Markdown line breaks and marks truncated content. Setting DeepSeek fields to `null` restores their defaults or clears the key; Tavily settings remain unchanged.
 
 ## Media generation
 
