@@ -20,6 +20,8 @@ interface PanelProps {
    * `inset` is a group nested inside a form or another panel: tighter, flat.
    */
   variant?: PanelVariant
+  /** Optional responsive layout for this panel's title and actions. */
+  headerClassName?: string
   /** Extra classes for the content wrapper under the header. */
   contentClassName?: string
   className?: string
@@ -54,6 +56,7 @@ export function Panel({
   aside,
   icon: Icon,
   variant = 'raised',
+  headerClassName,
   contentClassName,
   className,
   children,
@@ -62,7 +65,7 @@ export function Panel({
   return (
     <Card asChild className={cn(VARIANT_CLASS[variant], className)}>
       <section>
-        <div className="flex items-start justify-between gap-3">
+        <div className={cn('flex items-start justify-between gap-3', headerClassName)}>
           <div className="flex min-w-0 items-start gap-2">
             {Icon ? (
               <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />

@@ -567,6 +567,17 @@ export const enUS = {
     states: { defaultProvider: 'Default (env settings)', providerDefault: 'Provider default', inheritProvider: 'Inherit provider', backendLocal: 'local', backendSandbox: 'sandbox', loadingTools: 'Loading tools...', loadingSkills: 'Loading...', loadingValues: 'Loading available values...', staleValues: 'Runtime settings changed. Refresh available values.' },
     validation: { nameRequired: 'Agent name is required.', systemPromptRequired: 'System prompt is required.', workspaceRequired: 'Workspace is required.', temperatureIncrement: 'Must use 0.05 increments.' },
     errors: { network: 'Network error', runtimeCapabilities: 'Unable to load runtime capabilities. Check the adapter settings and refresh.', providerModels: 'Unable to load provider models. You can still enter a custom model.' },
+    codexLogin: {
+      title: 'Codex sign-in', description: 'Use a ChatGPT account with Codex ACP, or check the backend’s existing sign-in.',
+      signIn: 'Sign in with ChatGPT', check: 'Check sign-in', cancel: 'Cancel sign-in',
+      checking: 'Checking Codex sign-in…', starting: 'Starting device code sign-in…', waiting: 'Waiting for authorization in your browser…',
+      authenticated: 'Codex is signed in. The ACP runtime can reuse this account.', apiKey: 'Codex is authenticated with an API key.', signedOut: 'Codex is not signed in.',
+      instructions: 'Open the link below and enter this one-time code. If the link does not open, copy it into a browser. Keep this page open until authorization finishes.', deviceCode: 'One-time device code',
+      copyCode: 'Copy code', copyLink: 'Copy link', copied: 'Copied.', copyFallback: 'Copy is unavailable. Long-press or select the code or link to copy it.',
+      hostHint: 'Signs in Codex on the connected backend host. Codex manages the credentials; agents using that host login share the account.',
+      missingCli: 'Install the Codex CLI (@openai/codex) on the backend host first, then retry.', timeout: 'Codex sign-in timed out. Start again for a new device code.',
+      busy: 'Another Codex sign-in is in progress. Finish or cancel it first.', failed: 'Unable to complete Codex sign-in. Check the backend network, update the Codex CLI, and enable device code login in your ChatGPT account or workspace settings.',
+    },
     runtime: {
       chatLabel: 'LLM chat', chatHint: 'Provider-native model and tools', acpLabel: 'ACP', acpHint: 'Agent Client Protocol process', title: 'ACP runtime', description: 'Launches an Agent Client Protocol process for the selected workspace.', preset: 'Runtime preset',
       customCommand: 'Custom ACP command', fallbackSuffix: ' (fallback command)', localDetected: 'Local adapter detected', usesFallback: 'Uses fallback command', detected: 'Detected: {{names}}', noneDetected: 'No local ACP adapter was detected. Presets still work using editable fallback commands.',

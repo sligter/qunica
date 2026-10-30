@@ -18,7 +18,7 @@ An agent is a reusable AI member: a prompt, a model, a set of tools, and a works
 
 **`llm_chat`** calls an LLM provider directly and runs the built-in tools. This is the normal kind.
 
-**`acp`** drives an external CLI agent over the Agent Client Protocol — Codex CLI, Claude Code, and other presets. It stores an `acp_runtime` blob instead of a provider, and Qunica only detects and launches the CLI: install it and sign in outside the app. See `external-cli-agents`.
+**`acp`** drives an external CLI agent over the Agent Client Protocol — Codex CLI, Claude Code, and other presets. It stores an `acp_runtime` blob instead of a provider. Install the CLI and its adapter; Codex offers a device-code sign-in entry in the runtime form, while other runtimes require external sign-in. See `external-cli-agents`.
 
 For `llm_chat`, Qunica loads repository conventions from `AGENTS.md` in the primary workspace root, or `CLAUDE.md` when `AGENTS.md` is absent, with a 6,000-character limit. The section is refreshed every turn and is lower priority than host operating, approval, and workspace rules. Qunica removes it from ACP briefs because supported CLI agents load their own project instructions from the working directory.
 

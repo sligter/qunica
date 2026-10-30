@@ -17,6 +17,8 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::time::timeout;
 use uuid::Uuid;
 
+pub mod codex_auth;
+
 use crate::acp::{
     canonicalize_acp_runtime, dsh, normalize_acp_runtime, probe_acp_runtime_capabilities,
     shutdown_reusable_acp_sessions, AcpCapabilityError, AcpConfigValue, AcpRuntimeCapabilities,

@@ -107,9 +107,10 @@ export function ProviderModelsField({
       variant="inset"
       title={t('models.title')}
       description={t('models.description')}
+      headerClassName="flex-col sm:flex-row"
       contentClassName="space-y-3"
       aside={
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {onRefreshCatalog && (
             <Button
               type="button"
@@ -156,7 +157,15 @@ export function ProviderModelsField({
         {models.map((model, index) => (
           <div key={index} className="rounded-md border border-border bg-background p-3">
             <div className="mb-3 flex flex-wrap items-center gap-3">
-              <label className="flex shrink-0 items-center gap-1.5 text-xs font-medium">
+              {/* Note: On phones, actions must not take width away from model names. */}
+              <ModelIdCombobox
+                value={model.id}
+                catalog={catalog}
+                label={t('models.modelId')}
+                placeholder={t('models.modelPlaceholder')}
+                onChange={(id) => update(index, { id })}
+              />
+              <label className="mr-auto flex shrink-0 items-center gap-1.5 text-xs font-medium sm:order-first sm:mr-0">
                 <input
                   type="radio"
                   name="provider-default-model"
@@ -165,13 +174,6 @@ export function ProviderModelsField({
                 />
                 {t('models.default')}
               </label>
-              <ModelIdCombobox
-                value={model.id}
-                catalog={catalog}
-                label={t('models.modelId')}
-                placeholder={t('models.modelPlaceholder')}
-                onChange={(id) => update(index, { id })}
-              />
               {onTestModel ? (
                 <Button
                   type="button"
@@ -306,89 +308,99 @@ function ModelIdCombobox({
 
   return (
     <div
-      className="relative min-w-0 flex-1"
+      className="w-full min-w-0 sm:w-auto sm:flex-1"
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false)
       }}
     >
-      <Input
-        role="combobox"
-        aria-label={label}
-        aria-autocomplete="list"
-        aria-expanded={open && options.length > 0}
-        aria-controls={listId}
-        value={value}
-        placeholder={placeholder}
-        className="pr-10"
-        onFocus={showOptions}
-        onChange={(event) => {
-          onChange(event.target.value)
-          setFilter(event.target.value)
-          setHighlighted(0)
-          setOpen(catalog.length > 0)
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            setOpen(false)
-          } else if (event.key === 'ArrowDown' && options.length > 0) {
-            event.preventDefault()
-            if (open) setHighlighted((current) => (current + 1) % options.length)
-            else showOptions()
-          } else if (event.key === 'ArrowUp' && options.length > 0) {
-            event.preventDefault()
-            setOpen(true)
-            setHighlighted((current) => (current - 1 + options.length) % options.length)
-          } else if (event.key === 'Enter' && open && options[highlighted]) {
-            event.preventDefault()
-            select(options[highlighted].id)
-          }
-        }}
-      />
-      {catalog.length > 0 && (
-        <button
-          type="button"
-          aria-label={placeholder}
-          tabIndex={-1}
-          className="absolute inset-y-px right-px flex w-9 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => {
-            if (open) setOpen(false)
-            else showOptions()
+      <div className="relative">
+        <Input
+          role="combobox"
+          aria-label={label}
+          aria-autocomplete="list"
+          aria-expanded={open && options.length > 0}
+          aria-controls={listId}
+          value={value}
+          title={value}
+          placeholder={placeholder}
+          className="pr-10"
+          onFocus={showOptions}
+          onChange={(event) => {
+            onChange(event.target.value)
+            setFilter(event.target.value)
+            setHighlighted(0)
+            setOpen(catalog.length > 0)
           }}
-        >
-          <ChevronDown className={cn('h-4 w-4 transition-transform', open && 'rotate-180')} />
-        </button>
-      )}
-      {open && options.length > 0 && (
-        <div
-          id={listId}
-          role="listbox"
-          className="absolute left-0 top-[calc(100%+0.375rem)] z-50 max-h-64 w-full max-w-xl overflow-y-auto rounded-md border border-border bg-background p-1 text-foreground shadow-xl"
-        >
-          {options.map((option, index) => (
-            <button
-              key={option.id}
-              type="button"
-              role="option"
-              aria-selected={option.id === value}
-              className={cn(
-                'flex w-full items-center gap-2 rounded-sm px-2.5 py-2 text-left text-sm outline-none transition-colors',
-                index === highlighted && 'bg-accent text-accent-foreground',
-              )}
-              onMouseEnter={() => setHighlighted(index)}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => select(option.id)}
-            >
-              <span className="min-w-0 flex-1 truncate">{option.name}</span>
-              {option.name !== option.id && (
-                <span className="max-w-48 truncate font-mono text-2xs text-muted-foreground">
-                  {option.id}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              setOpen(false)
+            } else if (event.key === 'ArrowDown' && options.length > 0) {
+              event.preventDefault()
+              if (open) setHighlighted((current) => (current + 1) % options.length)
+              else showOptions()
+            } else if (event.key === 'ArrowUp' && options.length > 0) {
+              event.preventDefault()
+              setOpen(true)
+              setHighlighted((current) => (current - 1 + options.length) % options.length)
+            } else if (event.key === 'Enter' && open && options[highlighted]) {
+              event.preventDefault()
+              select(options[highlighted].id)
+            }
+          }}
+        />
+        {catalog.length > 0 && (
+          <button
+            type="button"
+            aria-label={placeholder}
+            tabIndex={-1}
+            className="absolute inset-y-px right-px flex w-9 items-center justify-center rounded-r-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              if (open) setOpen(false)
+              else showOptions()
+            }}
+          >
+            <ChevronDown className={cn('h-4 w-4 transition-transform', open && 'rotate-180')} />
+          </button>
+        )}
+        {open && options.length > 0 && (
+          <div
+            id={listId}
+            role="listbox"
+            className="absolute left-0 top-[calc(100%+0.375rem)] z-50 max-h-64 w-full max-w-xl overflow-y-auto rounded-md border border-border bg-background p-1 text-foreground shadow-xl"
+          >
+            {options.map((option, index) => (
+              <button
+                key={option.id}
+                type="button"
+                role="option"
+                aria-selected={option.id === value}
+                className={cn(
+                  'flex w-full items-start gap-2 rounded-sm px-2.5 py-2 text-left text-sm outline-none transition-colors',
+                  index === highlighted && 'bg-accent text-accent-foreground',
+                )}
+                onMouseEnter={() => setHighlighted(index)}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => select(option.id)}
+              >
+                <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:anywhere]">
+                  <span className="block">{option.name}</span>
+                  {option.name !== option.id && (
+                    <span className="mt-0.5 block font-mono text-2xs text-muted-foreground">
+                      {option.id}
+                    </span>
+                  )}
                 </span>
-              )}
-              <Check className={cn('h-4 w-4 shrink-0', option.id !== value && 'invisible')} />
-            </button>
-          ))}
-        </div>
+                <Check className={cn('mt-0.5 h-4 w-4 shrink-0', option.id !== value && 'invisible')} />
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      {value && (
+        <p aria-hidden="true" className="mt-1.5 font-mono text-2xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere] sm:hidden">
+          {value}
+        </p>
       )}
     </div>
   )

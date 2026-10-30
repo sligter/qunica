@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 
 import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
+import { CodexLoginPanel } from '@/components/agents/CodexLoginPanel'
 import { DEFAULT_ACP_TIMEOUT_SECONDS } from '@/components/agents/acpRuntimeConfig'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -208,6 +209,10 @@ export function ExternalRuntimeFields({
           <p className="text-2xs text-muted-foreground">{selectedPreset.description}</p>
         )}
       </div>
+
+      {selectedProfile === 'codex' && (
+        <CodexLoginPanel envText={envText} onAuthenticated={onRefreshCapabilities} />
+      )}
 
       {missingPresets.length > 0 && (
         <div className="space-y-1 rounded-md border border-dashed border-border p-2">

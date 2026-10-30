@@ -291,6 +291,14 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(agents::acp_runtime_capabilities),
         )
         .route(
+            "/api/v2/agents/codex-auth/status",
+            axum::routing::post(agents::codex_auth::status),
+        )
+        .route(
+            "/api/v2/agents/codex-auth/login",
+            axum::routing::post(agents::codex_auth::login),
+        )
+        .route(
             "/api/v2/agents/:agent_id",
             get(agents::get)
                 .patch(agents::update)

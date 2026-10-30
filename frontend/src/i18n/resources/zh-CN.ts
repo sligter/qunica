@@ -509,6 +509,17 @@ export const zhCN: TranslationShape<typeof enUS> = {
     states: { defaultProvider: '默认（环境设置）', providerDefault: '服务商默认值', inheritProvider: '继承服务商设置', backendLocal: '本地', backendSandbox: '沙箱', loadingTools: '正在加载工具...', loadingSkills: '正在加载...', loadingValues: '正在加载可用值…', staleValues: '运行时设置已更改。请刷新可用值。' },
     validation: { nameRequired: 'Agent 名称为必填项。', systemPromptRequired: '系统提示词为必填项。', workspaceRequired: '工作区为必填项。', temperatureIncrement: '必须以 0.05 为增量。' },
     errors: { network: '网络错误', runtimeCapabilities: '无法加载运行时能力。请检查适配器设置后刷新。', providerModels: '无法加载服务商模型。你仍可输入自定义模型。' },
+    codexLogin: {
+      title: 'Codex 登录', description: '使用 ChatGPT 账号登录 Codex ACP，或检查后端已有的登录状态。',
+      signIn: '登录 ChatGPT 账号', check: '检查登录状态', cancel: '取消登录',
+      checking: '正在检查 Codex 登录状态…', starting: '正在获取设备验证码…', waiting: '等待在浏览器中完成授权…',
+      authenticated: 'Codex 已登录，ACP 运行时可复用此账号。', apiKey: 'Codex 已使用 API 密钥认证。', signedOut: 'Codex 尚未登录。',
+      instructions: '打开下方链接，输入此一次性验证码。若链接未打开，可复制到浏览器。授权完成前请保持本页面打开。', deviceCode: '一次性设备验证码',
+      copyCode: '复制验证码', copyLink: '复制链接', copied: '已复制。', copyFallback: '无法自动复制，请长按或选中验证码、链接进行复制。',
+      hostHint: '登录作用于当前连接的后端机器。凭据由 Codex 管理，复用该主机登录态的 Agent 共用此账号。',
+      missingCli: '请先在后端机器安装 Codex CLI（@openai/codex），然后重试。', timeout: 'Codex 登录已超时，请重新获取设备验证码。',
+      busy: '已有 Codex 登录正在进行，请先完成或取消。', failed: '无法完成 Codex 登录。请检查后端网络、更新 Codex CLI，并在 ChatGPT 账号或工作区设置中启用设备码登录。',
+    },
     runtime: {
       chatLabel: 'LLM 对话', chatHint: '提供商原生模型和工具', acpLabel: 'ACP', acpHint: 'Agent Client Protocol 进程', title: 'ACP 运行时', description: '为所选工作区启动 Agent Client Protocol 进程。', preset: '运行时预设', customCommand: '自定义 ACP 命令', fallbackSuffix: '（后备命令）', localDetected: '已检测到本地适配器', usesFallback: '使用后备命令', detected: '已检测到：{{names}}', noneDetected: '未检测到本地 ACP 适配器。预设仍可使用可编辑的后备命令。',
       versionStatus: '版本状态', versionError: '无法检查运行时版本。', localVersion: '本地：{{version}}', remoteVersion: '远程：{{version}}', notInstalled: '未安装', unavailable: '不可用', externallyManaged: '此运行时由 Homebrew 或其他外部工具管理。Qunica 将直接使用现有命令，请通过原安装工具更新。', customPackageVersion: '自定义软件包版本', customInstall: '自定义安装', installing: '安装中…', updating: '更新中…', installationFailed: '安装失败。', adapterDefault: '适配器默认值', command: '命令', arguments: '参数', environment: '环境变量', timeout: '超时秒数', permissions: '权限请求', denyRequests: '拒绝请求', autoAllow: '自动允许',

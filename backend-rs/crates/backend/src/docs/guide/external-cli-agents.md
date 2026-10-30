@@ -4,7 +4,7 @@ An agent with `runtime_kind` set to `acp` drives an external command-line agent 
 
 ## Supported runtimes
 
-- **Codex CLI** — `codex exec --sandbox danger-full-access <prompt>`
+- **Codex CLI** — `codex-acp` (fallback: `npx -y @agentclientprotocol/codex-acp`).
 - **Claude Code** — `claude -p --output-format stream-json --permission-mode bypassPermissions --max-turns <n> <prompt>`
 - **Pi Agent** — the Pi ACP adapter (`pi`)
 - **OpenCode** — the OpenCode ACP server (`opencode`)
@@ -13,7 +13,15 @@ An agent with `runtime_kind` set to `acp` drives an external command-line agent 
 
 ## Installing
 
-Qunica detects and launches these CLIs; it does not manage their accounts. Install each one and sign in outside the app. The runtime version panel can install a preset globally through npm and reports the installed and latest versions.
+Qunica detects and launches these CLIs. The runtime version panel can install a preset globally through npm and reports the installed and latest versions. Codex supports the sign-in entry below; sign in to other runtimes outside the app.
+
+## Codex sign-in
+
+In an Agent's create or edit form, choose **ACP → Codex**, then **Sign in with ChatGPT**. Open the displayed authorization link in a browser and enter the one-time code. Keep the settings page open until completion; Qunica then refreshes the runtime's model capabilities. **Check sign-in** detects an existing ChatGPT or API-key login without starting authorization.
+
+Install the Codex CLI (`@openai/codex`) on the backend host in addition to the ACP adapter. The sign-in entry uses Codex's app-server account protocol so it receives device codes and completion events without parsing terminal output. The CLI must support device-code authentication. Enable device-code login in your ChatGPT account or workspace settings when required. See [OpenAI authentication](https://learn.chatgpt.com/docs/auth).
+
+The login belongs to Codex on the connected backend machine. Codex stores and refreshes its credentials; Qunica receives no tokens. Agents that reuse that host's Codex login share the account. The Agent's runtime environment also applies to the login process. Canceling, leaving the form, or losing the stream terminates the temporary login process; login attempts are not automatically retried. Existing ACP sessions are not restarted. Existing externally established Codex logins remain usable.
 
 ## Configuration
 
