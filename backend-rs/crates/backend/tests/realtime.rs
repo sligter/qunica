@@ -664,6 +664,201 @@ async fn filesystem_writes_publish_durable_invalidations_and_cancelled_requests_
 }
 
 #[tokio::test]
+async fn account_retention_bounds_expiry_backlog_and_preserves_replay_and_other_accounts() {
+    let (_, state, _, group) = fixture().await;
+    let owner: String = sqlx::query_scalar("SELECT owner_id FROM groups WHERE id=?")
+        .bind(&group)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    // Start with a precise event history; counters and versions deliberately
+    // outlive their events, just as they do after a previous maintenance cycle.
+    sqlx::query("DELETE FROM account_events")
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE account_event_counters SET high_watermark=1201,retained_after=0 WHERE owner_id=?",
+    )
+    .bind(&owner)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    sqlx::query("WITH RECURSIVE n(seq) AS (SELECT 1 UNION ALL SELECT seq+1 FROM n WHERE seq<1201) INSERT INTO account_events(owner_id,seq,event_id,kind,resource_id,payload_json,occurred_at) SELECT ?,seq,printf('expiry:%d',seq),'file.changed','resource','{}',CASE WHEN seq=1201 THEN '2999-01-01T00:00:00Z' ELSE '2000-01-01T00:00:00Z' END FROM n")
+        .bind(&owner).execute(state.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO users(id,email,password_hash,name,created_at,updated_at) VALUES('other-account','other@example.com','hash','Other','now','now')")
+        .execute(state.db.pool()).await.unwrap();
+    sqlx::query(
+        "INSERT INTO account_event_counters(owner_id,high_watermark) VALUES('other-account',1)",
+    )
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO account_events(owner_id,seq,event_id,kind,resource_id,payload_json,occurred_at) VALUES('other-account',1,'other:1','file.changed','resource','{}','2999-01-01T00:00:00Z')")
+        .execute(state.db.pool()).await.unwrap();
+
+    api::account::prune(state.db.pool()).await.unwrap();
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_events WHERE owner_id=?")
+        .bind(&owner)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        remaining,
+        1201 - 4 * 256,
+        "one pass must release the writer instead of clearing the entire backlog"
+    );
+    let (high, floor): (i64, i64) = sqlx::query_as(
+        "SELECT high_watermark,retained_after FROM account_event_counters WHERE owner_id=?",
+    )
+    .bind(&owner)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!((high, floor), (1201, 1024));
+    assert_eq!(
+        api::account::events_after(state.db.pool(), &owner, 0)
+            .await
+            .unwrap_err()
+            .code(),
+        "resync_required"
+    );
+    let replay = api::account::events_after(state.db.pool(), &owner, floor)
+        .await
+        .unwrap();
+    assert_eq!(replay.first().unwrap().seq, 1025);
+    assert_eq!(replay.last().unwrap().seq, 1201);
+    assert_eq!(
+        api::account::events_after(state.db.pool(), "other-account", 0)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    api::account::prune(state.db.pool()).await.unwrap();
+    let replay = api::account::events_after(state.db.pool(), &owner, 1200)
+        .await
+        .unwrap();
+    assert_eq!(replay.len(), 1);
+    assert_eq!(replay[0].seq, 1201);
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_events WHERE owner_id=?")
+        .bind(&owner)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(remaining, 1);
+}
+
+#[tokio::test]
+async fn account_retention_enforces_count_cap_and_never_rewinds_a_floor() {
+    let (_, state, _, group) = fixture().await;
+    let owner: String = sqlx::query_scalar("SELECT owner_id FROM groups WHERE id=?")
+        .bind(&group)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM account_events")
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE account_event_counters SET high_watermark=100010,retained_after=5 WHERE owner_id=?",
+    )
+    .bind(&owner)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    sqlx::query("WITH RECURSIVE n(seq) AS (SELECT 1 UNION ALL SELECT seq+1 FROM n WHERE seq<12) INSERT INTO account_events(owner_id,seq,event_id,kind,resource_id,payload_json,occurred_at) SELECT ?,seq,printf('count:%d',seq),'file.changed','resource','{}','2999-01-01T00:00:00Z' FROM n")
+        .bind(&owner).execute(state.db.pool()).await.unwrap();
+    api::account::prune(state.db.pool()).await.unwrap();
+    let (floor, remaining): (i64, i64) = sqlx::query_as("SELECT retained_after,(SELECT COUNT(*) FROM account_events e WHERE e.owner_id=c.owner_id) FROM account_event_counters c WHERE owner_id=?")
+        .bind(&owner).fetch_one(state.db.pool()).await.unwrap();
+    assert_eq!((floor, remaining), (10, 2));
+    assert_eq!(
+        api::account::events_after(state.db.pool(), &owner, 9)
+            .await
+            .unwrap_err()
+            .code(),
+        "resync_required"
+    );
+    assert_eq!(
+        api::account::events_after(state.db.pool(), &owner, 10)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    // A prior floor remains valid even when no old payload rows are left.
+    sqlx::query("UPDATE account_event_counters SET retained_after=12 WHERE owner_id=?")
+        .bind(&owner)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    api::account::prune(state.db.pool()).await.unwrap();
+    let floor: i64 =
+        sqlx::query_scalar("SELECT retained_after FROM account_event_counters WHERE owner_id=?")
+            .bind(&owner)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(floor, 12);
+    assert!(api::account::events_after(state.db.pool(), &owner, 12)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn account_retention_rolls_back_deleted_events_when_floor_cannot_commit() {
+    let (_, state, _, group) = fixture().await;
+    let owner: String = sqlx::query_scalar("SELECT owner_id FROM groups WHERE id=?")
+        .bind(&group)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE account_events SET occurred_at='2000-01-01T00:00:00Z'")
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_events WHERE owner_id=?")
+        .bind(&owner)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert!(before > 0);
+    sqlx::query("CREATE TRIGGER refuse_floor BEFORE UPDATE OF retained_after ON account_event_counters BEGIN SELECT RAISE(ABORT,'simulated floor failure'); END")
+        .execute(state.db.pool()).await.unwrap();
+    assert!(api::account::prune(state.db.pool()).await.is_err());
+    let (floor, remaining): (i64, i64) = sqlx::query_as("SELECT retained_after,(SELECT COUNT(*) FROM account_events e WHERE e.owner_id=c.owner_id) FROM account_event_counters c WHERE owner_id=?")
+        .bind(&owner).fetch_one(state.db.pool()).await.unwrap();
+    assert_eq!(
+        (floor, remaining),
+        (0, before),
+        "deletion without its replay floor would silently skip events"
+    );
+}
+
+#[tokio::test]
+async fn ticket_retention_bounds_expiry_and_keeps_live_tickets() {
+    let (_, state, _, _) = fixture().await;
+    sqlx::query("WITH RECURSIVE n(seq) AS (SELECT 1 UNION ALL SELECT seq+1 FROM n WHERE seq<301) INSERT INTO realtime_tickets(ticket_hash,server_id,owner_id,session_id,credential_id,expires_at) SELECT printf('ticket:%d',seq),(SELECT server_id FROM server_identity),s.owner_id,s.id,s.credential_id,CASE WHEN seq=301 THEN unixepoch()+3600 ELSE 0 END FROM n CROSS JOIN auth_sessions s LIMIT 301")
+        .execute(state.db.pool()).await.unwrap();
+    api::account::prune(state.db.pool()).await.unwrap();
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM realtime_tickets")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(remaining, 301 - 256);
+    api::account::prune(state.db.pool()).await.unwrap();
+    let retained: Vec<String> = sqlx::query_scalar("SELECT ticket_hash FROM realtime_tickets")
+        .fetch_all(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(retained, vec!["ticket:301"]);
+}
+
+#[tokio::test]
 async fn ended_run_retention_returns_explicit_resync_and_keeps_pending_approval_material() {
     let (app, state, token, group) = fixture().await;
     let thread = Uuid::new_v4().to_string();

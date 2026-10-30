@@ -1,5 +1,9 @@
 //! Durable account discovery shared by WebSocket and paired SSE clients.
-use std::{collections::VecDeque, convert::Infallible, time::Duration};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    convert::Infallible,
+    time::Duration,
+};
 
 use axum::{
     extract::{Path, Query, State},
@@ -10,7 +14,7 @@ use axum::{
 use futures_util::stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Sqlite, SqlitePool, Transaction};
 
 use super::{auth::current_user_id, error::ApiError, AppState};
 
@@ -238,14 +242,14 @@ pub async fn events(
 /// Keep a durable floor even after every retained row is deleted. A missing
 /// notification or an empty replay window can never turn an expired cursor valid.
 pub async fn prune(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    let mut tx = crate::db::begin_write(pool).await?;
-    sqlx::query("UPDATE account_event_counters SET retained_after=MAX(retained_after,COALESCE((SELECT MAX(seq) FROM account_events e WHERE e.owner_id=account_event_counters.owner_id AND (e.occurred_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-7 days') OR e.seq <= high_watermark-100000)),0))")
-        .execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM account_events WHERE seq <= (SELECT retained_after FROM account_event_counters c WHERE c.owner_id=account_events.owner_id)").execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM realtime_tickets WHERE expires_at < unixepoch()")
-        .execute(&mut *tx)
-        .await?;
-    tx.commit().await?;
+    for _ in 0..4 {
+        if !prune_account_events(pool).await? {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    sqlx::query("DELETE FROM realtime_tickets WHERE ticket_hash IN (SELECT ticket_hash FROM realtime_tickets WHERE expires_at < unixepoch() LIMIT 256)")
+        .execute(pool).await?;
     // Release the writer between batches so uploads and message acceptance
     // can proceed while a large legacy backlog is gradually reclaimed.
     for _ in 0..4 {
@@ -255,6 +259,60 @@ pub async fn prune(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         tokio::task::yield_now().await;
     }
     Ok(())
+}
+
+async fn prune_account_events(pool: &SqlitePool) -> Result<bool, sqlx::Error> {
+    // Note: separate the indexed sequence and time ranges. An OR between them
+    // scanned every retained row, even with no expired history. CROSS JOIN keeps
+    // the small counters table outside the per-owner primary-key range lookup.
+    let mut candidates: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT e.owner_id,e.seq FROM account_event_counters c CROSS JOIN account_events e \
+         WHERE e.owner_id=c.owner_id AND e.seq<=MAX(c.retained_after,c.high_watermark-100000) LIMIT 256",
+    )
+    .fetch_all(pool)
+    .await?;
+    if candidates.is_empty() {
+        candidates = sqlx::query_as(
+            "SELECT owner_id,seq FROM account_events \
+             WHERE occurred_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-7 days') \
+             ORDER BY occurred_at,owner_id,seq LIMIT 256",
+        )
+        .fetch_all(pool)
+        .await?;
+    }
+    if candidates.is_empty() {
+        return Ok(false);
+    }
+
+    // Discover without the writer; only recheck and delete this bounded batch
+    // under the lock. The replay floor and deletion must commit atomically.
+    let mut tx = crate::db::begin_write(pool).await?;
+    let mut delete =
+        QueryBuilder::<Sqlite>::new("DELETE FROM account_events WHERE (owner_id,seq) IN (VALUES ");
+    let mut values = delete.separated(",");
+    for (owner, seq) in &candidates {
+        values
+            .push("(")
+            .push_bind_unseparated(owner)
+            .push_unseparated(",")
+            .push_bind_unseparated(seq)
+            .push_unseparated(")");
+    }
+    delete.push(") AND (occurred_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-7 days') OR seq <= (SELECT MAX(c.retained_after,c.high_watermark-100000) FROM account_event_counters c WHERE c.owner_id=account_events.owner_id)) RETURNING owner_id,seq");
+    let deleted: Vec<(String, i64)> = delete.build_query_as().fetch_all(&mut *tx).await?;
+    let mut floors = BTreeMap::<String, i64>::new();
+    for (owner, seq) in deleted {
+        floors
+            .entry(owner)
+            .and_modify(|floor| *floor = (*floor).max(seq))
+            .or_insert(seq);
+    }
+    for (owner, floor) in floors {
+        sqlx::query("UPDATE account_event_counters SET retained_after=MAX(retained_after,?) WHERE owner_id=?")
+            .bind(floor).bind(owner).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(true)
 }
 
 async fn prune_run_events(pool: &SqlitePool) -> Result<bool, sqlx::Error> {

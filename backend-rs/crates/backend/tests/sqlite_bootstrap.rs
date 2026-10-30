@@ -47,3 +47,53 @@ async fn sqlite_bootstrap_enables_wal_and_creates_core_tables() {
         ]
     );
 }
+
+#[tokio::test]
+async fn sqlite_history_indexes_avoid_payload_scans_and_snapshot_sorting() {
+    let db = Db::connect("sqlite::memory:").await.unwrap();
+    db.migrate().await.unwrap();
+    let expiry_plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+        "EXPLAIN QUERY PLAN SELECT owner_id,seq FROM account_events WHERE occurred_at < '2026-01-01' ORDER BY occurred_at,owner_id,seq LIMIT 256",
+    ).fetch_all(db.pool()).await.unwrap();
+    assert!(
+        expiry_plan
+            .iter()
+            .any(|row| row.3.contains("SEARCH") && row.3.contains("COVERING INDEX")),
+        "{expiry_plan:?}"
+    );
+    assert!(
+        !expiry_plan.iter().any(|row| row.3.contains("TEMP B-TREE")),
+        "{expiry_plan:?}"
+    );
+    let snapshot_plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+        "EXPLAIN QUERY PLAN SELECT stream_id,MAX(seq) FROM stream_events WHERE thread_id='thread' GROUP BY stream_id",
+    ).fetch_all(db.pool()).await.unwrap();
+    assert!(
+        snapshot_plan
+            .iter()
+            .any(|row| row.3.contains("COVERING INDEX")),
+        "{snapshot_plan:?}"
+    );
+    assert!(
+        !snapshot_plan
+            .iter()
+            .any(|row| row.3.contains("TEMP B-TREE")),
+        "{snapshot_plan:?}"
+    );
+    let delete_plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+        "EXPLAIN QUERY PLAN DELETE FROM account_events WHERE (owner_id,seq) IN (VALUES ('owner',1),('owner',2)) AND (occurred_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-7 days') OR seq <= (SELECT MAX(c.retained_after,c.high_watermark-100000) FROM account_event_counters c WHERE c.owner_id=account_events.owner_id)) RETURNING owner_id,seq",
+    ).fetch_all(db.pool()).await.unwrap();
+    assert!(
+        delete_plan
+            .iter()
+            .any(|row| row.3.contains("SEARCH account_events")
+                && row.3.contains("owner_id=? AND seq=?")),
+        "{delete_plan:?}"
+    );
+    assert!(
+        !delete_plan
+            .iter()
+            .any(|row| row.3.contains("SCAN account_events")),
+        "{delete_plan:?}"
+    );
+}

@@ -39,7 +39,11 @@ events do not replace message bodies. Never revive a deleted or terminal message
 from a late run token.
 
 Account history retains seven days and approximately 100,000 events per account,
-with a minute cleanup cycle. A durable retention floor makes an expired cursor
+with a minute cleanup cycle. Indexed discovery selects up to 256 old events
+outside the write transaction; deletion and replay-floor advancement commit
+atomically in at most four batches per cycle, releasing the writer between
+batches. Expiration is gradual for a large backlog. A durable retention floor
+makes an expired cursor
 return `resync_required`, even after all old rows have been deleted. Replay bounds
 and rows share a read transaction so cleanup cannot hide a gap between them.
 
@@ -237,3 +241,11 @@ markers remain until their payload events are gone so later ticks can continue
 cleanup. Expiration is gradual for a large backlog; messages and command receipts
 are unaffected. This prevents a full legacy history scan and deletion from
 monopolizing the writer used by message acceptance and attachment uploads.
+
+Thread run cursors use a covering `(thread_id, stream_id, seq)` index so snapshot
+grouping does not read historical event payloads or build a temporary sort table.
+SQLx slow-statement warnings remain enabled with their default one-second
+threshold. Inspect `summary`, `db.statement`, `elapsed` and `slow_threshold` in
+the expanded log fields: elapsed time can also include SQLite lock or I/O waits,
+so a warning alone does not establish that an index is missing. WAL and the
+existing synchronous durability setting are unchanged.
