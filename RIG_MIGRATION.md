@@ -97,8 +97,8 @@ acceptance gates.
 `llm::rig_engine` (feature `rig-engine` only) holds `RigMessageAdapter` and
 `RigProvider`. Nothing in the runtime selects it; `build_provider` is unchanged.
 It serves OpenAI-compatible, Anthropic (including its compatible aliases), and
-Gemini/Google kinds. Responses still fails with "not served yet" on the Rig
-factory. The runtime continues to select native for every kind.
+Gemini/Google kinds, plus OpenAI Responses. The runtime continues to select
+native for every kind.
 
 - **History.** A Rig assistant turn is stored whole as `native_content["rig"]`,
   beside its display fields. It is replayed only while its projection still
@@ -187,16 +187,57 @@ Additional explicit wire differences covered by local contract tests:
 The signing tests use local fixtures: a completed turn is JSON-serialized,
 loaded, and sent in a second request with tool results. They verify retained
 bytes, block order and metadata, not cryptographic acceptance by a live vendor.
-Real Anthropic/Gemini validation and the Responses adapter remain P2 gates.
+Real Anthropic/Gemini validation remains a P2 gate.
 Revisit if model changes or context-binding rules prevent signed replay, a
 gateway requires nonstandard signatures/framing, or any opaque part is lost.
 
-Local slice verification (Windows, Rust 1.97.1): the Rig build passes 434
-library tests and 52 contract tests; the default build passes 428 library
-tests and 45 contract tests. Each library suite has two existing ignored
+Local P2 verification (Windows, Rust 1.97.1): the Rig build passes 434
+library tests and 59 contract tests; the default build passes 428 library
+tests and 50 contract tests. Each library suite has two existing ignored
 tests. Formatting, workspace/all-target/all-feature Clippy with warnings
 denied, and whitespace checks pass. This is targeted validation, not a fresh
 full-workspace or cross-platform CI run.
+An earlier parallel contract run hit a native loopback connection abort
+(Windows 10053); unchanged native code passed in the final parallel run.
+No production retry policy or test assertion was relaxed.
+
+### OpenAI Responses
+
+Responses uses a separate wire with the same injected HTTP client and neutral
+events. The native endpoint resolver is shared: roots, complete `/responses`
+URLs, tenant queries and fragments keep their existing behavior. The complete
+resolved URL is Rig's base with an empty route suffix, avoiding double paths
+and misplaced queries.
+
+Requests keep `store: false`, request `reasoning.encrypted_content`, send system
+messages in `input`, and retain non-strict function schemas. All effort levels
+and sampling values use the existing Qunica mappings. Explicit empty tools are
+preserved. Rig's user text/image parts are separate message items and images
+carry `detail: "auto"`; assistant text uses a typed output-message item rather
+than the native client's string shorthand. Those shapes are asserted separately.
+
+Complete Rig turns persist encrypted reasoning, opaque fields, item ids and
+original call ids, including turns without tools. Only completed ciphertext
+is replayed, following the [official OpenAI streaming guidance](https://developers.openai.com/api/reference/resources/responses/streaming-events#response.output_item.added).
+Native history's `openai_responses_reasoning` metadata imports the same complete
+reasoning items before the associated call batch. Their following neutral
+text/call items keep native representations so Rig retains the association.
+An existing Rig origin is never relabelled; losing required ciphertext during
+adaptation fails before I/O.
+
+Executable calls come from the finalized response in provider output order.
+Before releasing any, the adapter compares every function call against Rig's
+raw response: ids, names and object arguments must match, ids must be unique,
+and no call may be unfinished. A missing id/name or a repaired/omitted call
+fails the entire batch. An incomplete response, malformed arguments or a
+failed stream emits no tools and commits no native turn. Billed usage is
+retained for incomplete completions and failed terminal envelopes.
+
+The local contracts cover out-of-order done items, partial-vs-complete
+ciphertext, JSON persistence followed by a second request, no-tool reasoning,
+missing identity, malformed calls, HTTP errors, EOF/transport failure,
+sampling, query routing and credential precedence. Live provider acceptance
+and P3 durable Driver behavior remain unverified.
 
 ## Validation
 

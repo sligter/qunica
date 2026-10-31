@@ -36,22 +36,27 @@ impl OpenAiResponsesProvider {
     }
 
     fn endpoint(&self) -> anyhow::Result<reqwest::Url> {
-        let base = self.base_url.trim();
-        let mut url = reqwest::Url::parse(if base.is_empty() {
-            DEFAULT_BASE_URL
-        } else {
-            base
-        })?;
-        let path = url.path().trim_end_matches('/');
-        let path = if path.ends_with("/responses") {
-            path.to_string()
-        } else {
-            format!("{path}/responses")
-        };
-        url.set_path(&path);
-        url.set_fragment(None);
-        Ok(url)
+        endpoint(&self.base_url)
     }
+}
+
+/// Shared with the Rig adapter so full endpoints and tenant queries resolve identically.
+pub(crate) fn endpoint(base_url: &str) -> anyhow::Result<reqwest::Url> {
+    let base = base_url.trim();
+    let mut url = reqwest::Url::parse(if base.is_empty() {
+        DEFAULT_BASE_URL
+    } else {
+        base
+    })?;
+    let path = url.path().trim_end_matches('/');
+    let path = if path.ends_with("/responses") {
+        path.to_string()
+    } else {
+        format!("{path}/responses")
+    };
+    url.set_path(&path);
+    url.set_fragment(None);
+    Ok(url)
 }
 
 fn to_input(messages: &[ChatMessage]) -> Vec<Value> {

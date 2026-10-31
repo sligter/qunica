@@ -71,6 +71,17 @@ fn gemini(engine: Engine, url: String) -> Box<dyn LlmProvider> {
     }
 }
 
+fn responses(engine: Engine, url: String) -> Box<dyn LlmProvider> {
+    match engine {
+        Engine::Native => Box::new(OpenAiResponsesProvider::new(url, "test-key")),
+        #[cfg(feature = "rig-engine")]
+        Engine::Rig => Box::new(
+            qunica_backend::llm::rig_engine::RigProvider::openai_responses(url, "test-key")
+                .unwrap(),
+        ),
+    }
+}
+
 const ANTHROPIC_STOP: &str = "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n";
 const GEMINI_STOP: &str = "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n";
 
@@ -1192,6 +1203,7 @@ async fn llm_contract_absent_effort_omits_the_key_entirely() {
         for (kind, stop, key) in [
             ("openai-compatible", OPENAI_STOP, "/reasoning_effort"),
             ("anthropic", ANTHROPIC_STOP, "/thinking"),
+            ("openai-responses", RESPONSES_TEXT, "/reasoning"),
             ("gemini", GEMINI_STOP, "/generationConfig/thinkingConfig"),
         ] {
             let (url, captures) = capture_server(stop).await;
@@ -1205,22 +1217,20 @@ async fn llm_contract_absent_effort_omits_the_key_entirely() {
 // Responses uses complete output items for calls and a required terminal event.
 const RESPONSES_TEXT: &str = concat!(
     "event: response.created\ndata: {\"type\":\"response.created\"}\r\n\r\n",
-    "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"Checking\"}\n\n",
-    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\n\n",
-    "data: {\"type\":\"response.output_text.done\",\"text\":\"你好\"}\n\n",
-    "data: {\"type\":\"response.completed\",\"response\":{\"output\":[],\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":80},\"output_tokens\":5,\"total_tokens\":105}}}",
+    "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_text\",\"summary\":[]}}\n\n",
+    "data: {\"type\":\"response.reasoning_summary_text.delta\",\"output_index\":0,\"item_id\":\"rs_text\",\"summary_index\":0,\"delta\":\"Checking\"}\n\n",
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_text\",\"encrypted_content\":\"opaque_text\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Checking\"}]}}\n\n",
+    "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"msg_text\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+    "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"item_id\":\"msg_text\",\"content_index\":0,\"delta\":\"你好\"}\n\n",
+    "data: {\"type\":\"response.output_text.done\",\"output_index\":1,\"text\":\"你好\"}\n\n",
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"msg_text\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"你好\",\"annotations\":[]}]}}\n\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":80},\"output_tokens\":5,\"total_tokens\":105}}}\n\n",
 );
 
-#[tokio::test]
-async fn responses_streams_text_reasoning_and_usage_without_duplicate_done() {
+async fn responses_streams_text_reasoning_and_usage_without_duplicate_done(engine: Engine) {
     let url = fake_server(RESPONSES_TEXT).await;
-    let deltas = collect(
-        OpenAiResponsesProvider::new(url, "test-key")
-            .stream(request())
-            .await
-            .unwrap(),
-    )
-    .await;
+    let mut deltas = collect(responses(engine, url).stream(request()).await.unwrap()).await;
+    deltas.retain(|delta| !matches!(delta, ChatDelta::NativeContent(_)));
     assert!(matches!(&deltas[0], ChatDelta::Reasoning(text) if text == "Checking"));
     assert!(matches!(&deltas[1], ChatDelta::Token(text) if text == "你好"));
     let ChatDelta::Usage(usage) = &deltas[2] else {
@@ -1234,10 +1244,9 @@ async fn responses_streams_text_reasoning_and_usage_without_duplicate_done() {
     assert_eq!(deltas.len(), 4);
 }
 
-#[tokio::test]
-async fn responses_encodes_history_images_tools_and_optional_settings() {
+async fn responses_encodes_history_images_tools_and_optional_settings(engine: Engine) {
     let (url, captures) = capture_server(RESPONSES_TEXT).await;
-    let provider = OpenAiResponsesProvider::new(url, "test-key");
+    let provider = responses(engine, url);
     let mut req = continuation_request();
     req.messages
         .insert(2, image_request("user").messages.remove(0));
@@ -1263,23 +1272,36 @@ async fn responses_encodes_history_images_tools_and_optional_settings() {
         assert!(body.get(key).is_none(), "unexpected {key}");
     }
     assert_eq!(body["input"][0]["role"], "system");
-    assert_eq!(body["input"][2]["content"][0]["type"], "input_text");
+    let input = body["input"].as_array().unwrap();
+    assert_eq!(input[2]["content"][0]["type"], "input_text");
+    let (image, assistant, call, result) = if engine.is_rig() {
+        assert_eq!(input[3]["content"][0]["type"], "input_image");
+        assert_eq!(input[3]["content"][0]["detail"], "auto");
+        assert_eq!(input[4]["content"][0]["type"], "output_text");
+        (
+            &input[3]["content"][0],
+            &input[4]["content"][0]["text"],
+            &input[5],
+            &input[6],
+        )
+    } else {
+        (
+            &input[2]["content"][1],
+            &input[3]["content"],
+            &input[4],
+            &input[5],
+        )
+    };
+    assert_eq!(image["image_url"], "data:image/png;base64,AQID");
+    assert_eq!(assistant, "Checking.");
+    assert_eq!(call["type"], "function_call");
+    assert_eq!(call["call_id"], "call_1");
     assert_eq!(
-        body["input"][2]["content"][1],
-        json!({"type":"input_image","image_url":"data:image/png;base64,AQID"})
-    );
-    assert_eq!(
-        body["input"][3],
-        json!({"role":"assistant","content":"Checking."})
-    );
-    assert_eq!(body["input"][4]["type"], "function_call");
-    assert_eq!(body["input"][4]["call_id"], "call_1");
-    assert_eq!(
-        serde_json::from_str::<Value>(body["input"][4]["arguments"].as_str().unwrap()).unwrap(),
+        serde_json::from_str::<Value>(call["arguments"].as_str().unwrap()).unwrap(),
         json!({"file_path":"note.txt"})
     );
-    assert_eq!(body["input"][5]["type"], "function_call_output");
-    assert_eq!(body["input"][5]["call_id"], "call_1");
+    assert_eq!(result["type"], "function_call_output");
+    assert_eq!(result["call_id"], "call_1");
     assert_eq!(body["tools"][0]["name"], "Read");
     assert_eq!(body["tools"][0]["strict"], false);
     assert!(body["tools"][0].get("function").is_none());
@@ -1295,8 +1317,7 @@ async fn responses_encodes_history_images_tools_and_optional_settings() {
     assert_eq!(captures[2]["tools"], json!([]));
 }
 
-#[tokio::test]
-async fn responses_parallel_calls_replay_call_ids_and_encrypted_reasoning() {
+async fn responses_parallel_calls_replay_call_ids_and_encrypted_reasoning(engine: Engine) {
     let fixture = concat!(
         "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\",\"encrypted_content\":\"opaque\",\"summary\":[]}}\n\n",
         "data: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"type\":\"function_call\",\"id\":\"fc_2\",\"call_id\":\"call_2\",\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\\\"b\\\"}\"}}\n\n",
@@ -1304,7 +1325,7 @@ async fn responses_parallel_calls_replay_call_ids_and_encrypted_reasoning() {
         "data: {\"type\":\"response.completed\",\"response\":{}}\n\n",
     );
     let (url, captures) = capture_server(fixture).await;
-    let provider = OpenAiResponsesProvider::new(url, "test-key");
+    let provider = responses(engine, url);
     let deltas = collect(provider.stream(request()).await.unwrap()).await;
     let calls: Vec<_> = deltas
         .into_iter()
@@ -1318,6 +1339,7 @@ async fn responses_parallel_calls_replay_call_ids_and_encrypted_reasoning() {
     assert_eq!(calls[1].id, "call_2");
     assert_eq!(calls[0].args, json!({"file_path":"a"}));
     let mut req = request();
+    req.tools = continuation_request().tools;
     req.messages
         .push(ChatMessage::assistant_tool_calls("", calls));
     req.messages
@@ -1337,8 +1359,7 @@ async fn responses_parallel_calls_replay_call_ids_and_encrypted_reasoning() {
     assert_eq!(input[4]["output"], "first result");
 }
 
-#[tokio::test]
-async fn responses_requires_successful_completion_before_releasing_any_calls() {
+async fn responses_requires_successful_completion_before_releasing_any_calls(engine: Engine) {
     for fixture in [
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
         "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n",
@@ -1352,25 +1373,22 @@ async fn responses_requires_successful_completion_before_releasing_any_calls() {
         "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"Read\",\"arguments\":\"{}\"},{\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"Read\",\"arguments\":\"{\"}]}}\n\n",
     ] {
         let url = fake_server(fixture).await;
-        let deltas = collect(OpenAiResponsesProvider::new(url, "test-key").stream(request()).await.unwrap()).await;
+        let deltas = match responses(engine, url).stream(request()).await {
+            Ok(rx) => collect(rx).await,
+            Err(error) if engine.is_rig() => { eprintln!("Rig rejected before display: {error:#}"); continue; }
+            Err(error) => panic!("native: {error:#}"),
+        };
         assert!(matches!(deltas.last(), Some(ChatDelta::Truncated(_))), "{deltas:?}");
         assert!(!deltas.iter().any(|delta| matches!(delta, ChatDelta::Done | ChatDelta::ToolCall(_))));
     }
 }
 
-#[tokio::test]
-async fn responses_transport_failure_is_truncated() {
+async fn responses_transport_failure_is_truncated(engine: Engine) {
     let url = truncating_server(
         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
     )
     .await;
-    let deltas = collect(
-        OpenAiResponsesProvider::new(url, "test-key")
-            .stream(request())
-            .await
-            .unwrap(),
-    )
-    .await;
+    let deltas = collect(responses(engine, url).stream(request()).await.unwrap()).await;
     assert!(matches!(deltas.last(), Some(ChatDelta::Truncated(_))));
     assert!(!deltas.iter().any(|delta| matches!(delta, ChatDelta::Done)));
 }
@@ -1545,6 +1563,11 @@ async fn llm_contract_rig_replays_a_stored_tool_round() {
 }
 
 on_every_engine!(
+    responses_streams_text_reasoning_and_usage_without_duplicate_done,
+    responses_encodes_history_images_tools_and_optional_settings,
+    responses_parallel_calls_replay_call_ids_and_encrypted_reasoning,
+    responses_requires_successful_completion_before_releasing_any_calls,
+    responses_transport_failure_is_truncated,
     llm_contract_anthropic_maps_text_and_thinking_deltas,
     llm_contract_anthropic_maps_streamed_tool_use_block,
     llm_contract_anthropic_serializes_system_and_tool_continuation_messages,
@@ -1902,4 +1925,251 @@ async fn llm_contract_rig_refuses_signature_loss_after_model_or_context_change()
         "{error:#}"
     );
     assert!(captures.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn responses_full_endpoints_preserve_queries_and_credentials() {
+    for &engine in ENGINES {
+        let captures = Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().fallback({
+            let captures = captures.clone();
+            move |request: axum::http::Request<Body>| {
+                let captures = captures.clone();
+                async move {
+                    captures
+                        .lock()
+                        .await
+                        .push((request.uri().to_string(), request.headers().clone()));
+                    (
+                        [
+                            (header::CONTENT_TYPE, "text/event-stream"),
+                            (header::CONNECTION, "close"),
+                        ],
+                        "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
+                    )
+                }
+            }
+        });
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for suffix in [
+            "/v1/?tenant=a&tag=b#fragment",
+            "/v1/responses/?tenant=a&tag=b#fragment",
+        ] {
+            let provider = configured_kind(
+                engine,
+                "openai-responses",
+                format!("http://{addr}{suffix}"),
+                &[("Authorization", "Bearer configured"), ("X-Team", "qunica")],
+            );
+            assert!(ends_with_done(
+                &collect(provider.stream(request()).await.unwrap()).await
+            ));
+        }
+        let captures = captures.lock().await;
+        for (path, headers) in &*captures {
+            assert_eq!(path, "/v1/responses?tenant=a&tag=b");
+            assert_eq!(
+                headers
+                    .get_all(header::AUTHORIZATION)
+                    .iter()
+                    .collect::<Vec<_>>(),
+                ["Bearer test-key"]
+            );
+            assert_eq!(headers["x-team"], "qunica");
+            assert_eq!(headers[header::USER_AGENT], "qunica-contract");
+        }
+    }
+}
+
+#[tokio::test]
+async fn responses_http_errors_preserve_bodies_and_classification() {
+    for &engine in ENGINES {
+        for (status, body) in [
+            (400, "{\"error\":{\"message\":\"context window exceeded\"}}"),
+            (429, "{\"error\":{\"message\":\"rate limit\"}}"),
+            (503, "{\"error\":{\"message\":\"unavailable\"}}"),
+        ] {
+            let (url, _) = status_server(status, body).await;
+            let error = responses(engine, url).stream(request()).await.unwrap_err();
+            let http = error
+                .downcast_ref::<ProviderHttpError>()
+                .unwrap_or_else(|| panic!("{error:#}"));
+            assert_eq!((http.status, http.body.as_str()), (status, body));
+            assert_eq!(http.is_context_overflow(), status == 400);
+            assert_eq!(http.is_transient(), status != 400);
+        }
+    }
+}
+
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn responses_persisted_rig_turn_replays_complete_ciphertext_without_calls() {
+    let (url, captures) = capture_server(RESPONSES_TEXT).await;
+    let provider = responses(Engine::Rig, url);
+    let deltas = collect(provider.stream(request()).await.unwrap()).await;
+    assert!(ends_with_done(&deltas));
+    let stored = stored_rig_message(&deltas);
+    let mut next = request();
+    next.messages.push(stored);
+    next.messages.push(ChatMessage::text("user", "continue"));
+    assert!(ends_with_done(
+        &collect(provider.stream(next.clone()).await.unwrap()).await
+    ));
+    let captured = captures.lock().await;
+    let reasoning: Vec<_> = captured[1]["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "reasoning")
+        .collect();
+    assert_eq!(
+        reasoning,
+        [
+            &json!({"type":"reasoning","id":"rs_text","encrypted_content":"opaque_text","summary":[{"type":"summary_text","text":"Checking"}]})
+        ]
+    );
+    drop(captured);
+    next.model = "another-model".into();
+    let error = provider.stream(next).await.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("signed provider history"),
+        "{error:#}"
+    );
+    assert_eq!(
+        captures.lock().await.len(),
+        2,
+        "a model switch must fail before I/O"
+    );
+}
+
+#[tokio::test]
+async fn responses_rejects_missing_call_identity_before_dispatch() {
+    for &engine in ENGINES {
+        for item in [
+            json!({"type":"function_call","name":"Read","arguments":"{}"}),
+            json!({"type":"function_call","call_id":"call_1","arguments":"{}"}),
+        ] {
+            let fixture = format!(
+                "data: {}\n\n",
+                json!({"type":"response.completed","response":{"output":[item]}})
+            );
+            let url = fake_server(Box::leak(fixture.into_boxed_str())).await;
+            match responses(engine, url).stream(request()).await {
+                Err(_) if engine.is_rig() => {}
+                Ok(rx) => {
+                    let deltas = collect(rx).await;
+                    assert!(tool_calls(&deltas).is_empty());
+                    assert!(
+                        matches!(deltas.last(), Some(ChatDelta::Truncated(_))),
+                        "{deltas:?}"
+                    );
+                    assert!(!ends_with_done(&deltas));
+                }
+                Err(error) => panic!("native: {error:#}"),
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn responses_failed_and_incomplete_terminals_keep_billed_usage() {
+    for &engine in ENGINES {
+        for kind in ["response.failed", "response.incomplete"] {
+            let fixture = format!(
+                "data: {}\n\n",
+                json!({"type":kind,"response":{"error":{"message":"failed"},"incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}})
+            );
+            let url = fake_server(Box::leak(fixture.into_boxed_str())).await;
+            let deltas = collect(responses(engine, url).stream(request()).await.unwrap()).await;
+            assert_eq!(
+                usages(&deltas),
+                [(Some(10), Some(2), Some(12))],
+                "{engine:?}: {deltas:?}"
+            );
+            assert!(tool_calls(&deltas).is_empty());
+            assert!(!ends_with_done(&deltas));
+            assert!(matches!(deltas.last(), Some(ChatDelta::Truncated(_))));
+        }
+    }
+}
+
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn responses_persisted_rig_batch_keeps_done_ciphertext_and_item_ids() {
+    let reasoning = json!({"type":"reasoning","id":"rs_batch","encrypted_content":"cipher-final","summary":[],"opaque_metadata":{"revision":7}});
+    let first = json!({"type":"function_call","id":"fc_first","call_id":"call_first","name":"Read","arguments":"{\"file_path\":\"a\"}"});
+    let second = json!({"type":"function_call","id":"fc_second","call_id":"call_second","name":"Read","arguments":"{\"file_path\":\"b\"}"});
+    let events = [
+        json!({"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_batch","encrypted_content":"cipher-partial","summary":[]}}),
+        json!({"type":"response.output_item.done","output_index":0,"item":reasoning}),
+        json!({"type":"response.output_item.done","output_index":2,"item":second}),
+        json!({"type":"response.output_item.done","output_index":1,"item":first}),
+        json!({"type":"response.completed","response":{"status":"completed"}}),
+    ];
+    let fixture: String = events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect();
+    let (url, captures) = capture_server(Box::leak(fixture.into_boxed_str())).await;
+    let provider = responses(Engine::Rig, url);
+    let deltas = collect(provider.stream(request()).await.unwrap()).await;
+    assert!(ends_with_done(&deltas), "{deltas:?}");
+    let stored = stored_rig_message(&deltas);
+    assert_eq!(
+        stored
+            .tool_calls
+            .iter()
+            .map(|call| call.id.as_str())
+            .collect::<Vec<_>>(),
+        ["call_first", "call_second"]
+    );
+    assert_eq!(
+        stored.tool_calls[0].provider_metadata.as_ref().unwrap()["openai_responses_reasoning"][0],
+        reasoning
+    );
+    let mut next = request();
+    next.tools = continuation_request().tools;
+    next.messages.push(stored);
+    next.messages
+        .push(ChatMessage::tool_result("call_first", "Read", "a"));
+    next.messages
+        .push(ChatMessage::tool_result("call_second", "Read", "b"));
+    assert!(ends_with_done(
+        &collect(provider.stream(next).await.unwrap()).await
+    ));
+    let captured = captures.lock().await;
+    let items = captured[1]["input"].as_array().unwrap();
+    assert_eq!(&items[1..4], &[reasoning, first, second]);
+    assert_eq!(items[4]["call_id"], "call_first");
+    assert_eq!(items[5]["call_id"], "call_second");
+    assert!(!serde_json::to_string(&items)
+        .unwrap()
+        .contains("cipher-partial"));
+}
+
+#[tokio::test]
+async fn responses_sampling_and_effort_levels_remain_exact() {
+    for &engine in ENGINES {
+        let (url, captures) = capture_server(RESPONSES_TEXT).await;
+        let provider = responses(engine, url);
+        for effort in ReasoningEffort::ALL {
+            let mut req = request();
+            req.reasoning_effort = Some(effort);
+            req.temperature = Some(0.125);
+            req.top_p = Some(0.875);
+            assert!(ends_with_done(
+                &collect(provider.stream(req).await.unwrap()).await
+            ));
+            let body = captures.lock().await.last().unwrap().clone();
+            assert_eq!(
+                body["reasoning"],
+                json!({"effort":effort.as_str(),"summary":"auto"})
+            );
+            assert_eq!(body["temperature"], 0.125);
+            assert_eq!(body["top_p"], 0.875);
+            assert_eq!(body["store"], false);
+        }
+    }
 }

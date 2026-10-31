@@ -50,6 +50,7 @@ pub(super) fn provider_history(
                     match protocol {
                         Protocol::Anthropic => import_anthropic(turn, message, &request.model)?,
                         Protocol::Gemini => import_gemini(turn, message, &request.model),
+                        Protocol::Responses => import_responses(turn, message, &request.model)?,
                         Protocol::OpenAi => {}
                     }
                 }
@@ -135,6 +136,75 @@ fn import_gemini(turn: &mut AssistantMessage, message: &ChatMessage, model: &str
         rig_core::providers::gemini::PROVIDER_NAME,
         model,
     ));
+}
+
+fn import_responses(
+    turn: &mut AssistantMessage,
+    message: &ChatMessage,
+    model: &str,
+) -> anyhow::Result<()> {
+    // Note: native history keeps the completed encrypted items on the first
+    // call. Import them before the call batch, without duplicating summaries.
+    let mut content = Vec::new();
+    for call in &message.tool_calls {
+        if let Some(items) = call
+            .provider_metadata
+            .as_ref()
+            .and_then(|value| value.get("openai_responses_reasoning"))
+        {
+            for item in items
+                .as_array()
+                .context("Responses reasoning metadata is not an array")?
+            {
+                if item["type"] != "reasoning" || !item["encrypted_content"].is_string() {
+                    bail!("Responses replay needs a complete encrypted reasoning item");
+                }
+                let text = item["summary"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<String>();
+                content.push(
+                    AssistantContent::Reasoning(Reasoning::new(text)).with_native(item.clone()),
+                );
+            }
+        }
+    }
+    let encrypted = !content.is_empty();
+    for block in turn
+        .content
+        .drain(..)
+        .filter(|block| !matches!(block, AssistantContent::Reasoning(_)))
+    {
+        let item = if encrypted {
+            match &block {
+                AssistantContent::ToolCall(call) => Some(json!({
+                    "type": "function_call", "call_id": call.id.wire(),
+                    "name": call.function.name, "arguments": call.function.raw_arguments()
+                })),
+                AssistantContent::Text(text) => Some(json!({
+                    "type": "message", "role": "assistant", "content": text.text
+                })),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        // Rig requires encrypted reasoning's following item to remain native.
+        // These are the same neutral call/text items the native provider sends.
+        content.push(match item {
+            Some(item) => block.with_native(item),
+            None => block,
+        });
+    }
+    turn.content = content;
+    turn.origin = Some(Origin::new(
+        Api::from_static("openai.responses"),
+        "openai-responses",
+        model,
+    ));
+    Ok(())
 }
 
 fn anthropic_block(item: &Value) -> anyhow::Result<AssistantContent> {
@@ -387,6 +457,19 @@ fn project(turn: &AssistantMessage) -> ChatMessage {
                     .map(|signature| json!({"thoughtSignature": signature})),
             }),
             _ => {}
+        }
+    }
+    let responses_reasoning: Vec<_> = turn
+        .content
+        .iter()
+        .filter_map(AssistantContent::native_item)
+        .filter(|item| item["type"] == "reasoning" && item["encrypted_content"].is_string())
+        .cloned()
+        .collect();
+    if !responses_reasoning.is_empty() {
+        if let Some(call) = calls.first_mut() {
+            let metadata = call.provider_metadata.get_or_insert_with(|| json!({}));
+            metadata["openai_responses_reasoning"] = json!(responses_reasoning);
         }
     }
     let signature = turn

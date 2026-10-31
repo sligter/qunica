@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use rig_core::completion::{AssistantContent, CompletionRequest, CompletionResponse, FinishReason};
 use rig_core::http_client::{Bytes, DynHttpClient, Exchange, HeaderMap, HttpMiddleware};
-use rig_core::message::{ToolCall as RigToolCall, ToolName};
+use rig_core::message::ToolName;
 use rig_core::operation::Completion;
 use rig_core::providers::anthropic::AnthropicConfig;
 use rig_core::providers::gemini::GeminiConfig;
@@ -37,6 +37,7 @@ pub struct RigProvider {
 
 enum Client {
     OpenAi(Box<OpenAIConfig>),
+    Responses(Box<OpenAIConfig>),
     Anthropic(AnthropicConfig),
     Gemini(GeminiConfig),
 }
@@ -44,11 +45,42 @@ enum Client {
 #[derive(Clone, Copy)]
 enum Protocol {
     OpenAi,
+    Responses,
     Anthropic,
     Gemini,
 }
 
 impl RigProvider {
+    pub fn openai_responses(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+    ) -> anyhow::Result<Self> {
+        Self::responses_with_http(
+            base_url.into(),
+            api_key.into(),
+            transport(&Default::default(), None)?,
+        )
+    }
+
+    fn responses_with_http(
+        base_url: String,
+        api_key: String,
+        http: DynHttpClient,
+    ) -> anyhow::Result<Self> {
+        let endpoint = super::openai_responses::endpoint(&base_url)?;
+        let mut dialect = gateway();
+        dialect.name = "openai-responses";
+        // Note: resolving the entire URL once preserves tenant queries and
+        // avoids appending a second /responses to a configured full endpoint.
+        dialect.quirks.responses.path = "";
+        let config = OpenAIConfig::with_key(&dialect, api_key)
+            .with_base_url(endpoint.to_string())
+            .with_system_instructions_as_messages();
+        Ok(Self {
+            client: Client::Responses(Box::new(config)),
+            http,
+        })
+    }
     /// An OpenAI-compatible `/chat/completions` endpoint at `base_url`, the
     /// counterpart of [`super::OpenAiCompatibleProvider::new`].
     pub fn openai_compatible(
@@ -123,6 +155,9 @@ impl RigProvider {
         }
         match &self.client {
             Client::OpenAi(config) => config.as_ref().clone().connect(http).chat(name).into(),
+            Client::Responses(config) => {
+                config.as_ref().clone().connect(http).responses(name).into()
+            }
             Client::Anthropic(config) => config.clone().connect(http).completion(name).into(),
             Client::Gemini(config) => config.clone().connect(http).completion(name).into(),
         }
@@ -131,6 +166,7 @@ impl RigProvider {
     fn protocol(&self) -> Protocol {
         match &self.client {
             Client::OpenAi(_) => Protocol::OpenAi,
+            Client::Responses(_) => Protocol::Responses,
             Client::Anthropic(_) => Protocol::Anthropic,
             Client::Gemini(_) => Protocol::Gemini,
         }
@@ -142,6 +178,11 @@ pub fn build_rig_provider(cfg: &ProviderConfig) -> anyhow::Result<Box<dyn LlmPro
     let http = transport(&cfg.headers, cfg.user_agent.as_deref())?;
     let base_url = cfg.base_url.clone().unwrap_or_default();
     match cfg.kind.as_str() {
+        "openai-responses" => Ok(Box::new(RigProvider::responses_with_http(
+            base_url,
+            cfg.api_key.clone(),
+            http,
+        )?)),
         "openai-compatible" | "openai_compatible" | "openai" | "deepseek" | "vllm"
         | "openrouter" => Ok(Box::new(RigProvider::with_http(
             base_url,
@@ -234,6 +275,9 @@ impl SignedReplay {
                 item.get("signature").is_some() || item["type"] == "redacted_thinking"
             }
             Protocol::Gemini => item.get("thoughtSignature").is_some(),
+            Protocol::Responses => {
+                item["type"] == "reasoning" && item.get("encrypted_content").is_some()
+            }
             Protocol::OpenAi => false,
         }
     }
@@ -261,13 +305,20 @@ impl HttpMiddleware for SignedReplay {
             let (messages, parts) = match self.protocol {
                 Protocol::Anthropic => ("messages", "content"),
                 Protocol::Gemini => ("contents", "parts"),
+                Protocol::Responses => ("input", ""),
                 Protocol::OpenAi => return Ok(body),
             };
             let sent: Vec<_> = value[messages]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .flat_map(|message| message[parts].as_array().into_iter().flatten())
+                .flat_map(|message| {
+                    if parts.is_empty() {
+                        vec![message]
+                    } else {
+                        message[parts].as_array().into_iter().flatten().collect()
+                    }
+                })
                 .filter(|item| Self::signed(item, self.protocol))
                 .cloned()
                 .map(Self::comparable)
@@ -373,6 +424,7 @@ fn completion_request(
                         request.reasoning_effort.is_some() && block.native_item().is_some()
                     }
                     Protocol::Gemini => true,
+                    Protocol::Responses => block.native_item().is_some(),
                 },
                 _ => true,
             });
@@ -392,6 +444,19 @@ fn completion_request(
     // The level as chosen, as the native path sends it: Rig's mapping would
     // round levels the catalog does not list for an unknown model.
     match protocol {
+        Protocol::Responses => {
+            extra.insert("store".into(), json!(false));
+            extra.insert("include".into(), json!(["reasoning.encrypted_content"]));
+            if let Some(top_p) = request.top_p {
+                extra.insert("top_p".into(), json!(top_p));
+            }
+            if let Some(effort) = request.reasoning_effort {
+                extra.insert(
+                    "reasoning".into(),
+                    json!({"effort": effort.as_str(), "summary": "auto"}),
+                );
+            }
+        }
         Protocol::OpenAi => {
             if let Some(top_p) = request.top_p {
                 extra.insert("top_p".into(), json!(top_p));
@@ -458,12 +523,20 @@ impl LlmProvider for RigProvider {
         // makes an HTTP failure an `Err` from `stream`, where the runtime
         // classifies it (context overflow, passback retry, transient).
         let first = match stream.next().await {
+            Some(Err(error))
+                if matches!(self.protocol(), Protocol::Responses)
+                    && error.provider_response().is_some()
+                    && http_failure(&error).is_none() =>
+            {
+                Some(Err(error))
+            }
             Some(Err(error)) => return Err(into_anyhow(error)),
             first => first,
         };
         let (tx, rx) = mpsc::channel(64);
+        let protocol = self.protocol();
         tokio::spawn(async move {
-            relay(stream, first, tx).await;
+            relay(stream, first, tx, protocol).await;
         });
         Ok(rx)
     }
@@ -472,8 +545,12 @@ impl LlmProvider for RigProvider {
 type RigStream = rig_core::streaming::Streamed<Completion>;
 type RigItem = Option<Result<Item<StreamEvent>, ProviderError>>;
 
-async fn relay(mut stream: RigStream, mut item: RigItem, tx: Sender<ChatDelta>) {
-    let mut calls: Vec<RigToolCall> = Vec::new();
+async fn relay(
+    mut stream: RigStream,
+    mut item: RigItem,
+    tx: Sender<ChatDelta>,
+    protocol: Protocol,
+) {
     loop {
         let delta = match item {
             None => break,
@@ -483,16 +560,9 @@ async fn relay(mut stream: RigStream, mut item: RigItem, tx: Sender<ChatDelta>) 
             Some(Ok(Item::Event(StreamEvent::Reasoning { text, .. }))) if !text.is_empty() => {
                 Some(ChatDelta::Reasoning(text))
             }
-            Some(Ok(Item::Event(StreamEvent::End {
-                content: AssistantContent::ToolCall(call),
-                ..
-            }))) => {
-                calls.push(call);
-                None
-            }
             Some(Ok(_)) => None,
             Some(Err(error)) => {
-                let _ = tx.send(ChatDelta::Truncated(stream_failure(&error))).await;
+                relay_failure(&tx, &error, protocol).await;
                 return;
             }
         };
@@ -506,36 +576,70 @@ async fn relay(mut stream: RigStream, mut item: RigItem, tx: Sender<ChatDelta>) 
     let response = match stream.finish().await {
         Ok(response) => response,
         Err(error) => {
-            let _ = tx.send(ChatDelta::Truncated(stream_failure(&error))).await;
+            relay_failure(&tx, &error, protocol).await;
             return;
         }
     };
-    for delta in closing_deltas(&response, calls) {
+    for delta in closing_deltas(&response, protocol) {
         if tx.send(delta).await.is_err() {
             return;
         }
     }
 }
 
+async fn relay_failure(tx: &Sender<ChatDelta>, error: &ProviderError, protocol: Protocol) {
+    // A failed Responses terminal can still be billed. Its complete error
+    // envelope is available even when Rig declines to build a model turn.
+    if matches!(protocol, Protocol::Responses) {
+        let payload = error
+            .provider_response()
+            .and_then(|response| serde_json::from_str::<Value>(&response.body).ok());
+        if let Some(usage) = payload
+            .as_ref()
+            .and_then(|value| value.pointer("/response/usage"))
+            .filter(|value| value.is_object())
+        {
+            let _ = tx
+                .send(ChatDelta::Usage(ContextUsage {
+                    input_tokens: usage["input_tokens"].as_i64(),
+                    cached_input_tokens: usage["input_tokens_details"]["cached_tokens"].as_i64(),
+                    output_tokens: usage["output_tokens"].as_i64(),
+                    total_tokens: usage["total_tokens"].as_i64(),
+                    ..ContextUsage::default()
+                }))
+                .await;
+        }
+    }
+    let _ = tx.send(ChatDelta::Truncated(stream_failure(error))).await;
+}
+
 /// Tool calls, usage and the stored turn, then `Done`.
-fn closing_deltas(response: &CompletionResponse, calls: Vec<RigToolCall>) -> Vec<ChatDelta> {
+fn closing_deltas(response: &CompletionResponse, protocol: Protocol) -> Vec<ChatDelta> {
     let mut out = Vec::new();
-    let invalid_calls = calls
-        .iter()
-        .any(|call| call.function.invalid_arguments.is_some());
+    let turn = match response.message() {
+        Some(rig_core::completion::Message::Assistant(turn)) => Some(turn),
+        _ => None,
+    };
+    let invalid_calls = turn.as_ref().is_some_and(|turn| turn.content.iter().any(|block|
+        matches!(block, AssistantContent::ToolCall(call) if call.function.invalid_arguments.is_some())))
+        || (matches!(protocol, Protocol::Responses) && !responses_calls_valid(response));
+    let successful = matches!(
+        response.finish_reason(),
+        Some(FinishReason::Stop | FinishReason::ToolCalls)
+    );
+    let projected = turn.as_ref().map(RigMessageAdapter::assistant_from_rig);
     // As on the native path: only a turn that finished cleanly may run its
     // calls. A cut-off turn's argument JSON is incomplete.
-    if !invalid_calls
-        && matches!(
-            response.finish_reason(),
-            Some(FinishReason::Stop | FinishReason::ToolCalls)
-        )
-    {
-        let turn = rig_core::completion::AssistantMessage::new(
-            calls.into_iter().map(AssistantContent::ToolCall).collect(),
-        );
-        let projected = RigMessageAdapter::assistant_from_rig(&turn);
-        out.extend(projected.tool_calls.into_iter().map(ChatDelta::ToolCall));
+    if !invalid_calls && successful {
+        if let Some(projected) = &projected {
+            out.extend(
+                projected
+                    .tool_calls
+                    .iter()
+                    .cloned()
+                    .map(ChatDelta::ToolCall),
+            );
+        }
     }
     let usage = &response.usage;
     let tokens = |value: Option<u64>| value.and_then(|value| i64::try_from(value).ok());
@@ -557,8 +661,13 @@ fn closing_deltas(response: &CompletionResponse, calls: Vec<RigToolCall>) -> Vec
         ));
         return out;
     }
-    if let Some(rig_core::completion::Message::Assistant(turn)) = response.message() {
-        let projected = RigMessageAdapter::assistant_from_rig(&turn);
+    if matches!(protocol, Protocol::Responses) && !successful {
+        out.push(ChatDelta::Truncated(
+            "Responses completion was incomplete.".into(),
+        ));
+        return out;
+    }
+    if let Some(projected) = projected {
         if let Some(signature) = projected.reasoning_signature {
             out.push(ChatDelta::ReasoningSignature(signature));
         }
@@ -568,6 +677,37 @@ fn closing_deltas(response: &CompletionResponse, calls: Vec<RigToolCall>) -> Vec
     }
     out.push(ChatDelta::Done);
     out
+}
+
+/// Note: Rig can repair missing ids or omit nameless calls. A repaired call
+/// is not the provider's original action, so reject the entire batch.
+fn responses_calls_valid(response: &CompletionResponse) -> bool {
+    let raw: Vec<_> = response.raw["output"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|item| item["type"] == "function_call")
+        .collect();
+    let calls: Vec<_> = response.tool_calls().collect();
+    let mut ids = std::collections::BTreeSet::new();
+    raw.len() == calls.len()
+        && response.unfinished_calls().next().is_none()
+        && raw.iter().zip(calls).all(|(item, call)| {
+            let Some(id) = item["call_id"].as_str().filter(|id| !id.is_empty()) else {
+                return false;
+            };
+            let Some(name) = item["name"].as_str().filter(|name| !name.is_empty()) else {
+                return false;
+            };
+            let args = item["arguments"]
+                .as_str()
+                .and_then(|args| serde_json::from_str::<Value>(args).ok());
+            ids.insert(id)
+                && call.id.wire() == id
+                && call.function.name.as_str() == name
+                && args
+                    .is_some_and(|args| args.is_object() && args == call.function.arguments_value())
+        })
 }
 
 /// The provider's rejection, with its body, when there was one.
