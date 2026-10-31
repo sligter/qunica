@@ -88,7 +88,7 @@ pub fn verify_github(
     mac.verify_slice(&digest).map_err(|_| unauthorized())?;
     let payload: Value = serde_json::from_slice(body)
         .map_err(|_| ApiError::invalid_input("GitHub webhook body must be JSON"))?;
-    let canonical = serde_json::to_vec(&payload)
+    let canonical = crate::canonical_json::to_vec(&payload)
         .map_err(|_| ApiError::invalid_input("invalid GitHub payload"))?;
     Ok(VerifiedGithub {
         event: event.to_string(),
@@ -151,7 +151,7 @@ pub fn verify(
     }
     // Note: an unsigned event-id header lets a captured valid request create
     // fresh dedup keys. Identity comes only from this authenticated JSON body.
-    let canonical = serde_json::to_vec(
+    let canonical = crate::canonical_json::to_vec(
         &serde_json::json!({"event_id":envelope.event_id,"payload":envelope.payload}),
     )
     .map_err(|_| ApiError::invalid_input("invalid webhook payload"))?;
@@ -356,5 +356,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(first.payload_hash, second.payload_hash);
+    }
+
+    #[test]
+    fn generic_webhook_digest_sorts_nested_payload_objects() {
+        let first = br#"{"event_id":"delivery-1","payload":{"z":{"b":2,"a":1},"a":[3,2]}}"#;
+        let second = br#"{"payload":{"a":[3,2],"z":{"a":1,"b":2}},"event_id":"delivery-1"}"#;
+        let a = verify(SECRET, TIME, &sign(first), first, 1_700_000_000).unwrap();
+        let b = verify(SECRET, TIME, &sign(second), second, 1_700_000_000).unwrap();
+        assert_eq!(a.payload_hash, b.payload_hash);
+        let sorted = br#"{"event_id":"delivery-1","payload":{"a":[3,2],"z":{"a":1,"b":2}}}"#;
+        assert_eq!(a.payload_hash, format!("{:x}", Sha256::digest(sorted)));
     }
 }

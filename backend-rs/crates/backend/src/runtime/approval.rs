@@ -32,7 +32,10 @@ use uuid::Uuid;
 use crate::tools::{ApprovalDecision, ApprovalGrants, ApprovalRequest};
 
 pub fn action_hash(action: &Value) -> String {
-    format!("{:x}", Sha256::digest(serde_json::to_vec(action).unwrap()))
+    format!(
+        "{:x}",
+        Sha256::digest(crate::canonical_json::to_vec(action).unwrap())
+    )
 }
 
 /// Checkpoint and approval question share the caller's write transaction.
@@ -197,6 +200,20 @@ pub fn declined_result(request: &ApprovalRequest, note: Option<&str>) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_digest_keeps_legacy_sorted_identity() {
+        let action: Value = serde_json::from_str(
+            r#"{"name":"Bash","id":"call-1","args":{"cwd":"repo","command":"echo safe"}}"#,
+        )
+        .unwrap();
+        let sorted =
+            br#"{"args":{"command":"echo safe","cwd":"repo"},"id":"call-1","name":"Bash"}"#;
+        assert_eq!(
+            action_hash(&action),
+            format!("{:x}", Sha256::digest(sorted))
+        );
+    }
 
     fn request() -> ApprovalRequest {
         ApprovalRequest {

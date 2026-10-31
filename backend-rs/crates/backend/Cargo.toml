@@ -1,8 +1,14 @@
 [package]
 name = "qunica-backend"
 edition.workspace = true
+rust-version.workspace = true
 version.workspace = true
 license.workspace = true
+
+[features]
+default = []
+# Note: compile the PoC explicitly without enabling an unfinished runtime in releases.
+rig-engine = ["dep:rig-core", "dep:rig-agent", "dep:rig-reqwest", "dep:reqwest_013"]
 
 [dependencies]
 qunica-domain = { path = "../domain" }
@@ -24,6 +30,11 @@ jsonwebtoken = "9"
 portable-pty = "0.9.0"
 regex = "1"
 reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+# Keep native clients on 0.12; the Rig adapter owns its separate transport.
+reqwest_013 = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "stream", "multipart", "native-tls"], optional = true }
+rig-core = { version = "=0.45.0", default-features = false, features = ["image"], optional = true }
+rig-agent = { version = "=0.45.0", default-features = false, features = ["image"], optional = true }
+rig-reqwest = { version = "=0.45.0", default-features = false, features = ["native-tls"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
@@ -58,3 +69,7 @@ libc = "0.2"
 qunica-computer-supervisor = { path = "../computer-supervisor" }
 tokio-tungstenite = "0.24"
 tower = { version = "0.5", features = ["util"] }
+
+[[test]]
+name = "rig_dependencies"
+required-features = ["rig-engine"]

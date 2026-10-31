@@ -136,15 +136,7 @@ pub async fn accept(
     {
         return Err(ApiError::invalid_input("unsupported command"));
     }
-    let digest = format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json::to_vec(
-                &json!({"name":command.name,"target":command.target,"payload":command.payload})
-            )
-            .unwrap()
-        )
-    );
+    let digest = payload_hash(&command);
     // Read before preflight so tombstones still resolve after resource removal.
     if let Some(response) = receipt(state, owner, &command.request_id, &digest).await? {
         return Ok(response);
@@ -157,6 +149,18 @@ pub async fn accept(
         }
         _ => accept_resume(state, owner, &command, &digest).await,
     }
+}
+
+pub(crate) fn payload_hash(command: &Command) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(
+            crate::canonical_json::to_vec(
+                &json!({"name":command.name,"target":command.target,"payload":command.payload})
+            )
+            .unwrap()
+        )
+    )
 }
 
 async fn receipt(
@@ -1184,6 +1188,25 @@ async fn ensure_computer_effects_settled(
 #[cfg(test)]
 mod claim_tests {
     use super::{claim_next, AppState};
+
+    #[test]
+    fn command_digest_keeps_legacy_receipt_identity() {
+        use sha2::Digest;
+
+        let command: super::Command = serde_json::from_str(
+            r#"{"request_id":"unused","name":"turn.cancel","target":{"turn_id":"turn-1","extra":{"z":2,"a":1}},"payload":{"z":2,"a":1}}"#,
+        )
+        .unwrap();
+        let sorted = br#"{"name":"turn.cancel","payload":{"a":1,"z":2},"target":{"extra":{"a":1,"z":2},"turn_id":"turn-1"}}"#;
+        let legacy_digest = format!("{:x}", sha2::Sha256::digest(sorted));
+        let actual = super::payload_hash(&command);
+        assert_eq!(actual, legacy_digest);
+        assert_eq!(
+            super::decode_receipt(&legacy_digest, r#"{"job_id":"job-1"}"#, &actual).unwrap()
+                ["job_id"],
+            "job-1"
+        );
+    }
 
     const NOW: &str = "2026-10-18T12:00:00Z";
 

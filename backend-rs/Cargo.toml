@@ -8,5 +8,6 @@ members = [
 
 [workspace.package]
 edition = "2021"
+rust-version = "1.97.1"
 license = "UNLICENSED"
 version = "0.1.7"

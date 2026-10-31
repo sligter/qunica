@@ -141,7 +141,7 @@ Docker / Supervisor 仅用于可选的受控电脑功能。切换本地实例不
 
 ## 从源码运行
 
-前置条件：Node.js 20+、pnpm 9 与稳定版 Rust 工具链。桌面构建支持 Windows、macOS 与 Linux。
+前置条件：Node.js 20+、pnpm 9 与 Rust 1.97.1（`rust-toolchain.toml` 固定版本，由 rustup 自动安装）。桌面构建支持 Windows、macOS 与 Linux。
 
 ```powershell
 pnpm install
@@ -201,6 +201,8 @@ pnpm lint
 pnpm --filter @qunica/frontend test
 cargo test --manifest-path backend-rs/Cargo.toml --workspace
 ```
+
+可选 Rig PoC 构建与验收边界见 [RIG_MIGRATION.md](RIG_MIGRATION.md)。默认执行引擎仍为 native。
 
 ## 社区
 

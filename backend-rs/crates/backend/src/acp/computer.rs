@@ -85,8 +85,7 @@ pub async fn run(
                 let context=format!("{}:{}:{}",request.context_hash.as_deref().unwrap_or(""),grants.as_ref().unwrap().model_name,computer.workspace_path());
                 let old:Option<String>=sqlx::query_scalar("SELECT session_id FROM computer_acp_sessions WHERE computer_id=? AND agent_id=? AND thread_id=? AND context_hash=?").bind(&computer.id).bind(&request.agent_id).bind(&request.thread_id).bind(&context).fetch_optional(&pool).await.unwrap_or(None);
                 let reused=init["agentCapabilities"]["loadSession"]==true && old.is_some();
-                let session=if init["agentCapabilities"]["loadSession"]==true && old.is_some() {
-                    let old=old.unwrap();
+                let session=if let (true,Some(old))=(init["agentCapabilities"]["loadSession"]==true,old) {
                     conn.request(METHOD_SESSION_LOAD,json!({"sessionId":old,"cwd":computer.workspace_path(),"mcpServers":[]})).await.map_err(|_|"Computer ACP saved session could not be loaded")?;
                     old
                 } else {

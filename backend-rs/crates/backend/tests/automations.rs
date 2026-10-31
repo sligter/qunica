@@ -483,8 +483,16 @@ async fn github_delivery_uses_native_signature_and_normalized_payload_dedup() {
 
     // The delivery header is unsigned. Reusing the same signed payload under a
     // new id must not create a second task.
-    let (status, replay) =
-        github_webhook(&app, &hook, "push", "delivery-changed", &signature, body).await;
+    let reordered = br#"{"after":"abc","ref":"refs/heads/main"}"#;
+    let (status, replay) = github_webhook(
+        &app,
+        &hook,
+        "push",
+        "delivery-changed",
+        &sign_github(&secret, reordered),
+        reordered,
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{replay}");
     assert_eq!(replay["job_id"], first["job_id"]);
     let occurrences: i64 =
