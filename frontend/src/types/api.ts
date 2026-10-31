@@ -235,7 +235,7 @@ export type AcpRuntimeVersionStatus =
   | 'local_only'
 
 export interface AcpRuntimeVersionRead {
-  id: AcpRuntimePresetRead['id']
+  id: AcpRuntimePresetRead['id'] | 'codex-cli'
   package_name: string
   default_package_spec: string
   installed: boolean

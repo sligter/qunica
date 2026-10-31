@@ -57,7 +57,7 @@ pub async fn status(
     current_user_id(&headers, &state).await?;
     let env = runtime_env(body)?;
     timeout(SETUP_TIMEOUT, async {
-        let mut server = AccountServer::start(&env)?;
+        let mut server = AccountServer::start(&env).await?;
         server.initialize().await?;
         let account = server
             .request(2, "account/read", json!({"refreshToken":false}))
@@ -75,20 +75,8 @@ pub async fn login(
 ) -> Result<Sse<BoxStream<'static, Result<Event, Infallible>>>, ApiError> {
     current_user_id(&headers, &state).await?;
     let env = runtime_env(body)?;
-    // Note: Codex profiles share the backend user's credential store. Serialize
-    // login attempts without stopping ACP sessions.
-    static LOGIN_SLOT: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    let permit = LOGIN_SLOT
-        .get_or_init(|| Arc::new(Semaphore::new(1)))
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| {
-            ApiError::conflict(
-                "A Codex login is already in progress. Cancel it before starting another.",
-            )
-        })?;
     let login = timeout(SETUP_TIMEOUT, async {
-        let mut server = AccountServer::start(&env)?;
+        let mut server = AccountServer::start(&env).await?;
         server.initialize().await?;
         let response = server
             .request(
@@ -103,7 +91,6 @@ pub async fn login(
             login_id,
             device: Some(device),
             deadline: Instant::now() + LOGIN_TIMEOUT,
-            _permit: permit,
         })
     })
     .await
@@ -187,12 +174,51 @@ fn login_error(code: &'static str) -> ApiError {
     ApiError::new(StatusCode::BAD_GATEWAY, code, "Unable to complete Codex sign-in. Check that the Codex CLI is current and device code login is enabled for your account.")
 }
 
+// Note: do not replace the account CLI while its temporary login process is
+// running. This guard never shuts down ACP adapters or other agent sessions.
+pub(super) fn operation_guard() -> Result<OwnedSemaphorePermit, ApiError> {
+    static SLOT: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    SLOT.get_or_init(|| Arc::new(Semaphore::new(1))).clone()
+        .try_acquire_owned().map_err(|_| ApiError::conflict(
+            "Codex installation or sign-in is already in progress. Wait for it to finish or cancel the sign-in first.",
+        ))
+}
+
+pub(super) async fn codex_command() -> Option<std::path::PathBuf> {
+    if let Some(command) = super::find_command_on_path("codex") {
+        return Some(command);
+    }
+    // npm may install into a prefix absent from this already-running backend's
+    // PATH. Resolve its shim directly instead of requiring an application restart.
+    let npm = super::npm_command()?;
+    let prefix = super::run_command(&npm, &["prefix", "--global"], super::ACP_VERSION_TIMEOUT)
+        .await
+        .ok()?;
+    command_from_npm_prefix(prefix.trim())
+}
+
+fn command_from_npm_prefix(prefix: &str) -> Option<std::path::PathBuf> {
+    let prefix = std::path::Path::new(prefix);
+    if !prefix.is_absolute() {
+        return None;
+    }
+    let directory = if cfg!(windows) {
+        prefix.to_path_buf()
+    } else {
+        prefix.join("bin")
+    };
+    super::find_command_on_path_with_env(
+        "codex",
+        std::env::join_paths([directory]).ok(),
+        std::env::var_os("PATHEXT"),
+    )
+}
+
 struct DeviceLogin {
     server: AccountServer,
     login_id: String,
     device: Option<Value>,
     deadline: Instant,
-    _permit: OwnedSemaphorePermit,
 }
 
 impl DeviceLogin {
@@ -220,13 +246,15 @@ struct AccountServer {
     stdout: BufReader<ChildStdout>,
     stderr: JoinHandle<()>,
     home: Option<tempfile::TempDir>,
+    permit: Option<OwnedSemaphorePermit>,
 }
 
 impl AccountServer {
     // Note: Device codes and login completion belong to Codex's account protocol,
     // not ACP session updates. See docs/guide/external-cli-agents.md#codex-sign-in.
-    fn start(runtime_env: &BTreeMap<String, String>) -> Result<Self, ApiError> {
-        let command = super::find_command_on_path("codex").ok_or_else(|| {
+    async fn start(runtime_env: &BTreeMap<String, String>) -> Result<Self, ApiError> {
+        let permit = operation_guard()?;
+        let command = codex_command().await.ok_or_else(|| {
             ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "codex_cli_missing",
@@ -237,7 +265,9 @@ impl AccountServer {
         let (command, args) = super::windows_batch_command(&command, &["app-server"]);
         let mut process = std::process::Command::new(command);
         process.args(args);
-        Self::spawn(process, runtime_env)
+        let mut server = Self::spawn(process, runtime_env)?;
+        server.permit = Some(permit);
+        Ok(server)
     }
 
     fn spawn(
@@ -281,6 +311,7 @@ impl AccountServer {
             stdout,
             stderr,
             home: Some(home),
+            permit: None,
         })
     }
 
@@ -353,10 +384,12 @@ impl Drop for AccountServer {
         if let Some(mut child) = self.child.take() {
             let _ = child.start_kill();
             let home = self.home.take();
+            let permit = self.permit.take();
             // Keep the temporary cwd until the process has exited (also on Windows).
             tokio::spawn(async move {
                 let _ = timeout(Duration::from_secs(5), child.wait()).await;
                 drop(home);
+                drop(permit);
             });
         }
     }
@@ -468,13 +501,11 @@ mod tests {
             device,
             json!({"type":"device_code","verification_url":"https://auth.openai.com/codex/device","user_code":"TEST-1234"})
         );
-        let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
         let mut login = DeviceLogin {
             server,
             login_id,
             device: None,
             deadline: Instant::now() + Duration::from_secs(5),
-            _permit: permit,
         };
         timeout(Duration::from_secs(5), login.completed())
             .await
@@ -501,6 +532,9 @@ mod tests {
     #[tokio::test]
     async fn cancelling_a_pending_login_reaps_the_process_before_removing_its_cwd() {
         let mut server = fixture("pending");
+        let slot = Arc::new(Semaphore::new(1));
+        server.permit = Some(slot.clone().try_acquire_owned().unwrap());
+        assert!(slot.clone().try_acquire_owned().is_err());
         server.initialize().await.unwrap();
         server
             .request(
@@ -513,12 +547,44 @@ mod tests {
         let cwd = server.home.as_ref().unwrap().path().to_path_buf();
         drop(server);
         timeout(Duration::from_secs(5), async {
-            while cwd.exists() {
+            while cwd.exists() || slot.available_permits() == 0 {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
         .await
         .unwrap();
+    }
+
+    #[test]
+    fn resolves_a_global_prefix_with_spaces_without_using_the_current_directory() {
+        let prefix = tempfile::Builder::new()
+            .prefix("qunica codex ")
+            .tempdir()
+            .unwrap();
+        let bin = if cfg!(windows) {
+            prefix.path().to_path_buf()
+        } else {
+            prefix.path().join("bin")
+        };
+        std::fs::create_dir_all(&bin).unwrap();
+        let command = bin.join(if cfg!(windows) { "codex.cmd" } else { "codex" });
+        std::fs::write(&command, "test shim").unwrap();
+        assert_eq!(
+            command_from_npm_prefix(prefix.path().to_str().unwrap()),
+            Some(command)
+        );
+        assert!(command_from_npm_prefix("relative-prefix").is_none());
+        assert!(command_from_npm_prefix("").is_none());
+    }
+
+    #[tokio::test]
+    async fn installation_guard_rejects_account_processes_before_starting_them() {
+        let permit = operation_guard().unwrap();
+        let result = AccountServer::start(&BTreeMap::new()).await;
+        assert!(matches!(result, Err(ref error) if error.code() == "conflict"));
+        assert!(operation_guard().is_err());
+        drop(permit);
+        assert!(operation_guard().is_ok());
     }
 
     #[test]
@@ -557,13 +623,25 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v2/agents/acp-runtime-versions/codex-cli/install")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     #[ignore = "Read-only check against an installed Codex CLI; never starts login"]
     async fn installed_codex_status_smoke() {
         let status = timeout(SETUP_TIMEOUT, async {
-            let mut server = AccountServer::start(&BTreeMap::new()).unwrap();
+            let mut server = AccountServer::start(&BTreeMap::new()).await.unwrap();
             server.initialize().await.unwrap();
             let account = server
                 .request(2, "account/read", json!({"refreshToken":false}))

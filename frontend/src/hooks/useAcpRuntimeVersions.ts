@@ -4,7 +4,7 @@ import { fetchJson } from '@/lib/api-v2/client'
 import { useAuthStore } from '@/stores/authStore'
 import type {
   AcpRuntimeInstallResponse,
-  AcpRuntimePresetRead,
+  AcpRuntimeVersionRead,
   AcpRuntimeVersionListResponse,
 } from '@/types/api'
 
@@ -29,7 +29,7 @@ export function useInstallAcpRuntimeVersion() {
       presetId,
       packageSpec,
     }: {
-      presetId: AcpRuntimePresetRead['id']
+      presetId: AcpRuntimeVersionRead['id']
       packageSpec?: string
     }) =>
       fetchJson<AcpRuntimeInstallResponse>(

@@ -211,7 +211,17 @@ export function ExternalRuntimeFields({
       </div>
 
       {selectedProfile === 'codex' && (
-        <CodexLoginPanel envText={envText} onAuthenticated={onRefreshCapabilities} />
+        <CodexLoginPanel
+          envText={envText}
+          onAuthenticated={onRefreshCapabilities}
+          cli={runtimeVersions.data?.presets.find((status) => status.id === 'codex-cli')}
+          versionsLoading={runtimeVersions.isFetching}
+          onCliDetected={() => { void runtimeVersions.refetch() }}
+          installBlocked={installRuntime.isPending}
+          onInstallCli={async () => {
+            await installRuntime.mutateAsync({ presetId: 'codex-cli' })
+          }}
+        />
       )}
 
       {missingPresets.length > 0 && (
@@ -230,7 +240,7 @@ export function ExternalRuntimeFields({
       {selectedPreset && (
         <details className="rounded-md border border-border bg-background" open>
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium marker:content-none">
-            <span>{t('agents:runtime.versionStatus')}</span>
+            <span>{t(selectedProfile === 'codex' ? 'agents:codexLogin.adapterVersion' : 'agents:runtime.versionStatus')}</span>
             {runtimeVersions.isFetching ? (
               <LoaderCircle className="h-4 w-4 animate-spin text-muted-foreground" />
             ) : versionStatus?.status === 'current' || versionStatus?.externally_managed ? (

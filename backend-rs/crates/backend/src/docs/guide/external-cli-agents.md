@@ -19,9 +19,37 @@ Qunica detects and launches these CLIs. The runtime version panel can install a 
 
 In an Agent's create or edit form, choose **ACP → Codex**, then **Sign in with ChatGPT**. Open the displayed authorization link in a browser and enter the one-time code. Keep the settings page open until completion; Qunica then refreshes the runtime's model capabilities. **Check sign-in** detects an existing ChatGPT or API-key login without starting authorization.
 
-Install the Codex CLI (`@openai/codex`) on the backend host in addition to the ACP adapter. The sign-in entry uses Codex's app-server account protocol so it receives device codes and completion events without parsing terminal output. The CLI must support device-code authentication. Enable device-code login in your ChatGPT account or workspace settings when required. See [OpenAI authentication](https://learn.chatgpt.com/docs/auth).
+The sign-in panel shows **Codex CLI** (`@openai/codex`) separately from the
+**ACP adapter version** (`@agentclientprotocol/codex-acp`). An installed adapter
+does not install the account CLI. Use **Install Codex CLI** on the connected
+backend host; after installation Qunica checks the command's startup, refreshes
+versions and checks existing authentication. Installation does not start an
+authorization attempt; choose **Sign in with ChatGPT** when ready.
+
+The backend needs Node.js/npm, network access and write access to its npm global
+directory. **Manual installation and help** provides the command
+`npm install -g @openai/codex@latest` and the
+[official installation guide](https://learn.chatgpt.com/docs/codex/cli).
+If npm was installed after the backend started, restart the backend so it can
+find npm. Codex itself is also discovered in npm's global prefix, even when
+that prefix is absent from the running backend's PATH. Homebrew or other
+externally managed Codex installations are reused and must be updated with
+their original installer; Qunica does not replace them through npm.
+
+The sign-in entry uses Codex's app-server account protocol so it receives device
+codes and completion events without parsing terminal output. The CLI must
+support device-code authentication. Enable device-code login in your ChatGPT
+account or workspace settings when required. See
+[OpenAI authentication](https://learn.chatgpt.com/docs/auth).
 
 The login belongs to Codex on the connected backend machine. Codex stores and refreshes its credentials; Qunica receives no tokens. Agents that reuse that host's Codex login share the account. The Agent's runtime environment also applies to the login process. Canceling, leaving the form, or losing the stream terminates the temporary login process; login attempts are not automatically retried. Existing ACP sessions are not restarted. Existing externally established Codex logins remain usable.
+
+Account checks, device login and account-CLI installation share a backend-wide
+operation slot. Finish or cancel a login before installing the CLI. The slot
+remains occupied until the temporary account process exits, so installation
+cannot replace a running executable. Installing the account CLI does not close
+other agents' ACP sessions. Installation errors expose npm diagnostics and
+manual recovery instructions; the application never adds `sudo` automatically.
 
 ## Configuration
 
