@@ -3997,14 +3997,16 @@ async fn run_agent_turn_inner(
             .as_ref()
             .is_some_and(|dispatch| dispatch.action_kind == ActionKind::Speak);
     if agent.runtime_kind == "acp" {
-        return run_acp_agent_turn(
+        // Note: an unused ACP branch still sets the native driver's future size.
+        // Keep its state off each nested AgentAsTool poll frame.
+        return Box::pin(run_acp_agent_turn(
             services,
             ctx,
             agent,
             group,
             delegated_input,
             checkpoint_interrupted,
-        )
+        ))
         .await;
     }
 
@@ -4019,9 +4021,15 @@ async fn run_agent_turn_inner(
     let model = ctx.model_override.clone().unwrap_or_else(|| {
         model_from_config(&agent.model_config_json, &provider_cfg.default_model)
     });
-    let invocation = build_invocation_context(services, ctx, agent, group, scheduler.as_deref())
-        .await
-        .map_err(StepErr::Db)?;
+    let invocation = Box::pin(build_invocation_context(
+        services,
+        ctx,
+        agent,
+        group,
+        scheduler.as_deref(),
+    ))
+    .await
+    .map_err(StepErr::Db)?;
     // Hooks summarize through the agent's own provider and model, so a
     // compacted span is described by the model that produced it. Built after
     // the invocation context because the tool schemas it resolved are part of
@@ -4223,7 +4231,7 @@ async fn run_agent_turn_inner(
                     .await;
                 }
             }
-            let results = execute_tool_batch(
+            let results = Box::pin(execute_tool_batch(
                 &services.hooks,
                 &step,
                 ctx,
@@ -4233,7 +4241,7 @@ async fn run_agent_turn_inner(
                 checkpoint_interrupted,
                 &content,
                 &mut turn,
-            )
+            ))
             .await?;
             for (call, result) in results {
                 if matches!(result.status, ToolStatus::ApprovalRequired) {
@@ -4647,7 +4655,7 @@ async fn run_agent_turn_inner(
             );
             turn.phase = Some("executing_tools".into());
             persist_native_checkpoint(ctx, agent, &content, &mut turn).await?;
-            let outcome = handle_agent_as_tool(
+            let outcome = Box::pin(handle_agent_as_tool(
                 services,
                 ctx,
                 agent,
@@ -4656,7 +4664,7 @@ async fn run_agent_turn_inner(
                 call.clone(),
                 &mut turn,
                 scheduler.as_deref_mut(),
-            )
+            ))
             .await?;
             match outcome {
                 AgentAsToolOutcome::Terminal(result) => {
@@ -4720,7 +4728,7 @@ async fn run_agent_turn_inner(
         let mut wait_for_user: Option<Value> = None;
         let mut pending_approval: Option<(ToolCall, ApprovalRequest)> = None;
         for batch in tool_call_batches(&tool_calls) {
-            let results = execute_tool_batch(
+            let results = Box::pin(execute_tool_batch(
                 &services.hooks,
                 &step,
                 ctx,
@@ -4730,7 +4738,7 @@ async fn run_agent_turn_inner(
                 checkpoint_interrupted,
                 &content,
                 &mut turn,
-            )
+            ))
             .await?;
             for (call, result) in results {
                 // A call awaiting approval gets no tool result: the turn stops
@@ -5833,7 +5841,18 @@ fn tool_input_request_payload(output: &str) -> Value {
         .unwrap_or_else(|| json!({ "question": "The agent requested input.", "required": true }))
 }
 
-async fn persist_interrupted_agent(
+// Note: cancellation unwinds multiple nested drivers on a small Windows stack.
+// Do not inline another SQLite transaction future in every cancellation frame.
+fn persist_interrupted_agent<'a>(
+    ctx: &'a mut StreamCtx,
+    agent: &'a Candidate,
+    content: &'a str,
+    turn: &'a TurnData,
+) -> Pin<Box<dyn Future<Output = Result<(), StepErr>> + Send + 'a>> {
+    Box::pin(persist_interrupted_agent_inner(ctx, agent, content, turn))
+}
+
+async fn persist_interrupted_agent_inner(
     ctx: &mut StreamCtx,
     agent: &Candidate,
     content: &str,
@@ -6175,7 +6194,27 @@ enum HelperOutcome {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn handle_scheduled_agent_as_tool(
+fn handle_scheduled_agent_as_tool<'a>(
+    services: &'a RuntimeServices,
+    ctx: &'a mut StreamCtx,
+    agent: &'a Candidate,
+    group: &'a GroupRuntimeConfig,
+    hop: usize,
+    parsed: &'a AgentAsToolCall,
+    dispatch: crate::runtime::agent_as_tool::AgentAsToolDispatch,
+    helper: Candidate,
+    turn: &'a mut TurnData,
+    scheduler: &'a mut ScheduledTurnRuntime,
+) -> Pin<Box<dyn Future<Output = Result<HelperOutcome, StepErr>> + Send + 'a>> {
+    // Note: helper failure and cancellation poll through every parent driver.
+    // Their transaction states must not be embedded in each delegation frame.
+    Box::pin(handle_scheduled_agent_as_tool_inner(
+        services, ctx, agent, group, hop, parsed, dispatch, helper, turn, scheduler,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_scheduled_agent_as_tool_inner(
     services: &RuntimeServices,
     ctx: &mut StreamCtx,
     agent: &Candidate,
@@ -6741,7 +6780,25 @@ fn agent_as_tool_call(tool_calls: &[ToolCall]) -> Option<ToolCall> {
         .cloned()
 }
 
-async fn finish_agent_content(
+fn finish_agent_content<'a>(
+    ctx: &'a mut StreamCtx,
+    agent: &'a Candidate,
+    proactive: bool,
+    content: String,
+    turn: &'a TurnData,
+    checkpoint_interrupted: bool,
+) -> Pin<Box<dyn Future<Output = Result<AgentRunResult, StepErr>> + Send + 'a>> {
+    Box::pin(finish_agent_content_inner(
+        ctx,
+        agent,
+        proactive,
+        content,
+        turn,
+        checkpoint_interrupted,
+    ))
+}
+
+async fn finish_agent_content_inner(
     ctx: &mut StreamCtx,
     agent: &Candidate,
     proactive: bool,

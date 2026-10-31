@@ -2651,8 +2651,7 @@ async fn acp_notes_mcp_mounts_on_new_load_and_reuse_and_revokes_between_dispatch
         let config: Value = log
             .lines()
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter(|v| v["method"] == "session/new" || v["method"] == "session/load")
-            .next_back()
+            .rfind(|v| v["method"] == "session/new" || v["method"] == "session/load")
             .unwrap()["params"]["mcpServers"][0]
             .clone();
         let env = config["env"].as_array().unwrap();

@@ -173,7 +173,7 @@ Pushing to a remote needs credentials you supply: mount an SSH key at
 ## External CLI agents
 
 The runtime is based on Ubuntu 24.04 and includes Node 22 with npm/npx,
-Python 3.12 with uv, Go 1.27, Rust 1.88 with Cargo, Git, and native build tools.
+Python 3.12 with uv, Go 1.27, Rust 1.97.1 with Cargo, Git, and native build tools.
 Docker 29 CLI, Compose, and Buildx are included too; no Docker daemon runs
 inside the container.
 The Agents page can therefore install and run ACP runtimes such as Codex,

@@ -81,6 +81,11 @@ also deduplicates normalized payload content. The same body with a changed
 delivery id returns the original occurrence; the same delivery id with changed
 content returns `idempotency_conflict`.
 
+Normalized identity bytes recursively sort JSON object keys while preserving
+array order and scalar encoding. This is explicit even when a dependency enables
+`serde_json/preserve_order`. Raw-body HMAC verification and stored payloads keep
+their original data; normalization applies only to a copy used for the digest.
+
 ## Queue and pause
 
 Independent task threads in one group run concurrently, whether they came from

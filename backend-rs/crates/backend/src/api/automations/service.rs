@@ -7,7 +7,6 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use sqlx::{Sqlite, Transaction};
 use uuid::Uuid;
 
@@ -455,15 +454,7 @@ async fn enqueue(
         target: json!({"conversation_id":a.group_id,"thread_id":thread}),
         payload: json!({"content":prepared.content}),
     };
-    let digest = format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json::to_vec(
-                &json!({"name":command.name,"target":command.target,"payload":command.payload})
-            )
-            .unwrap()
-        )
-    );
+    let digest = commands::payload_hash(&command);
     sqlx::query("INSERT INTO threads(id,group_id,agent_id,title,status,next_seq,created_at,updated_at) VALUES(?,?,NULL,?,'active',1,?,?)")
         .bind(&thread).bind(&a.group_id).bind(&a.name).bind(&now).bind(&now).execute(&mut **tx).await.map_err(db_error)?;
     let mut response = commands::insert_message_in_tx(
