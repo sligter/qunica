@@ -340,7 +340,7 @@ export function useResumeStream(
             }
             return
           }
-          if (!acceptsStreamEvent(stateId, streamId)) return
+          if (event.kind !== 'done' && !acceptsStreamEvent(stateId, streamId)) return
           switch (event.kind) {
             case 'token': {
               const parsed = tokenPayloadSchema.safeParse(event.payload)

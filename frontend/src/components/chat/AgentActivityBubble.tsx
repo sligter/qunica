@@ -47,6 +47,7 @@ const toolStatusKeys = {
   ...toolActivityStatusKeys,
   running: 'tools.statuses.running',
   cancelled: 'tools.statuses.cancelled',
+  missing_result: 'tools.statuses.missingResult',
 } as const
 
 function isKnownToolStatus(status: string): status is keyof typeof toolStatusKeys {
@@ -81,11 +82,15 @@ function DetailBlock({ label, value }: { label: string; value?: string | null })
   )
 }
 
-function ToolRow({ tool }: { tool: ActivityToolItem }) {
+function ToolRow({ tool, active }: { tool: ActivityToolItem; active: boolean }) {
   const { t } = useTranslation('chat')
   const hasDetails = Boolean(tool.details || tool.argsSummary || tool.resultSummary)
   const Icon = tool.kind === 'external' ? Terminal : Wrench
-  const status = tool.status ?? 'unknown'
+  // Note: a finished run is authoritative about activity, not a missing tool's
+  // outcome. Preserve the recorded result and show that no final result arrived.
+  const status = !active && (tool.status === 'started' || tool.status === 'running')
+    ? 'missing_result'
+    : tool.status ?? 'unknown'
   const label = isKnownToolStatus(status)
     ? t(toolStatusKeys[status])
     : tool.status
@@ -102,7 +107,7 @@ function ToolRow({ tool }: { tool: ActivityToolItem }) {
         <span
           className={cn(
             'shrink-0 rounded-[3px] border px-1.5 py-0.5 text-[10px] font-medium capitalize leading-none',
-            statusClasses(tool.status),
+            statusClasses(status),
           )}
         >
           {label}
@@ -189,7 +194,7 @@ export function AgentActivityBubble({
           >
             <div className="divide-y divide-border">
               {tools.map((tool) => (
-                <ToolRow key={tool.id} tool={tool} />
+                <ToolRow key={tool.id} tool={tool} active={active} />
               ))}
             </div>
           </section>
