@@ -26,6 +26,7 @@ pub struct VerifiedWebhook {
     pub event_id: String,
     pub payload: Value,
     pub payload_hash: String,
+    pub legacy_hashes: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -34,6 +35,18 @@ pub struct VerifiedGithub {
     pub delivery_id: String,
     pub payload: Value,
     pub payload_hash: String,
+    pub legacy_hashes: Option<Vec<String>>,
+}
+
+/// Digests a pre-pin binary may have stored for the same signed body; `None`
+/// when the body carries too many floats to enumerate. Dedup only.
+fn legacy_hashes(identity: &Value) -> Option<Vec<String>> {
+    crate::canonical_json::legacy_variants(identity).map(|variants| {
+        variants
+            .iter()
+            .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+            .collect()
+    })
 }
 
 fn hex_digest(encoded: &str) -> Result<[u8; 32], ApiError> {
@@ -93,6 +106,7 @@ pub fn verify_github(
     Ok(VerifiedGithub {
         event: event.to_string(),
         delivery_id: delivery_id.to_string(),
+        legacy_hashes: legacy_hashes(&payload),
         payload,
         payload_hash: format!("{:x}", Sha256::digest(canonical)),
     })
@@ -151,14 +165,14 @@ pub fn verify(
     }
     // Note: an unsigned event-id header lets a captured valid request create
     // fresh dedup keys. Identity comes only from this authenticated JSON body.
-    let canonical = crate::canonical_json::to_vec(
-        &serde_json::json!({"event_id":envelope.event_id,"payload":envelope.payload}),
-    )
-    .map_err(|_| ApiError::invalid_input("invalid webhook payload"))?;
+    let identity = serde_json::json!({"event_id":envelope.event_id,"payload":envelope.payload});
+    let canonical = crate::canonical_json::to_vec(&identity)
+        .map_err(|_| ApiError::invalid_input("invalid webhook payload"))?;
     Ok(VerifiedWebhook {
         event_id: envelope.event_id,
         payload: envelope.payload,
         payload_hash: format!("{:x}", Sha256::digest(canonical)),
+        legacy_hashes: legacy_hashes(&identity),
     })
 }
 

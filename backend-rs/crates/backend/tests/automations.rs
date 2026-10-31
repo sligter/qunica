@@ -574,6 +574,106 @@ async fn github_delivery_uses_native_signature_and_normalized_payload_dedup() {
 }
 
 #[tokio::test]
+async fn github_dedup_recognises_rows_hashed_by_the_legacy_float_parser() {
+    use sha2::Digest;
+    let (app, state, token, _owner, group) = fixture().await;
+    let automation = create(
+        &app,
+        &token,
+        &group,
+        "GitHub push",
+        json!({"kind":"github","events":["push"]}),
+    )
+    .await;
+    let automation_id = automation["id"].as_str().unwrap().to_string();
+    let hook = automation["hook_id"].as_str().unwrap().to_string();
+    let (_, rotated) = request(
+        &app,
+        "POST",
+        &format!("/api/v2/automations/{automation_id}/secret"),
+        Some(&token),
+        json!({"action":"rotate","expected_version":1}),
+    )
+    .await;
+    let secret = rotated["secret"].as_str().unwrap().to_string();
+
+    let body = br#"{"ref":"refs/heads/main","ratio":8.971135692166839e-150}"#;
+    let (status, first) = github_webhook(
+        &app,
+        &hook,
+        "push",
+        "delivery-1",
+        &sign_github(&secret, body),
+        body,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{first}");
+    // Rewrite the row as a pre-pin binary stored it: that parser read the
+    // ratio as the neighbouring double.
+    let legacy =
+        serde_json::to_vec(&json!({"ratio":8.97113569216684e-150,"ref":"refs/heads/main"}))
+            .unwrap();
+    sqlx::query(
+        "UPDATE automation_occurrences SET digest_version=1,payload_hash=? WHERE automation_id=?",
+    )
+    .bind(format!("{:x}", Sha256::digest(legacy)))
+    .bind(&automation_id)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+
+    for delivery in ["delivery-1", "delivery-replayed"] {
+        let (status, replay) = github_webhook(
+            &app,
+            &hook,
+            "push",
+            delivery,
+            &sign_github(&secret, body),
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{delivery}: {replay}");
+        assert_eq!(replay["job_id"], first["job_id"], "{delivery}");
+    }
+
+    // Too many floats to enumerate while legacy rows exist: refused, not run.
+    let crowded = br#"{"a":0.1,"b":0.2,"c":0.3,"d":0.4}"#;
+    let (status, refused) = github_webhook(
+        &app,
+        &hook,
+        "push",
+        "delivery-crowded",
+        &sign_github(&secret, crowded),
+        crowded,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["error"]["code"], "legacy_replay_unverifiable");
+
+    // A genuinely different value is still a new event.
+    let other = br#"{"ref":"refs/heads/main","ratio":9.5e-150}"#;
+    let (status, fresh) = github_webhook(
+        &app,
+        &hook,
+        "push",
+        "delivery-other",
+        &sign_github(&secret, other),
+        other,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{fresh}");
+    assert_ne!(fresh["job_id"], first["job_id"]);
+    let versions: Vec<i64> = sqlx::query_scalar(
+        "SELECT digest_version FROM automation_occurrences WHERE automation_id=? ORDER BY created_at,rowid",
+    )
+    .bind(&automation_id)
+    .fetch_all(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(versions, vec![1, 2]);
+}
+
+#[tokio::test]
 async fn restart_tick_coalesces_missed_runs_inside_the_catchup_window() {
     let (app, state, token, _owner, group) = fixture().await;
     let automation = create(

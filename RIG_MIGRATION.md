@@ -32,13 +32,50 @@ identity bytes without sorting provider history. Native and Rig-enabled tests
 both cover this boundary; opaque provider data must never use this digest
 serializer as its history encoding.
 
-`float_roundtrip` also changes parsing of some decimal numbers; sorting keys
-alone cannot establish compatibility with every historical payload digest.
-For example, `8.971135692166839e-150` is parsed differently by the two feature
-sets. Before using a Rig-enabled binary against an existing production database,
-legacy float-bearing Webhook/command identities need an explicit compatibility
-or versioned migration policy. Until that gate is resolved, use isolated PoC
-data, keep normal builds feature-disabled, and do not declare P1 fully accepted.
+### Float parsing in identity digests
+
+Digests hash *parsed* numbers, and `float_roundtrip` changes how a decimal
+lexeme is parsed. The legacy parser can produce a neighbouring double for
+full-precision decimal lexemes; integers and short decimals such as `1.25`
+parse identically. For example, `8.971135692166839e-150` changes between the two
+parsers. A feature that only Rig enabled would therefore make the
+same request hash differently in Rig and non-Rig builds.
+
+The backend therefore enables `float_roundtrip` itself, in every build. Rig no
+longer changes any digest, and the exact parser round-trips Qunica's own JSON.
+`canonical_json` tests fail if the pin is dropped.
+
+Rows written by v0.1.7 and earlier still hold legacy-parsed digests. They are
+not rehashed: receipts and occurrences do not retain enough original input to
+recompute historical hashes using a new parser. No legacy parser is maintained
+in the authority path. The upgrade boundary is handled per table:
+
+| Table | Old row vs. new parse | Outcome |
+|---|---|---|
+| `pending_approvals` | digest or stored-action mismatch | Fail closed, without resolving or executing the call. Hash and canonical persisted action bytes must both match exactly, including floats and signed zero. Old rounding drift cannot be distinguished from a changed argument, so ULP tolerances never grant approval. |
+| `command_receipts` | retry of a float-bearing command | `409 idempotency_conflict`, fail-closed. Current typed command fields do not require floats, but arbitrary JSON fields must not be assumed float-free. |
+| `automation_occurrences`, same event key | retried float-bearing delivery | Recognised as the original event through the legacy candidates below; otherwise `409`, fail-closed. The original run is not repeated. |
+| GitHub payload dedup (new delivery id) | replay of a float-bearing payload | Recognised through the legacy candidates below. With more than three floats the candidates are not enumerated; while the automation has version-1 rows the delivery is refused with `409 legacy_replay_unverifiable` rather than run. |
+
+Migration 0049 marks pre-existing occurrences `digest_version=1`; new rows store
+2 and match exactly. For webhook identities only, `canonical_json::legacy_variants`
+re-encodes the payload with every double within 3 ULPs of each float (≤3 floats,
+≤343 encodings); legacy drift measured at 2 ULPs worst over ~10M probes,
+including long mantissas, subnormals and extreme exponents. A version-1 row
+matching any candidate counts as the same event. This is deliberately one-sided:
+for dedup a false match only suppresses a run, while a miss repeats one. It is
+not a parser and is never used for approvals, where a near match must not grant.
+
+This closes the float-digest cutover gate. Rig runtime routing stays disabled
+until the Driver phase is accepted.
+No approval, receipt or occurrence is silently rehashed or replayed.
+There is no in-place reapproval endpoint for a mismatched old action: terminate
+the old task and submit a new task for fresh review; do not edit stored hashes
+to force a resume.
+Revisit if command fields change, if duplicate webhook runs or
+`legacy_replay_unverifiable` refusals appear after an upgrade, or once no
+version-1 occurrence can still be replayed (then the candidates can be removed). Opaque provider data must never use the digest serializer as history
+encoding.
 
 ## Driver stack boundary
 

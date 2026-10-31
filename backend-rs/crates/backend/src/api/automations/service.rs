@@ -369,16 +369,24 @@ struct Occurrence<'a> {
     /// GitHub's unsigned delivery header cannot be the only dedup identity;
     /// matching normalized payloads absorbs replays with a changed header.
     dedup_payload: bool,
+    /// Digests a pre-pin binary may have stored for this payload, matched
+    /// only against `digest_version=1` rows; `None` when too many floats.
+    legacy_hashes: Option<Vec<String>>,
 }
 async fn enqueue(
     tx: &mut Transaction<'_, Sqlite>,
     a: &Automation,
     event: Occurrence<'_>,
 ) -> Result<Value, ApiError> {
-    let prior:Option<(String,String)>=sqlx::query_as("SELECT payload_hash,response_json FROM automation_occurrences WHERE automation_id=? AND source=? AND event_key=?")
+    let prior:Option<(String,String,i64)>=sqlx::query_as("SELECT payload_hash,response_json,digest_version FROM automation_occurrences WHERE automation_id=? AND source=? AND event_key=?")
         .bind(&a.id).bind(event.source).bind(&event.key).fetch_optional(&mut **tx).await.map_err(db_error)?;
-    if let Some((hash, response)) = prior {
-        if hash != event.hash {
+    if let Some((hash, response, version)) = prior {
+        let legacy_match = version == 1
+            && event
+                .legacy_hashes
+                .as_ref()
+                .is_some_and(|hashes| hashes.contains(&hash));
+        if hash != event.hash && !legacy_match {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "idempotency_conflict",
@@ -388,18 +396,34 @@ async fn enqueue(
         return decode(&response);
     }
     if event.dedup_payload {
-        let duplicate: Option<String> = sqlx::query_scalar(
-            "SELECT response_json FROM automation_occurrences \
-             WHERE automation_id=? AND source=? AND payload_hash=? \
-             ORDER BY created_at,rowid LIMIT 1",
+        // Note: rows hashed before the exact float parser was pinned are
+        // matched through every reading that parser could have made; past the
+        // enumeration limit a replay cannot be ruled out, so it is refused.
+        let legacy = event
+            .legacy_hashes
+            .as_ref()
+            .map(|hashes| serde_json::to_string(hashes).unwrap_or_default());
+        let duplicate: Option<(String, String)> = sqlx::query_as(
+            "SELECT payload_hash,response_json FROM automation_occurrences \
+             WHERE automation_id=? AND source=? AND (payload_hash=? OR (digest_version=1 \
+             AND payload_hash<>'' AND (?4 IS NULL OR payload_hash IN (SELECT value FROM json_each(?4))))) \
+             ORDER BY (payload_hash=?3) DESC,created_at,rowid LIMIT 1",
         )
         .bind(&a.id)
         .bind(event.source)
         .bind(&event.hash)
+        .bind(&legacy)
         .fetch_optional(&mut **tx)
         .await
         .map_err(db_error)?;
-        if let Some(response) = duplicate {
+        if let Some((hash, response)) = duplicate {
+            if hash != event.hash && legacy.is_none() {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "legacy_replay_unverifiable",
+                    "payload has too many decimal numbers to rule out a replay of a pre-upgrade delivery",
+                ));
+            }
             return decode(&response);
         }
     }
@@ -475,7 +499,7 @@ async fn enqueue(
     sqlx::query("UPDATE execution_jobs SET automation_id=?,occurrence_id=?,automation_snapshot_json=? WHERE id=?")
         .bind(&a.id).bind(&occurrence).bind(snapshot.to_string()).bind(response["job_id"].as_str()).execute(&mut **tx).await.map_err(db_error)?;
     response["occurrence_id"] = json!(occurrence);
-    sqlx::query("INSERT INTO automation_occurrences(id,automation_id,automation_version,source,event_key,payload_hash,scheduled_at,job_id,response_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+    sqlx::query("INSERT INTO automation_occurrences(id,automation_id,automation_version,source,event_key,payload_hash,scheduled_at,job_id,response_json,created_at,digest_version) VALUES(?,?,?,?,?,?,?,?,?,?,2)")
         .bind(&occurrence).bind(&a.id).bind(a.version).bind(event.source).bind(event.key).bind(event.hash).bind(event.scheduled).bind(response["job_id"].as_str()).bind(response.to_string()).bind(&now)
         .execute(&mut **tx).await.map_err(db_error)?;
     Ok(response)
@@ -525,6 +549,7 @@ pub async fn webhook(
                 now,
                 label: None,
                 dedup_payload: false,
+                legacy_hashes: event.legacy_hashes,
             }
         }
         Trigger::Github { events } => {
@@ -559,6 +584,7 @@ pub async fn webhook(
                 now,
                 label: Some(format!("GitHub {}", event.event)),
                 dedup_payload: true,
+                legacy_hashes: event.legacy_hashes,
             }
         }
         _ => return Err(ApiError::unauthorized("Webhook authentication failed")),
@@ -658,6 +684,7 @@ pub async fn tick(
                     now,
                     label: None,
                     dedup_payload: false,
+                    legacy_hashes: Some(Vec::new()),
                 },
             )
             .await;
@@ -695,7 +722,7 @@ pub async fn tick(
         }
         if let Some(until) = plan.skipped_until {
             let key = format!("{}:{scheduled}:{until}", a.version);
-            sqlx::query("INSERT OR IGNORE INTO automation_occurrences(id,automation_id,automation_version,source,event_key,payload_hash,scheduled_at,response_json,created_at) VALUES(?,?,?,'skipped',?,'',?,'{}',?)")
+            sqlx::query("INSERT OR IGNORE INTO automation_occurrences(id,automation_id,automation_version,source,event_key,payload_hash,scheduled_at,response_json,created_at,digest_version) VALUES(?,?,?,'skipped',?,'',?,'{}',?,2)")
                 .bind(Uuid::new_v4().to_string()).bind(&a.id).bind(a.version).bind(key).bind(until).bind(commands::now()).execute(&mut *tx).await.map_err(db_error)?;
         }
         sqlx::query("UPDATE automations SET next_run_at=?,updated_at=? WHERE id=? AND version=?")
