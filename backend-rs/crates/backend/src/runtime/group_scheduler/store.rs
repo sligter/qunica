@@ -392,6 +392,8 @@ impl SchedulerStore {
         let _guard = self.write_lock.lock().await;
         let mut tx = begin_write(&self.pool).await?;
 
+        crate::runtime::sequence::recover_native_checkpoints_in_tx(&mut tx).await?;
+
         sqlx::query(
             "UPDATE agent_dispatches \
              SET status = CASE \

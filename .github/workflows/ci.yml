@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
 
@@ -27,10 +27,48 @@ jobs:
         run: cargo fmt --manifest-path backend-rs/crates/backend/Cargo.toml --all --check
 
       - name: Clippy
-        run: cargo clippy --manifest-path backend-rs/Cargo.toml --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --manifest-path backend-rs/Cargo.toml --workspace --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --manifest-path backend-rs/Cargo.toml --workspace
+        run: cargo test --locked --manifest-path backend-rs/Cargo.toml --workspace
+
+      - name: Test with Rig dependency features
+        run: cargo test --locked --manifest-path backend-rs/Cargo.toml --workspace --features qunica-backend/rig-engine
+
+  rig-desktop:
+    name: Rig compile (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            backend-rs
+            frontend/src-tauri
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libssl-dev
+      - name: Check backend with Rig
+        run: cargo check --locked --manifest-path backend-rs/Cargo.toml --workspace --all-targets --all-features
+      - name: Check desktop with Rig
+        run: cargo check --locked --manifest-path frontend/src-tauri/Cargo.toml --all-targets --features rig-engine
+
+  rig-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Compile Rig server image stage
+        run: docker build --target server --build-arg BACKEND_FEATURES=rig-engine -t qunica-rig-server:poc .
+      - name: Compile supervisor image
+        run: docker build -f docker/supervisor.Dockerfile -t qunica-supervisor:poc .
 
   frontend:
     runs-on: ubuntu-latest

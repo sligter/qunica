@@ -32,7 +32,27 @@ use uuid::Uuid;
 use crate::tools::{ApprovalDecision, ApprovalGrants, ApprovalRequest};
 
 pub fn action_hash(action: &Value) -> String {
-    format!("{:x}", Sha256::digest(serde_json::to_vec(action).unwrap()))
+    format!(
+        "{:x}",
+        Sha256::digest(crate::canonical_json::to_vec(action).unwrap())
+    )
+}
+
+/// Whether `action` is the call a stored approval question was asked about.
+fn stored_action_matches(stored_hash: &str, stored_action: &str, action: &Value) -> bool {
+    if stored_hash != action_hash(action) {
+        return false;
+    }
+    // Note: an old parser's rounding drift is indistinguishable from a real
+    // argument change. Approval must bind the exact persisted call, never a
+    // nearby number. Mismatched old rows fail closed, without rewriting grants.
+    let Ok(stored) = serde_json::from_str::<Value>(stored_action) else {
+        return false;
+    };
+    matches!(
+        (crate::canonical_json::to_vec(&stored), crate::canonical_json::to_vec(action)),
+        (Ok(stored), Ok(current)) if stored == current
+    )
 }
 
 /// Checkpoint and approval question share the caller's write transaction.
@@ -63,16 +83,16 @@ pub async fn sync_pending_in_tx(
         }
         let action = json!({"id":id,"name":name,"args":call["args"]});
         let hash = action_hash(&action);
-        let existing: Option<String> = sqlx::query_scalar(
-            "SELECT action_hash FROM pending_approvals WHERE thread_id=? AND tool_call_id=?",
+        let existing: Option<(String, String)> = sqlx::query_as(
+            "SELECT action_hash,action_json FROM pending_approvals WHERE thread_id=? AND tool_call_id=?",
         )
         .bind(thread)
         .bind(id)
         .fetch_optional(&mut **tx)
         .await?;
-        if let Some(old) = existing {
+        if let Some((old_hash, old_action)) = existing {
             anyhow::ensure!(
-                old == hash,
+                stored_action_matches(&old_hash, &old_action, &action),
                 "approval action changed for the same tool call"
             );
             continue;
@@ -101,12 +121,12 @@ pub async fn verify_resolved_action(
     call: &crate::llm::ToolCall,
     decision: &ApprovalDecision,
 ) -> anyhow::Result<()> {
-    let row:Option<(String,String,Option<String>)>=sqlx::query_as("SELECT action_hash,status,decision_json FROM pending_approvals WHERE thread_id=? AND tool_call_id=?")
+    let row:Option<(String,String,String,Option<String>)>=sqlx::query_as("SELECT action_hash,action_json,status,decision_json FROM pending_approvals WHERE thread_id=? AND tool_call_id=?")
         .bind(thread).bind(&call.id).fetch_optional(pool).await?;
-    if let Some((hash, status, raw)) = row {
+    if let Some((hash, stored_action, status, raw)) = row {
         let action = json!({"id":call.id,"name":call.name,"args":call.args});
         anyhow::ensure!(
-            hash == action_hash(&action),
+            stored_action_matches(&hash, &stored_action, &action),
             "approval action does not match resolved question"
         );
         if status == "pending" {
@@ -197,6 +217,179 @@ pub fn declined_result(request: &ApprovalRequest, note: Option<&str>) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_digest_keeps_legacy_sorted_identity() {
+        let action: Value = serde_json::from_str(
+            r#"{"name":"Bash","id":"call-1","args":{"cwd":"repo","command":"echo safe"}}"#,
+        )
+        .unwrap();
+        let sorted =
+            br#"{"args":{"command":"echo safe","cwd":"repo"},"id":"call-1","name":"Bash"}"#;
+        assert_eq!(
+            action_hash(&action),
+            format!("{:x}", Sha256::digest(sorted))
+        );
+    }
+
+    #[test]
+    fn new_approval_rejects_even_one_ulp_argument_change() {
+        let original = json!({"id":"call-1","name":"Bash","args":{"ratio":1.0}});
+        let stored_action = original.to_string();
+        let stored_hash = action_hash(&original);
+        assert!(stored_action_matches(
+            &stored_hash,
+            &stored_action,
+            &original
+        ));
+        let changed = json!({"id":"call-1","name":"Bash","args":{"ratio":f64::from_bits(1.0_f64.to_bits() + 1)}});
+        assert!(!stored_action_matches(
+            &stored_hash,
+            &stored_action,
+            &changed
+        ));
+    }
+
+    #[test]
+    fn legacy_rows_never_authorize_a_different_float_value() {
+        // A pre-pin binary parsed `8.971135692166839e-150` from the checkpoint
+        // as the neighbouring double below, then hashed and stored that.
+        let stored_action =
+            r#"{"args":{"ratio":8.97113569216684e-150},"id":"call-1","name":"Bash"}"#;
+        let stored_hash = format!("{:x}", Sha256::digest(stored_action));
+        let persisted: Value = serde_json::from_str(stored_action).unwrap();
+        assert!(stored_action_matches(
+            &stored_hash,
+            stored_action,
+            &persisted
+        ));
+        let resumed = json!({"id":"call-1","name":"Bash","args":{"ratio":8.971135692166839e-150}});
+        assert_ne!(action_hash(&resumed), stored_hash);
+        assert!(!stored_action_matches(
+            &stored_hash,
+            stored_action,
+            &resumed
+        ));
+
+        let changed = json!({"id":"call-1","name":"Bash","args":{"ratio":9.0e-150}});
+        assert!(!stored_action_matches(
+            &stored_hash,
+            stored_action,
+            &changed
+        ));
+        let renamed = json!({"id":"call-1","name":"Pwsh","args":{"ratio":8.971135692166839e-150}});
+        assert!(!stored_action_matches(
+            &stored_hash,
+            stored_action,
+            &renamed
+        ));
+    }
+
+    #[test]
+    fn approval_identity_distinguishes_signed_zero_and_rejects_invalid_saved_action() {
+        let original = json!({"id":"call-1","name":"Bash","args":{"ratio":0.0}});
+        let negative = json!({"id":"call-1","name":"Bash","args":{"ratio":-0.0}});
+        let hash = action_hash(&original);
+        assert!(!stored_action_matches(
+            &hash,
+            &original.to_string(),
+            &negative
+        ));
+        assert!(!stored_action_matches(&hash, "invalid-json", &original));
+        assert!(!stored_action_matches(
+            &hash,
+            &negative.to_string(),
+            &original
+        ));
+    }
+
+    #[tokio::test]
+    async fn float_argument_changes_do_not_resolve_or_replace_persisted_approvals(
+    ) -> anyhow::Result<()> {
+        let db = crate::db::Db::connect("sqlite::memory:").await?;
+        db.migrate().await?;
+        sqlx::query("INSERT INTO users(id,email,password_hash,name,created_at,updated_at) VALUES('owner','approval@example.test','unused','owner','now','now')")
+            .execute(db.pool()).await?;
+        sqlx::query("INSERT INTO groups(id,owner_id,name,created_at,updated_at) VALUES('group','owner','group','now','now')")
+            .execute(db.pool()).await?;
+        sqlx::query("INSERT INTO threads(id,group_id,created_at,updated_at) VALUES('thread','group','now','now')")
+            .execute(db.pool()).await?;
+
+        for (index, (original, changed)) in [
+            (1.0_f64, f64::from_bits(1.0_f64.to_bits() + 1)),
+            (8.97113569216684e-150, 8.971135692166839e-150),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = format!("call-{index}");
+            let checkpoint = |ratio| {
+                json!({"tool_calls":[{
+                    "tool_call_id":id,"tool_name":"Bash","args":{"ratio":ratio},
+                    "status":"approval_required","approval_request":request()
+                }]})
+                .to_string()
+            };
+            ensure_pending(db.pool(), "thread", Some(&checkpoint(original))).await?;
+            let before: (String, String, String, i64, Option<String>) = sqlx::query_as(
+                "SELECT action_hash,action_json,status,version,decision_json FROM pending_approvals WHERE tool_call_id=?"
+            ).bind(&id).fetch_one(db.pool()).await?;
+            let mut call = crate::llm::ToolCall {
+                id: id.clone(),
+                name: "Bash".into(),
+                args: json!({"ratio":changed}),
+                provider_metadata: None,
+            };
+            let decision = ApprovalDecision {
+                tool_call_id: id.clone(),
+                approved: true,
+                remember: false,
+                note: None,
+            };
+            assert!(
+                verify_resolved_action(db.pool(), "thread", &call, &decision)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                ensure_pending(db.pool(), "thread", Some(&checkpoint(changed)))
+                    .await
+                    .is_err()
+            );
+            let after: (String, String, String, i64, Option<String>) = sqlx::query_as(
+                "SELECT action_hash,action_json,status,version,decision_json FROM pending_approvals WHERE tool_call_id=?"
+            ).bind(&id).fetch_one(db.pool()).await?;
+            assert_eq!(
+                before, after,
+                "a rejected call must not rewrite the approved action"
+            );
+
+            call.args = json!({"ratio":original});
+            verify_resolved_action(db.pool(), "thread", &call, &decision).await?;
+            let resolved: (String, i64, String) = sqlx::query_as(
+                "SELECT status,version,decision_json FROM pending_approvals WHERE tool_call_id=?",
+            )
+            .bind(&id)
+            .fetch_one(db.pool())
+            .await?;
+            assert_eq!(resolved.0, "resolved");
+            assert_eq!(resolved.1, before.3 + 1);
+            call.args = json!({"ratio":changed});
+            assert!(
+                verify_resolved_action(db.pool(), "thread", &call, &decision)
+                    .await
+                    .is_err()
+            );
+            let unchanged: (String, i64, String) = sqlx::query_as(
+                "SELECT status,version,decision_json FROM pending_approvals WHERE tool_call_id=?",
+            )
+            .bind(&id)
+            .fetch_one(db.pool())
+            .await?;
+            assert_eq!(resolved, unchanged);
+        }
+        Ok(())
+    }
 
     fn request() -> ApprovalRequest {
         ApprovalRequest {

@@ -11,6 +11,8 @@ pub mod gemini;
 pub mod model_catalog;
 pub mod openai_compatible;
 pub mod openai_responses;
+#[cfg(feature = "rig-engine")]
+pub mod rig_engine;
 
 pub use anthropic::AnthropicProvider;
 pub use gemini::GeminiProvider;
@@ -36,7 +38,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 /// Largest provider error body retained. Enough for any provider's JSON error;
 /// short enough that an HTML error page does not flood the log or the turn.
-const MAX_ERROR_BODY_CHARS: usize = 2_000;
+pub(crate) const MAX_ERROR_BODY_CHARS: usize = 2_000;
 
 /// A non-2xx provider response, with the body preserved.
 ///

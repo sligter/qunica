@@ -1,0 +1,5 @@
+[toolchain]
+# Note: Rig 0.45.0 requires this toolchain; keep CI and Docker on the same pin.
+channel = "1.97.1"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

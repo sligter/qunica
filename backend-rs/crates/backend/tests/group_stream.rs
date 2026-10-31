@@ -6730,7 +6730,7 @@ async fn bounded_handoff_silent_helper_terminalizes_parent_child_and_turn_once()
             .await
             .unwrap();
     let agent_messages: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM messages WHERE group_id = ? AND sender_type = 'agent'",
+        "SELECT COUNT(*) FROM messages WHERE group_id = ? AND sender_type = 'agent' AND status IN ('visible','interrupted')",
     )
     .bind(&group)
     .fetch_one(state.db.pool())
@@ -7422,7 +7422,9 @@ async fn assert_nested_private_handoff_state(
             .await
             .unwrap();
     let visible_senders: Vec<String> = sqlx::query_scalar(
-        "SELECT sender_id FROM messages WHERE group_id = ? AND sender_type = 'agent' ORDER BY seq",
+        // Internal execution checkpoints retain private helper recovery facts;
+        // only public transcript rows can count as a helper speaking.
+        "SELECT sender_id FROM messages WHERE group_id = ? AND sender_type = 'agent' AND status IN ('visible','interrupted') ORDER BY seq",
     )
     .bind(group_id)
     .fetch_all(state.db.pool())
@@ -7852,7 +7854,7 @@ async fn handoff_claims_a_pending_public_responder_without_requeueing_it() {
     )
     .await;
     let senders: Vec<String> = sqlx::query_scalar(
-        "SELECT sender_id FROM messages WHERE sender_type = 'agent' ORDER BY seq",
+        "SELECT sender_id FROM messages WHERE sender_type = 'agent' AND status IN ('visible','interrupted') ORDER BY seq",
     )
     .fetch_all(state.db.pool())
     .await
@@ -10339,7 +10341,7 @@ async fn a_reasoning_passback_rejection_is_healed_with_one_retry() {
     .await;
 
     let requests = captured.lock().await;
-    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert_eq!(requests.len(), 2, "events: {events:?}");
     let previous_answer = |request: &Value| {
         request["messages"]
             .as_array()
@@ -10368,6 +10370,391 @@ async fn a_reasoning_passback_rejection_is_healed_with_one_retry() {
 // ---------------------------------------------------------------------------
 // Tool-call approval
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn native_checkpoint_restores_signed_anthropic_blocks_and_remaining_calls() {
+    approval_checkpoint_roundtrip("anthropic").await;
+}
+
+#[tokio::test]
+async fn native_checkpoint_restores_exact_deepseek_reasoning_after_restart() {
+    approval_checkpoint_roundtrip("openai-compatible").await;
+}
+
+async fn approval_checkpoint_roundtrip(kind: &str) {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = format!("checkpoint-{kind}@example.test");
+    let token = register_and_login(&app, &email).await;
+    let owner = owner_id(&state, &email).await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("build.txt"), "artifact").unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"free_speech":true})).await;
+    let expected_blocks = json!([
+        {"type":"thinking","thinking":"first\nexact ","signature":"sig-one"},
+        {"type":"text","text":"Inspecting."},
+        {"type":"thinking","thinking":"second","signature":"sig-two"},
+        {"type":"redacted_thinking","data":"opaque-original"},
+        {"type":"tool_use","id":"call_rm","name":"Bash","input":{"command":"rm build.txt"}},
+        {"type":"tool_use","id":"call_write","name":"Write","input":{"file_path":"after.txt","content":"original batch"}}
+    ]);
+    let (first, next) = if kind == "anthropic" {
+        let mut events =
+            vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        for (index, block) in expected_blocks.as_array().unwrap().iter().enumerate() {
+            let mut start = block.clone();
+            if block["type"] == "tool_use" {
+                start["input"] = json!({});
+            }
+            let delta_field = match block["type"].as_str() {
+                Some("thinking") => Some(("thinking", "thinking_delta")),
+                Some("text") => Some(("text", "text_delta")),
+                _ => None,
+            };
+            if let Some((field, _)) = delta_field {
+                start[field] = json!("");
+                if field == "thinking" {
+                    start["signature"] = json!("");
+                }
+            }
+            events.push(json!({"type":"content_block_start","index":index,"content_block":start}));
+            if let Some((field, delta_type)) = delta_field {
+                events.push(json!({"type":"content_block_delta","index":index,"delta":{"type":delta_type,field:block[field]}}));
+                if field == "thinking" {
+                    events.push(json!({"type":"content_block_delta","index":index,"delta":{"type":"signature_delta","signature":block["signature"]}}));
+                }
+            }
+            if block["type"] == "tool_use" {
+                events.push(json!({"type":"content_block_delta","index":index,
+                    "delta":{"type":"input_json_delta","partial_json":block["input"].to_string()}}));
+            }
+            events.push(json!({"type":"content_block_stop","index":index}));
+        }
+        events.push(json!({"type":"message_stop"}));
+        let first = events
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect();
+        let next = "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Done.\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n".into();
+        (first, next)
+    } else {
+        let first = format!(
+            "data: {}\n\ndata: {}\n\ndata: {}\n\n{}",
+            json!({"choices":[{"delta":{"reasoning_content":"first\nexact "}}]}),
+            json!({"choices":[{"delta":{"content":"Inspecting."}}]}),
+            json!({"choices":[{"delta":{"reasoning_content":"second"}}]}),
+            tool_body(vec![
+                ("call_rm", "Bash", json!({"command":"rm build.txt"})),
+                (
+                    "call_write",
+                    "Write",
+                    json!({"file_path":"after.txt","content":"original batch"})
+                )
+            ])
+        );
+        (first, text_body("Done."))
+    };
+    let (url, requests) = recording_fake_provider_sequence(vec![first, next]).await;
+    let provider = seed_provider_kind(&state, &owner, kind, &url).await;
+    sqlx::query("UPDATE llm_providers SET reasoning_passback=1 WHERE id=?")
+        .bind(&provider)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let agent = seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Cleaner",
+        "2024-01-01T00:00:00Z",
+        json!({"tools":{"bash":{"enabled":true},"write":{"enabled":true}}}),
+    )
+    .await;
+    set_agent_model_config(&state, &agent, json!({"reasoning_effort":"high"})).await;
+    let paused = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content":"clean the artifact then write the report"}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&paused, StreamEventKind::ApprovalRequired).len(),
+        1,
+        "{paused:?}"
+    );
+    let (thread, raw): (String, String) = sqlx::query_as(
+        "SELECT thread_id,content_json FROM messages WHERE group_id=? AND status='interrupted'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let checkpoint: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(checkpoint["schema_version"], 2);
+    assert_eq!(checkpoint["tool_calls"][1]["status"], "pending");
+    if kind == "anthropic" {
+        assert_eq!(
+            checkpoint["assistant_turns"][0]["native_content"]["anthropic"],
+            expected_blocks
+        );
+    }
+    qunica_backend::runtime::group_scheduler::SchedulerStore::new(
+        state.db.pool().clone(),
+        state.write_lock.clone(),
+    )
+    .recover_incomplete_turns()
+    .await
+    .unwrap();
+    let mut restarted = state.clone();
+    restarted.active_turns = qunica_backend::runtime::group_scheduler::ActiveTurnRegistry::new();
+    let app = qunica_backend::api::router(restarted);
+    let resumed = stream_events(
+        &app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &token,
+        json!({"approval":{"tool_call_id":"call_rm","approved":true}}),
+    )
+    .await;
+    assert!(
+        payloads_of_kind(&resumed, StreamEventKind::Error).is_empty(),
+        "{resumed:?}"
+    );
+    assert!(!root.path().join("build.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("after.txt")).unwrap(),
+        "original batch"
+    );
+    let requests = requests.lock().await;
+    assert_eq!(
+        requests.len(),
+        2,
+        "approval recovery must not ask the model to recreate calls"
+    );
+    let assistant = requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "assistant")
+        .unwrap();
+    if kind == "anthropic" {
+        assert_eq!(assistant["content"], expected_blocks);
+    } else {
+        assert_eq!(assistant["reasoning_content"], "first\nexact second");
+        assert_eq!(assistant["tool_calls"].as_array().unwrap().len(), 2);
+    }
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages WHERE group_id=? AND sender_type='agent'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        count, 1,
+        "checkpoints and completion must share a message id"
+    );
+}
+
+#[tokio::test]
+async fn native_checkpoint_does_not_repeat_shell_after_crash_before_result_commit() {
+    struct CrashWindow(Arc<Notify>);
+    #[async_trait::async_trait]
+    impl qunica_backend::runtime::RuntimeHook for CrashWindow {
+        fn name(&self) -> &'static str {
+            "crash-before-result-commit"
+        }
+        async fn post_tool(
+            &self,
+            _: &qunica_backend::runtime::StepContext,
+            _: &qunica_backend::llm::ToolCall,
+            result: &mut qunica_backend::tools::ToolResult,
+        ) {
+            assert!(matches!(
+                result.status,
+                qunica_backend::tools::ToolStatus::Completed
+            ));
+            self.0.notify_one();
+            std::future::pending::<()>().await;
+        }
+    }
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "checkpoint-crash@example.test").await;
+    let owner = owner_id(&state, "checkpoint-crash@example.test").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech":true})).await;
+    let (url, requests) = recording_fake_provider_sequence(vec![tool_body(vec![(
+        "append",
+        "Bash",
+        json!({"command":"echo once >> marker.txt"}),
+    )])])
+    .await;
+    let provider = seed_provider(&state, &owner, &url).await;
+    let agent = seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Writer",
+        "2024-01-01T00:00:00Z",
+        json!({"tools":{"bash":{"enabled":true}}}),
+    )
+    .await;
+    let reached = Arc::new(Notify::new());
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
+        .with_hooks(
+            qunica_backend::runtime::HookChain::new().with(Arc::new(CrashWindow(reached.clone()))),
+        );
+    let (tx, _rx) = mpsc::channel(128);
+    let worker = tokio::spawn(run_group_turn(
+        services,
+        TurnRequest {
+            group_id: group.clone(),
+            owner_id: owner,
+            thread_id: None,
+            content: "append once".into(),
+            attachments: Vec::new(),
+            model_override: None,
+            effort_override: None,
+        },
+        tx,
+    ));
+    tokio::time::timeout(Duration::from_secs(20), reached.notified())
+        .await
+        .unwrap();
+    let before = std::fs::read(root.path().join("marker.txt")).unwrap();
+    worker.abort();
+    assert!(worker.await.unwrap_err().is_cancelled());
+    qunica_backend::runtime::group_scheduler::SchedulerStore::new(
+        state.db.pool().clone(),
+        state.write_lock.clone(),
+    )
+    .recover_incomplete_turns()
+    .await
+    .unwrap();
+    let (id, thread, content, raw): (String,String,String,String) = sqlx::query_as(
+        "SELECT id,thread_id,content,content_json FROM messages WHERE group_id=? AND status='interrupted'")
+        .bind(&group).fetch_one(state.db.pool()).await.unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&raw).unwrap()["tool_calls"][0]["status"],
+        "outcome_unknown"
+    );
+    let (tx, _rx) = mpsc::channel(128);
+    let outcome = run_thread_resume(
+        RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone()),
+        ResumeRequest {
+            group_id: group,
+            thread_id: thread,
+            agent_id: agent,
+            message_id: id,
+            existing_content: content,
+            content_json: Some(raw),
+            approval: None,
+        },
+        tx,
+    )
+    .await;
+    assert_eq!(outcome, TurnOutcome::Error);
+    assert_eq!(
+        requests.lock().await.len(),
+        1,
+        "unknown effects must stop before the next model call"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("marker.txt")).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn native_checkpoint_saves_fast_read_before_a_slow_sibling_finishes() {
+    struct ParallelReads;
+    #[async_trait::async_trait]
+    impl qunica_backend::runtime::RuntimeHook for ParallelReads {
+        fn name(&self) -> &'static str {
+            "parallel-read-crash-window"
+        }
+        async fn pre_tool(
+            &self,
+            _: &qunica_backend::runtime::StepContext,
+            call: &qunica_backend::llm::ToolCall,
+        ) -> Option<qunica_backend::tools::ToolResult> {
+            if call.id == "slow" {
+                std::future::pending::<()>().await;
+            }
+            Some(qunica_backend::tools::ToolResult {
+                status: qunica_backend::tools::ToolStatus::Completed,
+                output: "fast saved".into(),
+            })
+        }
+    }
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "checkpoint-parallel@example.test").await;
+    let owner = owner_id(&state, "checkpoint-parallel@example.test").await;
+    let (_root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech":true})).await;
+    let url = fake_provider_sequence(vec![tool_body(vec![
+        ("slow", "Read", json!({"path":"slow.txt"})),
+        ("fast", "Read", json!({"path":"fast.txt"})),
+    ])])
+    .await;
+    let provider = seed_provider(&state, &owner, &url).await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Reader",
+        "2024-01-01T00:00:00Z",
+        json!({"tools":{"read":{"enabled":true}}}),
+    )
+    .await;
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
+        .with_hooks(qunica_backend::runtime::HookChain::new().with(Arc::new(ParallelReads)));
+    let (tx, _rx) = mpsc::channel(128);
+    let worker = tokio::spawn(run_group_turn(
+        services,
+        TurnRequest {
+            group_id: group.clone(),
+            owner_id: owner,
+            thread_id: None,
+            content: "read both".into(),
+            attachments: Vec::new(),
+            model_override: None,
+            effort_override: None,
+        },
+        tx,
+    ));
+    tokio::time::timeout(Duration::from_secs(10),async {
+        loop {
+            let saved: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM messages WHERE group_id=? AND json_valid(content_json) \
+                AND json_extract(content_json,'$.tool_calls[1].result')='fast saved')")
+                .bind(&group).fetch_one(state.db.pool()).await.unwrap();
+            if saved { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    worker.abort();
+    assert!(worker.await.unwrap_err().is_cancelled());
+    qunica_backend::runtime::group_scheduler::SchedulerStore::new(
+        state.db.pool().clone(),
+        state.write_lock.clone(),
+    )
+    .recover_incomplete_turns()
+    .await
+    .unwrap();
+    let raw: String = sqlx::query_scalar(
+        "SELECT content_json FROM messages WHERE group_id=? AND status='interrupted'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let checkpoint: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(checkpoint["tool_calls"][0]["status"], "outcome_unknown");
+    assert_eq!(checkpoint["tool_calls"][1]["status"], "completed");
+    assert_eq!(checkpoint["tool_calls"][1]["result"], "fast saved");
+}
 
 /// Drive a turn until it pauses on an approval, returning what the rest of the
 /// flow needs: the workspace root (holding the file the gated command targets),

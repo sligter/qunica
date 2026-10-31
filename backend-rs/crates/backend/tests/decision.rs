@@ -1178,7 +1178,7 @@ async fn decision_automatic_selects_again_then_finishes_without_chat_moderator()
         }),
     )
     .await;
-    stream_events(
+    let events = stream_events(
         &app,
         &stream_uri(&group),
         &token,
@@ -1189,7 +1189,24 @@ async fn decision_automatic_selects_again_then_finishes_without_chat_moderator()
     .await;
 
     let rows = dispatch_rows(&state, &group).await;
-    assert_eq!(rows.len(), 2);
+    let question_order = requests
+        .lock()
+        .await
+        .iter()
+        .map(|request| {
+            request["questions"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        rows.len(),
+        2,
+        "questions: {question_order:?}; events: {events:?}"
+    );
     assert_eq!((&*rows[0].0, &*rows[0].1), ("Bob", "decision_model"));
     assert_eq!((&*rows[1].0, &*rows[1].1), ("Alice", "decision_model"));
     let turn: (String, i64, i64, i64) = sqlx::query_as(

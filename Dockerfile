@@ -8,7 +8,8 @@
 # See DOCKER.md for volumes, environment, and first-run setup.
 
 ARG NODE_VERSION=22
-ARG RUST_VERSION=1.88
+ARG RUST_VERSION=1.97.1
+ARG BACKEND_FEATURES=""
 ARG GO_VERSION=1.27
 ARG UV_VERSION=0.12.9
 ARG DOCKER_VERSION=29
@@ -38,19 +39,21 @@ RUN pnpm --filter @qunica/frontend build
 
 # -------------------------------------------------------------- server binary
 FROM rust:${RUST_VERSION}-bookworm AS server
+ARG BACKEND_FEATURES
 WORKDIR /src
 # libssl-dev for reqwest's native-tls; sqlite is compiled in by libsqlite3-sys.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
+COPY rust-toolchain.toml ./
 COPY backend-rs/ backend-rs/
 ENV CARGO_TARGET_DIR=/build-target
 # The binary is copied out inside the same RUN because a cache mount does not
 # survive into the resulting layer.
 RUN --mount=type=cache,id=qunica-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=qunica-cargo-target,target=/build-target \
-    cargo build --manifest-path backend-rs/Cargo.toml --package qunica-backend --release \
+    cargo build --locked --manifest-path backend-rs/Cargo.toml --package qunica-backend --release --features "${BACKEND_FEATURES}" \
     && cp /build-target/release/qunica-backend /usr/local/bin/qunica-server
 
 # ---------------------------------------------------------- runtime toolchains

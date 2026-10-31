@@ -587,6 +587,7 @@ async fn probe_model(config: ProviderConfig) -> TestModelResponse {
                 ChatDelta::Token(_)
                 | ChatDelta::Reasoning(_)
                 | ChatDelta::ReasoningSignature(_)
+                | ChatDelta::NativeContent(_)
                 | ChatDelta::Usage(_) => {}
             }
         }

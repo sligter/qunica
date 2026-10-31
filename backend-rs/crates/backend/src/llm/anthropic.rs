@@ -90,6 +90,30 @@ fn split_system_and_messages(
             index += 1;
             continue;
         }
+        if message.role == "assistant" {
+            if let Some(blocks) = message
+                .native_content
+                .as_ref()
+                .and_then(|value| value["anthropic"].as_array())
+            {
+                // Note: reconstructing signed blocks from display segments
+                // changes their bytes or order and invalidates approval replay.
+                let content: Vec<_> = blocks
+                    .iter()
+                    .filter(|block| {
+                        thinking_enabled
+                            || !matches!(
+                                block["type"].as_str(),
+                                Some("thinking" | "redacted_thinking")
+                            )
+                    })
+                    .cloned()
+                    .collect();
+                out.push(json!({"role": "assistant", "content": content}));
+                index += 1;
+                continue;
+            }
+        }
         if !message.tool_calls.is_empty() {
             let mut content = Vec::new();
             if thinking_enabled {
@@ -161,9 +185,8 @@ fn split_system_and_messages(
 /// Empty unless the message carries both the thinking and the signature over
 /// it. Reasoning replayed from stored history arrives without a signature, and
 /// an unsigned or re-signed block fails verification — so the choice is between
-/// sending nothing and sending something the provider rejects. Only the turn
-/// currently in flight has a signature, which is also the only turn Anthropic
-/// requires one for.
+/// sending nothing and sending something the provider rejects. Native
+/// checkpoints instead retain the original provider blocks across restarts.
 fn thinking_block(message: &ChatMessage) -> Option<Value> {
     let thinking = message
         .reasoning_content
@@ -201,6 +224,7 @@ fn anthropic_content_parts(parts: &[ChatContentPart]) -> Vec<Value> {
 #[derive(Default)]
 struct State {
     tools: BTreeMap<i64, ToolAccum>,
+    blocks: BTreeMap<i64, Value>,
     input_tokens: Option<i64>,
     cached_input_tokens: Option<i64>,
 }
@@ -236,8 +260,9 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
         }
         "content_block_start" => {
             let block = &value["content_block"];
+            let index = value["index"].as_i64().unwrap_or(0);
+            state.blocks.insert(index, block.clone());
             if block["type"].as_str() == Some("tool_use") {
-                let index = value["index"].as_i64().unwrap_or(0);
                 let entry = state.tools.entry(index).or_default();
                 entry.id = block["id"].as_str().unwrap_or_default().to_string();
                 entry.name = block["name"].as_str().unwrap_or_default().to_string();
@@ -245,6 +270,22 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
         }
         "content_block_delta" => {
             let delta = &value["delta"];
+            let index = value["index"].as_i64().unwrap_or(0);
+            if let Some(block) = state.blocks.get_mut(&index) {
+                let field = match delta["type"].as_str() {
+                    Some("text_delta") => Some("text"),
+                    Some("thinking_delta") => Some("thinking"),
+                    Some("signature_delta") => Some("signature"),
+                    _ => None,
+                };
+                if let Some(field) = field {
+                    if let Some(part) = delta[field].as_str() {
+                        let mut text = block[field].as_str().unwrap_or_default().to_string();
+                        text.push_str(part);
+                        block[field] = Value::String(text);
+                    }
+                }
+            }
             match delta["type"].as_str().unwrap_or_default() {
                 "text_delta" => {
                     if let Some(text) = delta["text"].as_str() {
@@ -276,8 +317,18 @@ fn parse(line: &str, state: &mut State) -> Vec<ChatDelta> {
         "content_block_stop" => {
             let index = value["index"].as_i64().unwrap_or(0);
             if let Some(accum) = state.tools.remove(&index) {
+                if !accum.args.is_empty() {
+                    if let Some(block) = state.blocks.get_mut(&index) {
+                        block["input"] = serde_json::from_str(&accum.args).unwrap_or(Value::Null);
+                    }
+                }
                 out.push(accum.finish());
             }
+        }
+        "message_stop" => {
+            let blocks: Vec<_> = std::mem::take(&mut state.blocks).into_values().collect();
+            out.push(ChatDelta::NativeContent(json!({"anthropic": blocks})));
+            out.push(ChatDelta::Done);
         }
         "message_delta" => {
             if let Some(output) = value["usage"]["output_tokens"].as_i64() {

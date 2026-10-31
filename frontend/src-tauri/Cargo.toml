@@ -4,6 +4,11 @@ version = "0.1.7"
 description = "Qunica desktop shell"
 authors = ["Qunica"]
 edition = "2021"
+rust-version = "1.97.1"
+
+[features]
+default = []
+rig-engine = ["qunica-backend/rig-engine"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
