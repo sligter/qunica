@@ -6,27 +6,171 @@
 //! intact.
 
 use anyhow::{anyhow, bail, Context};
+use base64::Engine as _;
 use qunica_domain::runtime::ChatContentPart;
 use rig_core::completion::{AssistantContent, AssistantMessage, Message};
 use rig_core::message::{
-    CallId, ImageMediaType, MimeType, Reasoning, Text, ToolCall as RigToolCall, ToolFunction,
-    ToolName, ToolResultContent, UserContent,
+    Api, CallId, ImageMediaType, MimeType, Opaque, Origin, Reasoning, Text,
+    ToolCall as RigToolCall, ToolFunction, ToolName, ToolResultContent, UserContent,
 };
 use serde_json::{json, Value};
 
-use super::super::{ChatMessage, ToolCall};
+use super::super::{ChatMessage, ChatRequest, ToolCall};
+use super::Protocol;
 
 /// Key under which a Rig assistant turn is kept in `native_content`.
 pub(crate) const NATIVE_KEY: &str = "rig";
 
 /// Converts Qunica history to Rig messages and Rig turns back.
 ///
-/// Lossless in both directions for what each side can express:
-/// `from_rig(to_rig(m)) == m` for every message Qunica writes, and a Rig turn
-/// converted to Qunica and back is the same turn, origin and native items
-/// included. What Rig cannot express (an image in a system message, an image
-/// type Rig does not name) is an error, never a silent drop.
+/// Neutral text, images and tools round-trip through the shared message types.
+/// Provider history additionally imports native checkpoint signatures in the
+/// selected provider's context. Rig turns retain their origin and native items.
+/// Unrepresentable system images or image MIME types are errors.
 pub struct RigMessageAdapter;
+
+/// Legacy native checkpoints have provider blocks but no Rig origin. Import
+/// them only on that provider's path; never relabel an existing Rig origin.
+pub(super) fn provider_history(
+    request: &ChatRequest,
+    protocol: Protocol,
+) -> anyhow::Result<Vec<Message>> {
+    request
+        .messages
+        .iter()
+        .map(|message| {
+            let mut mapped = RigMessageAdapter::message_to_rig(message)?;
+            if let Message::Assistant(turn) = &mut mapped {
+                let has_rig = message
+                    .native_content
+                    .as_ref()
+                    .and_then(|value| value.get(NATIVE_KEY))
+                    .is_some();
+                if !has_rig {
+                    match protocol {
+                        Protocol::Anthropic => import_anthropic(turn, message, &request.model)?,
+                        Protocol::Gemini => import_gemini(turn, message, &request.model),
+                        Protocol::OpenAi => {}
+                    }
+                }
+                if matches!(protocol, Protocol::Gemini) {
+                    for block in &turn.content {
+                        if let Some(signature) = block
+                            .native_item()
+                            .and_then(|item| item.get("thoughtSignature"))
+                            .and_then(Value::as_str)
+                        {
+                            // Note: Rig silently strips malformed signatures. Refuse
+                            // before I/O instead of sending an unsigned tool call.
+                            base64::engine::general_purpose::STANDARD
+                                .decode(signature)
+                                .context("Gemini thoughtSignature is not standard Base64")?;
+                        }
+                    }
+                }
+            }
+            Ok(mapped)
+        })
+        .collect()
+}
+
+fn import_anthropic(
+    turn: &mut AssistantMessage,
+    message: &ChatMessage,
+    model: &str,
+) -> anyhow::Result<()> {
+    if let Some(blocks) = message
+        .native_content
+        .as_ref()
+        .and_then(|value| value.get("anthropic"))
+        .and_then(Value::as_array)
+    {
+        turn.content = blocks
+            .iter()
+            .map(anthropic_block)
+            .collect::<anyhow::Result<_>>()?;
+        if !same_display(&project(turn), message) {
+            bail!("native Anthropic blocks disagree with the stored assistant message");
+        }
+    } else {
+        for block in &mut turn.content {
+            if let AssistantContent::Reasoning(reasoning) = block {
+                if let Some(signature) = &message.reasoning_signature {
+                    let text = reasoning.text.clone();
+                    *block = block.clone().with_native(json!({
+                        "type": "thinking", "thinking": text, "signature": signature
+                    }));
+                }
+            }
+        }
+    }
+    turn.origin = Some(Origin::new(
+        Api::from_static("anthropic.messages"),
+        "anthropic",
+        model,
+    ));
+    Ok(())
+}
+
+fn import_gemini(turn: &mut AssistantMessage, message: &ChatMessage, model: &str) {
+    let calls = turn
+        .content
+        .iter_mut()
+        .filter(|block| matches!(block, AssistantContent::ToolCall(_)));
+    for (block, call) in calls.zip(&message.tool_calls) {
+        if let Some(signature) = call
+            .provider_metadata
+            .as_ref()
+            .and_then(|value| value.get("thoughtSignature"))
+            .and_then(Value::as_str)
+        {
+            *block = block.clone().with_native(json!({
+                "functionCall": {"name": call.name, "args": call.args},
+                "thoughtSignature": signature
+            }));
+        }
+    }
+    turn.origin = Some(Origin::new(
+        Api::from_static("gemini.generate_content"),
+        rig_core::providers::gemini::PROVIDER_NAME,
+        model,
+    ));
+}
+
+fn anthropic_block(item: &Value) -> anyhow::Result<AssistantContent> {
+    let block = match item
+        .get("type")
+        .and_then(Value::as_str)
+        .context("native Anthropic block without type")?
+    {
+        "text" => AssistantContent::Text(Text::new(
+            item["text"].as_str().context("text block without text")?,
+        )),
+        "thinking" => AssistantContent::Reasoning(Reasoning::new(
+            item["thinking"]
+                .as_str()
+                .context("thinking block without text")?,
+        )),
+        "redacted_thinking" => AssistantContent::Reasoning(Reasoning {
+            redacted: true,
+            ..Reasoning::default()
+        }),
+        "tool_use" => AssistantContent::ToolCall(RigToolCall::from_wire(
+            item["id"].as_str().context("tool block without id")?,
+            tool_function(
+                tool_name(item["name"].as_str().context("tool block without name")?)?,
+                &item["input"],
+            ),
+        )),
+        _ => {
+            return Ok(AssistantContent::Opaque(Opaque {
+                item: item.clone(),
+                replay: true,
+            }))
+        }
+    };
+    Ok(block.with_native(item.clone()))
+}
 
 impl RigMessageAdapter {
     pub fn to_rig(messages: &[ChatMessage]) -> anyhow::Result<Vec<Message>> {
@@ -175,12 +319,13 @@ fn assistant_to_rig(message: &ChatMessage) -> anyhow::Result<AssistantMessage> {
     // Note: the stored turn is replayed only while it still says what the
     // display fields say. A message edited since (compaction, a host rewrite)
     // is rebuilt from those fields; its stale signatures would not verify.
-    if let Some(stored) = message
+    if let Some(raw) = message
         .native_content
         .as_ref()
         .and_then(|native| native.get(NATIVE_KEY))
-        .and_then(|turn| serde_json::from_value::<AssistantMessage>(turn.clone()).ok())
     {
+        let stored = serde_json::from_value::<AssistantMessage>(raw.clone())
+            .context("invalid persisted Rig assistant turn")?;
         if same_display(&project(&stored), message) {
             return Ok(stored);
         }
@@ -236,29 +381,78 @@ fn project(turn: &AssistantMessage) -> ChatMessage {
                     Some(raw) => serde_json::from_str(raw).unwrap_or(Value::Null),
                     None => call.function.arguments_value(),
                 },
-                provider_metadata: None,
+                provider_metadata: block
+                    .native_item()
+                    .and_then(|value| value.get("thoughtSignature"))
+                    .map(|signature| json!({"thoughtSignature": signature})),
             }),
             _ => {}
         }
     }
-    ChatMessage::assistant_tool_calls(text, calls).with_reasoning(reasoning)
+    let signature = turn
+        .content
+        .iter()
+        .filter(|block| matches!(block, AssistantContent::Reasoning(_)))
+        .filter_map(|block| block.native_item()?.get("signature")?.as_str())
+        .next_back()
+        .map(str::to_string);
+    ChatMessage::assistant_tool_calls(text, calls)
+        .with_reasoning(reasoning)
+        .with_reasoning_signature(signature)
 }
 
 fn same_display(projected: &ChatMessage, message: &ChatMessage) -> bool {
     projected.content == message.content
         && projected.reasoning_content == message.reasoning_content
+        && projected.reasoning_signature == message.reasoning_signature
         && projected.tool_calls.len() == message.tool_calls.len()
         && projected
             .tool_calls
             .iter()
             .zip(&message.tool_calls)
-            .all(|(a, b)| a.id == b.id && a.name == b.name && a.args == b.args)
+            .all(|(a, b)| {
+                a.id == b.id
+                    && a.name == b.name
+                    && a.args == b.args
+                    && a.provider_metadata == b.provider_metadata
+            })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rig_core::message::{Api, Origin};
+
+    #[test]
+    fn changing_a_signature_invalidates_the_stored_turn() {
+        let turn = AssistantMessage::new(vec![AssistantContent::Reasoning(Reasoning::new("plan"))
+            .with_native(
+                json!({"type": "thinking", "thinking": "plan", "signature": "original"}),
+            )])
+        .with_origin(Origin::new(
+            Api::from_static("anthropic.messages"),
+            "anthropic",
+            "model",
+        ));
+        let mut message = RigMessageAdapter::assistant_from_rig(&turn);
+        message.reasoning_signature = Some("edited".into());
+        let Message::Assistant(rebuilt) = RigMessageAdapter::message_to_rig(&message).unwrap()
+        else {
+            panic!("assistant");
+        };
+        assert!(rebuilt.origin.is_none());
+        assert!(rebuilt
+            .content
+            .iter()
+            .all(|block| block.native_item().is_none()));
+    }
+
+    #[test]
+    fn corrupt_persisted_rig_content_is_an_error() {
+        let mut message = ChatMessage::text("assistant", "answer");
+        message.native_content = Some(json!({"rig": {"content": "corrupt"}}));
+        assert!(RigMessageAdapter::message_to_rig(&message).is_err());
+    }
 
     fn call(id: &str, name: &str, args: Value) -> ToolCall {
         ToolCall {
@@ -321,6 +515,7 @@ mod tests {
         let message = RigMessageAdapter::assistant_from_rig(&turn);
         assert_eq!(message.content, "on it");
         assert_eq!(message.reasoning_content.as_deref(), Some("plan"));
+        assert_eq!(message.reasoning_signature.as_deref(), Some("sig"));
         assert_eq!(
             message.tool_calls,
             vec![call("toolu_1", "Read", json!({"p": 1}))]

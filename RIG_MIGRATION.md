@@ -96,8 +96,9 @@ acceptance gates.
 
 `llm::rig_engine` (feature `rig-engine` only) holds `RigMessageAdapter` and
 `RigProvider`. Nothing in the runtime selects it; `build_provider` is unchanged.
-It serves the OpenAI-compatible kinds so far. Anthropic, Gemini and Responses
-fail with "not served yet" and stay on the native providers.
+It serves OpenAI-compatible, Anthropic (including its compatible aliases), and
+Gemini/Google kinds. Responses still fails with "not served yet" on the Rig
+factory. The runtime continues to select native for every kind.
 
 - **History.** A Rig assistant turn is stored whole as `native_content["rig"]`,
   beside its display fields. It is replayed only while its projection still
@@ -132,6 +133,70 @@ Revisit these if a gateway needs the tool-message `name` (some
 OpenAI-compatible fronts for other vendors have), sends single-newline SSE or
 bare `[DONE]`, or rejects `detail`. Also revisit if a Rig upgrade changes
 `AssistantMessage` serde, because stored `native_content["rig"]` depends on it.
+
+### Anthropic and Gemini
+
+Both providers use the same injected transport, HTTP error classification and
+completion gate as OpenAI. Streamed tool blocks remain buffered until Rig
+accepts a terminal completion. Transport truncation, missing terminal events
+and malformed tool arguments cannot release executable calls.
+Malformed argument completions still report billed usage, but emit
+`Truncated` without committing native history. A request-scoped transport
+middleware preserves explicitly requested `tools: []`, which Rig otherwise
+consumes and omits; it adds no tool definitions. History with tools but no
+declared tools follows Rig's text fallback on all three protocols.
+
+Anthropic keeps the native path's API version, thinking token budgets and
+output reserve; thinking suppresses both sampling settings. The adapter
+projects the last signature for the existing event contract while retaining
+every signed thinking/redacted block in order in the complete Rig turn.
+P0's native `native_content["anthropic"]` blocks are also imported in order.
+They must agree with the stored display fields, signature and calls; a
+disagreement fails before I/O. Native checkpoints contain no original model
+identity, so this import assumes the configured Anthropic model, as the native
+path does. It must not be used to migrate history to another model.
+Existing Rig origins are never relabelled.
+An encoded-request guard verifies that required signed/redacted blocks survive
+Rig's history adaptation in their original order, with their text and opaque
+metadata unchanged. A model switch or context mismatch fails before I/O.
+Legacy checkpoints for context-bound Claude models lack the required context
+fingerprint and are therefore refused; a fresh Rig turn retains that context
+and can replay under an unchanged model/tools/system prompt. The guard does
+not invent an original context for old history.
+
+Gemini keeps the native thinking budgets and sampling fields in
+`generationConfig`. Tool `thoughtSignature` is projected to
+`provider_metadata`; full parts, including opaque metadata, stay in the stored
+Rig turn. Legacy call signatures import under Rig's `gcp.gemini` origin.
+Rig silently removes non-Base64 signatures when encoding. The adapter rejects
+those inputs before I/O, rather than sending an unsigned call.
+
+Additional explicit wire differences covered by local contract tests:
+
+- Anthropic system and text messages use content-block arrays. Tool results
+  carry text-block arrays. Adjacent tool results remain one user message.
+- Anthropic emits one final usage snapshot through this adapter; native also
+  emits the initial input snapshot. Final input includes cache reads/writes.
+- Gemini may add `thought: false` to ordinary parts; reasoning marked
+  `thought: true` is emitted as reasoning rather than visible answer text.
+- Anthropic requires a terminal `message_delta.delta.stop_reason`; Gemini
+  requires a candidate `finishReason`. Plain HTTP EOF is insufficient.
+- Rig system messages cannot carry images; both adapters refuse system images
+  before I/O. User images remain supported.
+
+The signing tests use local fixtures: a completed turn is JSON-serialized,
+loaded, and sent in a second request with tool results. They verify retained
+bytes, block order and metadata, not cryptographic acceptance by a live vendor.
+Real Anthropic/Gemini validation and the Responses adapter remain P2 gates.
+Revisit if model changes or context-binding rules prevent signed replay, a
+gateway requires nonstandard signatures/framing, or any opaque part is lost.
+
+Local slice verification (Windows, Rust 1.97.1): the Rig build passes 434
+library tests and 52 contract tests; the default build passes 428 library
+tests and 45 contract tests. Each library suite has two existing ignored
+tests. Formatting, workspace/all-target/all-feature Clippy with warnings
+denied, and whitespace checks pass. This is targeted validation, not a fresh
+full-workspace or cross-platform CI run.
 
 ## Validation
 
