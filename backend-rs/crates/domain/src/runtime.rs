@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChatContentPart {
     Text {
         text: String,
@@ -24,7 +24,7 @@ impl ChatContentPart {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
@@ -51,11 +51,14 @@ pub struct ChatMessage {
     ///
     /// Anthropic signs every thinking block and verifies the signature when the
     /// block travels back, which it requires for the assistant turn that made
-    /// the tool calls. Reasoning replayed from stored history has no signature,
-    /// which is how a provider tells "thinking from this turn" (send it back)
-    /// from "thinking recovered from the database" (do not).
+    /// the tool calls. Legacy history can lack signatures; native checkpoints
+    /// preserve complete provider blocks so restart recovery retains them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_signature: Option<String>,
+    /// Provider-native assistant blocks, keyed by protocol. These are private
+    /// replay material: signatures are valid only over the original block text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_content: Option<serde_json::Value>,
 }
 
 impl ChatMessage {
@@ -69,6 +72,7 @@ impl ChatMessage {
             tool_name: None,
             reasoning_content: None,
             reasoning_signature: None,
+            native_content: None,
         }
     }
 
@@ -117,6 +121,7 @@ impl ChatMessage {
             tool_name: None,
             reasoning_content: None,
             reasoning_signature: None,
+            native_content: None,
         }
     }
 
@@ -130,6 +135,7 @@ impl ChatMessage {
             tool_name: None,
             reasoning_content: None,
             reasoning_signature: None,
+            native_content: None,
         }
     }
 
@@ -147,6 +153,7 @@ impl ChatMessage {
             tool_name: Some(tool_name.into()),
             reasoning_content: None,
             reasoning_signature: None,
+            native_content: None,
         }
     }
 }
@@ -250,6 +257,8 @@ pub enum ChatDelta {
     /// with it: Anthropic verifies the signature against the thinking text and
     /// rejects a block whose signature is missing or does not match.
     ReasoningSignature(String),
+    /// Complete provider-native blocks, emitted before the terminal event.
+    NativeContent(serde_json::Value),
     ToolCall(ToolCall),
     Usage(ContextUsage),
     /// The provider connection ended in the middle of the response, so whatever
@@ -260,7 +269,7 @@ pub enum ChatDelta {
     Done,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,

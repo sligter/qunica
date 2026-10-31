@@ -1669,6 +1669,7 @@ pub async fn enhance_group_prompt(
             ChatDelta::Truncated(_) => return Err(prompt_enhancement_provider_error()),
             ChatDelta::Reasoning(_)
             | ChatDelta::ReasoningSignature(_)
+            | ChatDelta::NativeContent(_)
             | ChatDelta::ToolCall(_)
             | ChatDelta::Usage(_) => {}
         }
@@ -2858,6 +2859,7 @@ pub async fn generate_group_workspace_git_commit_message(
             }
             ChatDelta::Reasoning(_)
             | ChatDelta::ReasoningSignature(_)
+            | ChatDelta::NativeContent(_)
             | ChatDelta::ToolCall(_)
             | ChatDelta::Usage(_) => {}
         }

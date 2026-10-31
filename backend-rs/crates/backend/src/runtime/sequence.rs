@@ -54,6 +54,89 @@ impl SequenceAllocator {
         Self { pool, write_lock }
     }
 
+    /// Persist a native execution revision before an external side effect.
+    /// Private helpers keep hidden rows and cannot pause their caller's thread.
+    pub(crate) async fn checkpoint_native_execution(
+        &self,
+        thread_id: &str,
+        group_id: &str,
+        message: &NewMessage,
+        expected_version: u64,
+        active_dispatch_id: Option<&str>,
+        private: bool,
+    ) -> anyhow::Result<()> {
+        let _guard = self.write_lock.lock().await;
+        let mut tx = begin_write(&self.pool).await?;
+        ensure_thread_writable(&mut tx, thread_id).await?;
+        if let Some(dispatch) = active_dispatch_id {
+            let active: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM agent_dispatches d JOIN group_turns t ON t.id=d.turn_id \
+                 WHERE d.id=? AND d.status='running' AND t.status='running' AND t.thread_id=?)")
+                .bind(dispatch).bind(thread_id).fetch_one(&mut *tx).await?;
+            anyhow::ensure!(active, "execution no longer owns its dispatch");
+        }
+        let existing: Option<(Option<String>, String)> = sqlx::query_as(
+            "SELECT content_json,status FROM messages WHERE id=? AND thread_id=? AND group_id=? AND sender_id=?")
+            .bind(&message.id).bind(thread_id).bind(group_id).bind(&message.sender_id)
+            .fetch_optional(&mut *tx).await?;
+        let now = now_rfc3339();
+        if let Some((raw, status)) = existing {
+            let value: Value = serde_json::from_str(raw.as_deref().unwrap_or("{}"))?;
+            anyhow::ensure!(
+                value["checkpoint_version"].as_u64().unwrap_or(0) == expected_version,
+                "execution checkpoint was claimed by another worker"
+            );
+            anyhow::ensure!(
+                matches!(
+                    status.as_str(),
+                    "interrupted" | "running_checkpoint" | "private_checkpoint"
+                ),
+                "execution checkpoint is closed"
+            );
+            sqlx::query("UPDATE messages SET content=?,content_json=? WHERE id=? AND thread_id=?")
+                .bind(&message.content)
+                .bind(&message.content_json)
+                .bind(&message.id)
+                .bind(thread_id)
+                .execute(&mut *tx)
+                .await?;
+        } else {
+            anyhow::ensure!(expected_version == 0, "execution checkpoint disappeared");
+            let seq: i64 = sqlx::query_scalar("SELECT next_seq FROM threads WHERE id=?")
+                .bind(thread_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            sqlx::query("INSERT INTO messages(id,thread_id,group_id,seq,sender_type,sender_id,message_type,content,content_json,status,created_at) \
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+                .bind(&message.id).bind(thread_id).bind(group_id).bind(seq).bind(&message.sender_type)
+                .bind(&message.sender_id).bind(&message.message_type).bind(&message.content).bind(&message.content_json)
+                .bind(if private { "private_checkpoint" } else { "running_checkpoint" }).bind(&now)
+                .execute(&mut *tx).await?;
+            sqlx::query("UPDATE threads SET next_seq=next_seq+1,updated_at=? WHERE id=?")
+                .bind(&now)
+                .bind(thread_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        super::approval::sync_pending_in_tx(&mut tx, thread_id, message.content_json.as_deref())
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn hide_native_checkpoint(
+        &self,
+        thread: &str,
+        id: Option<&str>,
+        content_json: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let Some(id) = id else { return Ok(()) };
+        let _guard = self.write_lock.lock().await;
+        sqlx::query("UPDATE messages SET status='private_checkpoint',content_json=? WHERE id=? AND thread_id=? AND status='running_checkpoint'")
+            .bind(content_json).bind(id).bind(thread).execute(&self.pool).await?;
+        Ok(())
+    }
+
     /// Persist a durable message and the stream event that announced it in one
     /// transaction.
     ///
@@ -111,6 +194,15 @@ impl SequenceAllocator {
 
         super::approval::sync_pending_in_tx(&mut tx, thread_id, message.content_json.as_deref())
             .await?;
+        if let Some(seq) = sqlx::query_scalar::<_, i64>(
+            "UPDATE messages SET content=?,content_json=?,status='interrupted' WHERE id=? AND thread_id=? AND group_id=? AND status IN ('interrupted','running_checkpoint') RETURNING seq")
+            .bind(&message.content).bind(&message.content_json).bind(&message.id).bind(thread_id).bind(group_id)
+            .fetch_optional(&mut *tx).await? {
+            sqlx::query("UPDATE threads SET status='paused',updated_at=? WHERE id=?")
+                .bind(&now).bind(thread_id).execute(&mut *tx).await?;
+            tx.commit().await?;
+            return Ok(Some(seq));
+        }
         let next_seq: i64 = sqlx::query_scalar("SELECT next_seq FROM threads WHERE id = ?")
             .bind(thread_id)
             .fetch_one(&mut *tx)
@@ -363,6 +455,42 @@ impl SequenceAllocator {
     }
 }
 
+/// Startup recovery never interprets a missing result as permission to retry.
+pub(crate) async fn recover_native_checkpoints_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+) -> anyhow::Result<()> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id,content_json FROM messages WHERE status IN ('interrupted','running_checkpoint','private_checkpoint') \
+         AND json_valid(content_json) AND json_extract(content_json,'$.execution_id') IS NOT NULL")
+        .fetch_all(&mut **tx).await?;
+    for (id, raw) in rows {
+        let mut value: Value = serde_json::from_str(&raw)?;
+        let mut changed = false;
+        if let Some(calls) = value["tool_calls"].as_array_mut() {
+            for call in calls {
+                if call["status"] == "started" && call["result"].is_null() {
+                    call["status"] = Value::String("outcome_unknown".into());
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            value["phase"] = Value::String("outcome_unknown".into());
+            value["checkpoint_version"] =
+                Value::from(value["checkpoint_version"].as_u64().unwrap_or(0) + 1);
+            sqlx::query("UPDATE messages SET content_json=? WHERE id=?")
+                .bind(value.to_string())
+                .bind(id)
+                .execute(&mut **tx)
+                .await?;
+        }
+    }
+    sqlx::query("UPDATE messages SET status='interrupted' WHERE status='running_checkpoint'")
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 pub(crate) async fn persist_message_with_event_in_tx(
     tx: &mut Transaction<'_, Sqlite>,
     thread_id: &str,
@@ -372,6 +500,14 @@ pub(crate) async fn persist_message_with_event_in_tx(
 ) -> anyhow::Result<i64> {
     let now = now_rfc3339();
     ensure_thread_writable(tx, thread_id).await?;
+    if let Some(seq) = sqlx::query_scalar::<_, i64>(
+        "UPDATE messages SET content=?,content_json=?,status='visible' \
+         WHERE id=? AND thread_id=? AND group_id=? AND sender_id=? AND status IN ('interrupted','running_checkpoint') RETURNING seq")
+        .bind(&message.content).bind(&message.content_json).bind(&message.id).bind(thread_id)
+        .bind(group_id).bind(&message.sender_id).fetch_optional(&mut **tx).await? {
+        insert_stream_event(tx, thread_id, event, &now).await?;
+        return Ok(seq);
+    }
     let next_seq: i64 = sqlx::query_scalar("SELECT next_seq FROM threads WHERE id = ?")
         .bind(thread_id)
         .fetch_one(&mut **tx)
@@ -477,6 +613,73 @@ mod tests {
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
     use super::*;
+
+    #[tokio::test]
+    async fn native_checkpoint_revision_allows_only_one_tool_claim() {
+        let db = crate::db::Db::connect("sqlite::memory:").await.unwrap();
+        db.migrate().await.unwrap();
+        let pool = db.pool();
+        sqlx::query("INSERT INTO users(id,email,password_hash,name,created_at,updated_at) VALUES('u','checkpoint@example.test','hash','Owner','now','now')")
+            .execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO groups(id,owner_id,name,created_at,updated_at) VALUES('g','u','Team','now','now')")
+            .execute(pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO threads(id,group_id,created_at,updated_at) VALUES('t','g','now','now')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        let allocator = SequenceAllocator::new(pool.clone(), Arc::new(Mutex::new(())));
+        let initial_next: i64 = sqlx::query_scalar("SELECT next_seq FROM threads WHERE id='t'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        let message = |version, status| {
+            NewMessage {
+            id:"execution".into(),sender_type:"agent".into(),sender_id:Some("agent".into()),
+            message_type:"text".into(),content:String::new(),
+            content_json:Some(serde_json::json!({"schema_version":2,"execution_id":"execution",
+                "checkpoint_version":version,"tool_calls":[{"tool_call_id":"shell","status":status}]}).to_string()),
+        }
+        };
+        allocator
+            .checkpoint_native_execution("t", "g", &message(1, "pending"), 0, None, false)
+            .await
+            .unwrap();
+        let claim_a = message(2, "started");
+        let claim_b = message(2, "started");
+        let (a, b) = tokio::join!(
+            allocator.checkpoint_native_execution("t", "g", &claim_a, 1, None, false),
+            allocator.checkpoint_native_execution("t", "g", &claim_b, 1, None, false)
+        );
+        assert_ne!(
+            a.is_ok(),
+            b.is_ok(),
+            "only one worker may claim the pending revision"
+        );
+        let (count, next): (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM messages),next_seq FROM threads WHERE id='t'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            next,
+            initial_next + 1,
+            "checkpoint updates must not allocate another message sequence"
+        );
+        let mut tx = begin_write(pool).await.unwrap();
+        recover_native_checkpoints_in_tx(&mut tx).await.unwrap();
+        tx.commit().await.unwrap();
+        assert!(
+            allocator
+                .checkpoint_native_execution("t", "g", &claim_a, 2, None, false)
+                .await
+                .is_err(),
+            "startup recovery must fence the old execution revision"
+        );
+    }
 
     /// A pool configured exactly like the running app: the hazard this module
     /// guards against is WAL-specific and invisible under a rollback journal.
