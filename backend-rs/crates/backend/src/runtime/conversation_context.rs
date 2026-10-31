@@ -60,6 +60,8 @@ pub struct ConversationMessage {
     /// that asked for its reasoning back. Peers and humans never see it: it is
     /// the model's private working, not part of the transcript.
     pub reasoning: Vec<String>,
+    /// Original model messages, visible only to their owning agent.
+    pub assistant_turns: Vec<ChatMessage>,
 }
 
 /// The compacted, model-only history saved for one agent in one thread.
@@ -136,6 +138,8 @@ pub struct ConversationToolCall {
     pub result_summary: Option<String>,
     pub args: Option<Value>,
     pub result: Option<String>,
+    #[serde(default)]
+    pub model_output: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -256,6 +260,20 @@ impl From<ConversationRow> for ConversationMessage {
             } else {
                 Vec::new()
             },
+            assistant_turns: if is_agent {
+                #[derive(Default, Deserialize)]
+                struct ModelTurns {
+                    #[serde(default)]
+                    assistant_turns: Vec<ChatMessage>,
+                }
+                row.content_json
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str::<ModelTurns>(raw).ok())
+                    .unwrap_or_default()
+                    .assistant_turns
+            } else {
+                Vec::new()
+            },
         }
     }
 }
@@ -351,6 +369,49 @@ pub fn render_conversation(
         let mut produced_own_message = true;
         match &row.actor {
             ConversationActor::Agent { id, .. } if id == current_agent_id => {
+                if !row.assistant_turns.is_empty() {
+                    let mut pending = false;
+                    for assistant in &row.assistant_turns {
+                        let results: Option<Vec<_>> = assistant
+                            .tool_calls
+                            .iter()
+                            .map(|call| {
+                                let recorded = row
+                                    .tool_calls
+                                    .iter()
+                                    .find(|old| old.tool_call_id.as_deref() == Some(&call.id))?;
+                                let output = recorded.model_output.clone().or_else(|| {
+                                    let result = recorded.result.as_ref()?;
+                                    Some(recorded.status.as_ref().map_or_else(
+                                        || result.clone(),
+                                        |status| format!("status: {status}\n{result}"),
+                                    ))
+                                })?;
+                                Some(ChatMessage::tool_result(&call.id, &call.name, output))
+                            })
+                            .collect();
+                        let Some(results) = results else {
+                            pending = true;
+                            break;
+                        };
+                        messages.push(assistant.clone());
+                        messages.extend(results);
+                    }
+                    let prefix = row
+                        .assistant_turns
+                        .iter()
+                        .map(|assistant| assistant.content.as_str())
+                        .collect::<String>();
+                    let tail = row.content.strip_prefix(&prefix).unwrap_or(&row.content);
+                    if !pending && !tail.is_empty() {
+                        own_message_index = messages.len();
+                        messages.push(ChatMessage::text("assistant", tail));
+                    } else if messages.len() == own_message_index {
+                        produced_own_message = false;
+                    }
+                    message_index_by_row.push(produced_own_message.then_some(own_message_index));
+                    continue;
+                }
                 let completed_calls: Vec<(ToolCall, String)> = row
                     .tool_calls
                     .iter()
@@ -690,6 +751,52 @@ mod tests {
                 "result": "file body"
             }]
         }"#
+    }
+
+    #[test]
+    fn checkpoint_history_preserves_separate_signed_rounds_and_provider_metadata() {
+        let call = |id: &str| ToolCall {
+            id: id.into(),
+            name: "Read".into(),
+            args: serde_json::json!({"path":"note.txt"}),
+            provider_metadata: Some(serde_json::json!({"thoughtSignature":format!("opaque-{id}")})),
+        };
+        let first = ChatMessage::assistant_tool_calls("before", vec![call("one")])
+            .with_reasoning("private first\n")
+            .with_reasoning_signature(Some("sig-one".into()));
+        let second = ChatMessage::assistant_tool_calls("after", vec![call("two")])
+            .with_reasoning("private second")
+            .with_reasoning_signature(Some("sig-two".into()));
+        let raw = serde_json::json!({"schema_version":2,"assistant_turns":[first,second],"tool_calls":[
+            {"tool_call_id":"one","tool_name":"Read","status":"completed","result":"first","model_output":"exact first result"},
+            {"tool_call_id":"two","tool_name":"Read","status":"completed","result":"second","model_output":"exact second result"}
+        ]}).to_string();
+        let mut row = agent_row(Some(&raw));
+        row.content = "beforeafterfinal".into();
+        let rows = vec![row];
+        let rendered = to_llm_messages("sys", "agent-1", &rows, AttachmentAccess::Readable);
+        assert_eq!(rendered.len(), 6);
+        assert_eq!(
+            rendered[1].reasoning_content.as_deref(),
+            Some("private first\n")
+        );
+        assert_eq!(rendered[1].reasoning_signature.as_deref(), Some("sig-one"));
+        assert_eq!(
+            rendered[1].tool_calls[0]
+                .provider_metadata
+                .as_ref()
+                .unwrap()["thoughtSignature"],
+            "opaque-one"
+        );
+        assert_eq!(rendered[2].content, "exact first result");
+        assert_eq!(rendered[3].reasoning_signature.as_deref(), Some("sig-two"));
+        assert_eq!(rendered[4].content, "exact second result");
+        assert_eq!(rendered[5].content, "final");
+        let peer = to_llm_messages("sys", "other-agent", &rows, AttachmentAccess::Readable);
+        let peer_raw = serde_json::to_string(&peer).unwrap();
+        assert!(!peer_raw.contains("private first"));
+        assert!(!peer_raw.contains("opaque-one"));
+        assert!(!peer_raw.contains("sig-one"));
     }
 
     fn human_row(id: &str, content: &str) -> ConversationMessage {

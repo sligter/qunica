@@ -437,6 +437,7 @@ pub async fn generate_system_prompt(
             }
             ChatDelta::Reasoning(_)
             | ChatDelta::ReasoningSignature(_)
+            | ChatDelta::NativeContent(_)
             | ChatDelta::ToolCall(_)
             | ChatDelta::Usage(_) => {}
         }
