@@ -92,6 +92,47 @@ Provider with Qunica's reqwest 0.13 client. It makes no network requests and is
 not evidence of message compatibility or durable execution. Those remain P2/P3
 acceptance gates.
 
+## P2 message adapter and provider
+
+`llm::rig_engine` (feature `rig-engine` only) holds `RigMessageAdapter` and
+`RigProvider`. Nothing in the runtime selects it; `build_provider` is unchanged.
+It serves the OpenAI-compatible kinds so far. Anthropic, Gemini and Responses
+fail with "not served yet" and stay on the native providers.
+
+- **History.** A Rig assistant turn is stored whole as `native_content["rig"]`,
+  beside its display fields. It is replayed only while its projection still
+  equals those fields; an edited message is rebuilt from the fields, without
+  native items. Non-object tool arguments travel as JSON text, so `null` stays
+  `null`. Anything Rig cannot express (an image in a system message, an image
+  MIME type Rig does not name) is an error, never a silent drop.
+- **Request.** A single neutral gateway dialect is used for every compatible
+  host, not Rig's vendor dialects, which rewrite bodies per vendor. `top_p` and
+  `reasoning_effort` go through `additional_params`: Rig refuses `top_p` on a
+  gateway and would round effort levels it does not list. Passback stays per
+  model. Blank `reasoning_content`, which Rig writes on every assistant message
+  once a dialect names the field, is stripped by transport middleware.
+- **Transport and errors.** Qunica builds the reqwest 0.13 client. Configured
+  headers are reqwest defaults, so the credential header always wins and there
+  is one `Authorization`, as on the native path. Rig sends nothing until
+  polled, so `stream` reads the first item. A non-2xx response is therefore an
+  `Err(ProviderHttpError)` with its body (capped as before), and context
+  overflow, passback and transient classification keep working. A mid-stream
+  failure becomes `Truncated`, with no body. Tool calls are released only on a
+  `stop`/`tool_calls` finish.
+
+Differences from the native wire, asserted per engine in `tests/llm_contract.rs`:
+- the tool message has no `name` field (it is not in OpenAI's schema);
+- image parts carry `detail: "auto"`;
+- tool history in a request that declares no tools is sent as text;
+- a reply that is a bare `[DONE]` with no finish is an error;
+- SSE needs blank-line framing (the contract fixtures now use it);
+- system images are refused.
+
+Revisit these if a gateway needs the tool-message `name` (some
+OpenAI-compatible fronts for other vendors have), sends single-newline SSE or
+bare `[DONE]`, or rejects `detail`. Also revisit if a Rig upgrade changes
+`AssistantMessage` serde, because stored `native_content["rig"]` depends on it.
+
 ## Validation
 
 Run from the repository root:

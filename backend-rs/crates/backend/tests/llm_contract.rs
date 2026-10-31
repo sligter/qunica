@@ -9,14 +9,70 @@ use std::sync::Arc;
 
 use axum::{body::Body, http::header, response::IntoResponse, Router};
 use qunica_backend::llm::{
-    AnthropicProvider, ChatDelta, ChatMessage, ChatRequest, GeminiProvider, LlmProvider,
-    OpenAiCompatibleProvider, OpenAiResponsesProvider, ReasoningEffort, ToolCall,
+    build_provider, AnthropicProvider, ChatDelta, ChatMessage, ChatRequest, GeminiProvider,
+    LlmProvider, OpenAiCompatibleProvider, OpenAiResponsesProvider, ProviderConfig,
+    ProviderHttpError, ReasoningEffort, ToolCall, ToolDefinition,
 };
 use qunica_domain::runtime::ChatContentPart;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::Mutex;
+
+/// The engines a contract test runs against: every OpenAI-compatible case
+/// must hold for the native provider and, when built in, for Rig.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Engine {
+    Native,
+    #[cfg(feature = "rig-engine")]
+    Rig,
+}
+
+impl Engine {
+    fn is_rig(self) -> bool {
+        self != Engine::Native
+    }
+}
+
+const ENGINES: &[Engine] = &[
+    Engine::Native,
+    #[cfg(feature = "rig-engine")]
+    Engine::Rig,
+];
+
+fn openai(engine: Engine, url: String) -> Box<dyn LlmProvider> {
+    match engine {
+        Engine::Native => Box::new(OpenAiCompatibleProvider::new(url, "test-key")),
+        #[cfg(feature = "rig-engine")]
+        Engine::Rig => Box::new(
+            qunica_backend::llm::rig_engine::RigProvider::openai_compatible(url, "test-key")
+                .expect("rig provider"),
+        ),
+    }
+}
+
+/// The smallest complete chat-completions reply, for cases that only inspect
+/// the request. Rig rejects a reply that is a bare `[DONE]`: it has no
+/// finish, so nothing says the answer is whole.
+const OPENAI_STOP: &str =
+    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+
+/// One `#[tokio::test]` per case, running it once per engine.
+macro_rules! on_every_engine {
+    ($($case:ident),* $(,)?) => {
+        mod on_every_engine {
+            $(
+                #[tokio::test]
+                async fn $case() {
+                    for &engine in super::ENGINES {
+                        eprintln!("engine: {engine:?}");
+                        super::$case(engine).await;
+                    }
+                }
+            )*
+        }
+    };
+}
 
 /// Start a single-shot HTTP server that responds to every request with `body`
 /// as an event stream. Returns the base URL (e.g. `http://127.0.0.1:54321`).
@@ -149,7 +205,13 @@ fn continuation_request() -> ChatRequest {
         top_p: None,
         reasoning_passback: false,
         include_empty_tools: false,
-        tools: Vec::new(),
+        // A continuation declares the tools it called, as the runtime's do.
+        // Rig sends tool history to a request without tools as text.
+        tools: vec![ToolDefinition {
+            name: "Read".to_string(),
+            description: "Read a file".to_string(),
+            input_schema: json!({"type": "object", "properties": {"file_path": {"type": "string"}}}),
+        }],
         reasoning_effort: None,
     }
 }
@@ -268,13 +330,12 @@ fn ends_with_done(deltas: &[ChatDelta]) -> bool {
     matches!(deltas.last(), Some(ChatDelta::Done))
 }
 
-#[tokio::test]
-async fn llm_contract_openai_maps_content_to_tokens() {
-    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\
-                data: [DONE]\n";
+async fn llm_contract_openai_maps_content_to_tokens(engine: Engine) {
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n\
+                data: [DONE]\n\n";
     let url = fake_server(body).await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+    let provider = openai(engine, url);
 
     let deltas = collect(provider.stream(request()).await.unwrap()).await;
 
@@ -282,16 +343,15 @@ async fn llm_contract_openai_maps_content_to_tokens() {
     assert!(ends_with_done(&deltas));
 }
 
-#[tokio::test]
-async fn llm_contract_openai_maps_reasoning_content_and_reasoning_to_reasoning() {
+async fn llm_contract_openai_maps_reasoning_content_and_reasoning_to_reasoning(engine: Engine) {
     // `reasoning_content` (DeepSeek-style) and `reasoning` (OpenAI-style) both
     // map to ChatDelta::Reasoning.
-    let body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"step 1\"}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"reasoning\":\"step 2\"}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"step 1\"}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{\"reasoning\":\"step 2\"}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{\"content\":\"answer\"}}]}\n\n\
+                data: [DONE]\n\n";
     let url = fake_server(body).await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+    let provider = openai(engine, url);
 
     let deltas = collect(provider.stream(request()).await.unwrap()).await;
 
@@ -299,14 +359,13 @@ async fn llm_contract_openai_maps_reasoning_content_and_reasoning_to_reasoning()
     assert_eq!(tokens(&deltas), vec!["answer"]);
 }
 
-#[tokio::test]
-async fn llm_contract_openai_maps_usage_and_streamed_tool_calls() {
-    let body = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\"}}]}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"Paris\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\
-                data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":7,\"total_tokens\":19}}\n\
-                data: [DONE]\n";
+async fn llm_contract_openai_maps_usage_and_streamed_tool_calls(engine: Engine) {
+    let body = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\"}}]}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"Paris\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n\
+                data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":7,\"total_tokens\":19}}\n\n\
+                data: [DONE]\n\n";
     let url = fake_server(body).await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+    let provider = openai(engine, url);
 
     let deltas = collect(provider.stream(request()).await.unwrap()).await;
 
@@ -319,16 +378,15 @@ async fn llm_contract_openai_maps_usage_and_streamed_tool_calls() {
     assert_eq!(usages(&deltas), vec![(Some(12), Some(7), Some(19))]);
 }
 
-#[tokio::test]
-async fn llm_contract_openai_emits_tool_calls_finished_with_stop() {
+async fn llm_contract_openai_emits_tool_calls_finished_with_stop(engine: Engine) {
     // Some OpenAI-compatible gateways close a tool-calling turn with `stop`
     // instead of `tool_calls`. The buffered call still has to be emitted, or the
     // agent's round ends with no tool result and no text.
-    let body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\\\"note.txt\\\"}\"}}]},\"finish_reason\":\"stop\"}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\\\"note.txt\\\"}\"}}]},\"finish_reason\":\"stop\"}]}\n\n\
+                data: [DONE]\n\n";
     let url = fake_server(body).await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+    let provider = openai(engine, url);
 
     let deltas = collect(provider.stream(request()).await.unwrap()).await;
 
@@ -338,27 +396,26 @@ async fn llm_contract_openai_emits_tool_calls_finished_with_stop() {
     assert_eq!(calls[0].2, serde_json::json!({ "file_path": "note.txt" }));
 }
 
-#[tokio::test]
-async fn llm_contract_openai_drops_tool_calls_truncated_by_the_token_limit() {
+async fn llm_contract_openai_drops_tool_calls_truncated_by_the_token_limit(engine: Engine) {
     // `length` means the arguments were cut mid-JSON, so the call is incomplete
     // and must not be handed to the tool executor.
-    let body = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\"}}]},\"finish_reason\":\"length\"}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\"}}]},\"finish_reason\":\"length\"}]}\n\n\
+                data: [DONE]\n\n";
     let url = fake_server(body).await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+    let provider = openai(engine, url);
 
     let deltas = collect(provider.stream(request()).await.unwrap()).await;
 
     assert!(tool_calls(&deltas).is_empty());
 }
 
-#[tokio::test]
-async fn llm_contract_openai_reports_a_cut_stream_as_truncated_not_done() {
+async fn llm_contract_openai_reports_a_cut_stream_as_truncated_not_done(engine: Engine) {
     // The provider hung up mid-body. The deltas that did arrive are kept, but
     // the stream must close with `Truncated` — ending it with `Done` would make
     // a dropped connection indistinguishable from a model that stopped talking.
-    let url = truncating_server("data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n").await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+    let url =
+        truncating_server("data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n").await;
+    let provider = openai(engine, url);
 
     let deltas = collect(provider.stream(request()).await.unwrap()).await;
 
@@ -367,10 +424,9 @@ async fn llm_contract_openai_reports_a_cut_stream_as_truncated_not_done() {
     assert!(!ends_with_done(&deltas));
 }
 
-#[tokio::test]
-async fn llm_contract_openai_serializes_tool_continuation_messages() {
-    let (url, captures) = capture_server("data: [DONE]\n").await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+async fn llm_contract_openai_serializes_tool_continuation_messages(engine: Engine) {
+    let (url, captures) = capture_server(OPENAI_STOP).await;
+    let provider = openai(engine, url);
 
     let _ = collect(provider.stream(continuation_request()).await.unwrap()).await;
 
@@ -385,14 +441,19 @@ async fn llm_contract_openai_serializes_tool_continuation_messages() {
     );
     assert_eq!(messages[3]["role"], "tool");
     assert_eq!(messages[3]["tool_call_id"], "call_1");
-    assert_eq!(messages[3]["name"], "Read");
+    // `name` is not part of OpenAI's tool message; Rig leaves it out.
+    let name = if engine.is_rig() {
+        Value::Null
+    } else {
+        json!("Read")
+    };
+    assert_eq!(messages[3]["name"], name);
     assert_eq!(messages[3]["content"], "file body");
 }
 
-#[tokio::test]
-async fn llm_contract_openai_sends_reasoning_back_only_when_the_model_asks_for_it() {
-    let (url, captures) = capture_server("data: [DONE]\n").await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+async fn llm_contract_openai_sends_reasoning_back_only_when_the_model_asks_for_it(engine: Engine) {
+    let (url, captures) = capture_server(OPENAI_STOP).await;
+    let provider = openai(engine, url);
 
     let mut off = continuation_request();
     off.messages[2] = off.messages[2]
@@ -433,10 +494,9 @@ async fn llm_contract_openai_sends_reasoning_back_only_when_the_model_asks_for_i
     );
 }
 
-#[tokio::test]
-async fn llm_contract_openai_omits_blank_reasoning_even_with_passback_on() {
-    let (url, captures) = capture_server("data: [DONE]\n").await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+async fn llm_contract_openai_omits_blank_reasoning_even_with_passback_on(engine: Engine) {
+    let (url, captures) = capture_server(OPENAI_STOP).await;
+    let provider = openai(engine, url);
     let mut request = continuation_request();
     request.reasoning_passback = true;
     request.messages[2] = request.messages[2].clone().with_reasoning("   ");
@@ -453,10 +513,9 @@ async fn llm_contract_openai_omits_blank_reasoning_even_with_passback_on() {
     );
 }
 
-#[tokio::test]
-async fn llm_contract_openai_omits_absent_temperature() {
-    let (url, captures) = capture_server("data: [DONE]\n").await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+async fn llm_contract_openai_omits_absent_temperature(engine: Engine) {
+    let (url, captures) = capture_server(OPENAI_STOP).await;
+    let provider = openai(engine, url);
     let mut request = request();
     request.temperature = None;
 
@@ -467,12 +526,11 @@ async fn llm_contract_openai_omits_absent_temperature() {
     assert!(captured[0].get("top_p").is_none(), "{}", captured[0]);
 }
 
-#[tokio::test]
-async fn llm_contract_openai_serializes_sampling_as_f64() {
+async fn llm_contract_openai_serializes_sampling_as_f64(engine: Engine) {
     // The value comes from JSON configuration. Carrying it as f32 and
     // re-serializing it emitted `0.949999988079071` for a configured 0.95.
-    let (url, captures) = capture_server("data: [DONE]\n").await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+    let (url, captures) = capture_server(OPENAI_STOP).await;
+    let provider = openai(engine, url);
     let mut request = request();
     request.temperature = Some(0.95);
     request.top_p = Some(0.8);
@@ -484,33 +542,41 @@ async fn llm_contract_openai_serializes_sampling_as_f64() {
     assert_eq!(captured[0]["top_p"], json!(0.8), "{}", captured[0]);
 }
 
-#[tokio::test]
-async fn llm_contract_openai_serializes_image_parts_and_preserves_text_only_shape() {
-    let (url, captures) = capture_server("data: [DONE]\n").await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+async fn llm_contract_openai_serializes_image_parts_and_preserves_text_only_shape(engine: Engine) {
+    let (url, captures) = capture_server(OPENAI_STOP).await;
+    let provider = openai(engine, url);
 
     let _ = collect(provider.stream(image_request("user")).await.unwrap()).await;
     let _ = collect(provider.stream(request()).await.unwrap()).await;
 
     let captured = captures.lock().await;
+    let mut image_url = json!({ "url": "data:image/png;base64,AQID" });
+    // Rig spells out the default detail level; the native path leaves it to
+    // the provider, whose default is the same `auto`.
+    if engine.is_rig() {
+        image_url["detail"] = json!("auto");
+    }
     assert_eq!(
         captured[0]["messages"][0]["content"],
         json!([
             { "type": "text", "text": "describe this image" },
-            {
-                "type": "image_url",
-                "image_url": { "url": "data:image/png;base64,AQID" }
-            }
+            { "type": "image_url", "image_url": image_url }
         ])
     );
     assert_eq!(captured[1]["messages"][0]["content"], "hi");
 }
 
-#[tokio::test]
-async fn llm_contract_openai_serializes_system_image_parts() {
-    let (url, captures) = capture_server("data: [DONE]\n").await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+async fn llm_contract_openai_serializes_system_image_parts(engine: Engine) {
+    let (url, captures) = capture_server(OPENAI_STOP).await;
+    let provider = openai(engine, url);
 
+    // Rig's system message is text only. The runtime never puts an image
+    // there, so the Rig engine refuses one up front instead of dropping it.
+    if engine.is_rig() {
+        assert!(provider.stream(image_request("system")).await.is_err());
+        assert!(captures.lock().await.is_empty());
+        return;
+    }
     let _ = collect(provider.stream(image_request("system")).await.unwrap()).await;
 
     let captured = captures.lock().await;
@@ -827,10 +893,9 @@ async fn captured_body(
     body
 }
 
-#[tokio::test]
-async fn llm_contract_openai_maps_effort_to_its_own_enum() {
-    let (url, captures) = capture_server("data: [DONE]\n").await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+async fn llm_contract_openai_maps_effort_to_its_own_enum(engine: Engine) {
+    let (url, captures) = capture_server(OPENAI_STOP).await;
+    let provider = openai(engine, url);
 
     for (effort, expected) in [
         (ReasoningEffort::Low, "low"),
@@ -839,20 +904,19 @@ async fn llm_contract_openai_maps_effort_to_its_own_enum() {
         (ReasoningEffort::XHigh, "xhigh"),
         (ReasoningEffort::Max, "max"),
     ] {
-        let body = captured_body(&provider, &captures, Some(effort)).await;
+        let body = captured_body(&*provider, &captures, Some(effort)).await;
         assert_eq!(body["reasoning_effort"], json!(expected));
     }
 }
 
-#[tokio::test]
-async fn llm_contract_openai_never_sends_a_thinking_budget() {
+async fn llm_contract_openai_never_sends_a_thinking_budget(engine: Engine) {
     // This endpoint's vocabulary for thinking is the level. A budget key is an
     // unknown parameter here — at best ignored, at worst a rejected request.
-    let (url, captures) = capture_server("data: [DONE]\n").await;
-    let provider = OpenAiCompatibleProvider::new(url, "test-key");
+    let (url, captures) = capture_server(OPENAI_STOP).await;
+    let provider = openai(engine, url);
 
     for effort in ReasoningEffort::ALL {
-        let body = captured_body(&provider, &captures, Some(effort)).await;
+        let body = captured_body(&*provider, &captures, Some(effort)).await;
         for key in ["thinking", "thinking_budget", "budget_tokens", "reasoning"] {
             assert!(body.get(key).is_none(), "{key} in {body}");
         }
@@ -1228,3 +1292,175 @@ async fn responses_transport_failure_is_truncated() {
     assert!(matches!(deltas.last(), Some(ChatDelta::Truncated(_))));
     assert!(!deltas.iter().any(|delta| matches!(delta, ChatDelta::Done)));
 }
+
+/// Answer every request with `status` and `body`, keeping each request's
+/// headers.
+async fn status_server(
+    status: u16,
+    body: &'static str,
+) -> (String, Arc<Mutex<Vec<axum::http::HeaderMap>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    let captures = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new().fallback({
+        let captures = Arc::clone(&captures);
+        move |request: axum::http::Request<Body>| {
+            let captures = Arc::clone(&captures);
+            async move {
+                captures.lock().await.push(request.headers().clone());
+                let status = axum::http::StatusCode::from_u16(status).expect("status");
+                (status, [(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve fake provider");
+    });
+    (format!("http://{addr}"), captures)
+}
+
+fn configured(engine: Engine, url: String, headers: &[(&str, &str)]) -> Box<dyn LlmProvider> {
+    let cfg = ProviderConfig {
+        kind: "openai-compatible".to_string(),
+        base_url: Some(url),
+        api_key: "test-key".to_string(),
+        headers: headers
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect(),
+        user_agent: Some("qunica-contract".to_string()),
+        default_model: "test-model".to_string(),
+        reasoning_passback: false,
+        supports_temperature: true,
+        supports_reasoning_effort: true,
+        context_window_tokens: None,
+        context_output_reserve_ratio: None,
+    };
+    match engine {
+        Engine::Native => build_provider(&cfg).expect("native provider"),
+        #[cfg(feature = "rig-engine")]
+        Engine::Rig => {
+            qunica_backend::llm::rig_engine::build_rig_provider(&cfg).expect("rig provider")
+        }
+    }
+}
+
+async fn llm_contract_openai_configured_headers_never_replace_the_key(engine: Engine) {
+    let (url, captures) = status_server(200, OPENAI_STOP).await;
+    let provider = configured(
+        engine,
+        url,
+        &[
+            ("Authorization", "Bearer configured"),
+            ("X-Gateway-Team", "qunica"),
+        ],
+    );
+
+    let _ = collect(provider.stream(request()).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    let auth: Vec<_> = captured[0].get_all(header::AUTHORIZATION).iter().collect();
+    assert_eq!(auth, ["Bearer test-key"], "one credential, the key's");
+    assert_eq!(captured[0]["x-gateway-team"], "qunica");
+    assert_eq!(captured[0][header::USER_AGENT], "qunica-contract");
+}
+
+async fn llm_contract_openai_keeps_the_error_body_for_classification(engine: Engine) {
+    for (status, body, check) in [
+        (
+            400,
+            "{\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"This model's maximum context length is 128000 tokens.\"}}",
+            ProviderHttpError::is_context_overflow as fn(&ProviderHttpError) -> bool,
+        ),
+        (
+            400,
+            "{\"error\":{\"message\":\"The `reasoning_content` in the thinking mode must be passed back to the API.\"}}",
+            ProviderHttpError::requires_reasoning_passback,
+        ),
+        (429, "{\"error\":{\"message\":\"Rate limit reached\"}}", ProviderHttpError::is_transient),
+    ] {
+        let (url, _) = status_server(status, body).await;
+        let error = openai(engine, url)
+            .stream(request())
+            .await
+            .expect_err("a rejected request fails before streaming");
+        let http = error
+            .downcast_ref::<ProviderHttpError>()
+            .unwrap_or_else(|| panic!("not a ProviderHttpError: {error:#}"));
+        assert_eq!(http.status, status);
+        assert_eq!(http.body, body);
+        assert!(check(http), "{body}");
+    }
+}
+
+/// A Rig turn travels back as itself: the tool round the runtime stores from
+/// the deltas replays with the same call and arguments.
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn llm_contract_rig_replays_a_stored_tool_round() {
+    let body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"look first\"}}]}\n\n\
+                data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_9\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"file_path\\\":\\\"a.txt\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n\
+                data: [DONE]\n\n";
+    let (url, captures) = capture_server(body).await;
+    let provider = openai(Engine::Rig, url);
+
+    let deltas = collect(provider.stream(continuation_request()).await.unwrap()).await;
+    let native = deltas
+        .iter()
+        .find_map(|delta| match delta {
+            ChatDelta::NativeContent(native) => Some(native.clone()),
+            _ => None,
+        })
+        .expect("the Rig turn is surfaced for storage");
+    let calls: Vec<ToolCall> = deltas
+        .iter()
+        .filter_map(|delta| match delta {
+            ChatDelta::ToolCall(call) => Some(call.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut stored = ChatMessage::assistant_tool_calls("", calls).with_reasoning("look first");
+    stored.native_content = Some(native);
+
+    let mut next = continuation_request();
+    next.reasoning_passback = true;
+    next.messages.truncate(2);
+    next.messages.push(stored);
+    next.messages
+        .push(ChatMessage::tool_result("call_9", "Read", "a body"));
+    let _ = collect(provider.stream(next).await.unwrap()).await;
+
+    let captured = captures.lock().await;
+    let replayed = &captured[1]["messages"][2];
+    assert_eq!(replayed["tool_calls"][0]["id"], "call_9");
+    assert_eq!(
+        replayed["tool_calls"][0]["function"]["arguments"],
+        "{\"file_path\":\"a.txt\"}"
+    );
+    assert_eq!(replayed["reasoning_content"], "look first");
+    assert_eq!(captured[1]["messages"][3]["tool_call_id"], "call_9");
+}
+
+on_every_engine!(
+    llm_contract_openai_configured_headers_never_replace_the_key,
+    llm_contract_openai_keeps_the_error_body_for_classification,
+    llm_contract_openai_maps_content_to_tokens,
+    llm_contract_openai_maps_reasoning_content_and_reasoning_to_reasoning,
+    llm_contract_openai_maps_usage_and_streamed_tool_calls,
+    llm_contract_openai_emits_tool_calls_finished_with_stop,
+    llm_contract_openai_drops_tool_calls_truncated_by_the_token_limit,
+    llm_contract_openai_reports_a_cut_stream_as_truncated_not_done,
+    llm_contract_openai_serializes_tool_continuation_messages,
+    llm_contract_openai_sends_reasoning_back_only_when_the_model_asks_for_it,
+    llm_contract_openai_omits_blank_reasoning_even_with_passback_on,
+    llm_contract_openai_omits_absent_temperature,
+    llm_contract_openai_serializes_sampling_as_f64,
+    llm_contract_openai_serializes_image_parts_and_preserves_text_only_shape,
+    llm_contract_openai_serializes_system_image_parts,
+    llm_contract_openai_maps_effort_to_its_own_enum,
+    llm_contract_openai_never_sends_a_thinking_budget,
+);
