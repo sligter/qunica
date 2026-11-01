@@ -3275,10 +3275,33 @@ async fn run_resume_inner(
     req: &ResumeRequest,
     ctx: &mut StreamCtx,
 ) -> Result<TurnOutcome, Cancelled> {
-    let agent = match load_resume_candidate(&services.pool, &req.group_id, &req.agent_id).await {
+    let mut agent = match load_resume_candidate(&services.pool, &req.group_id, &req.agent_id).await
+    {
         Ok(agent) => agent,
         Err(err) => return fail_resume(ctx, &err.to_string()).await,
     };
+    if ctx
+        .resume
+        .as_ref()
+        .is_some_and(|resume| resume.turn.driver_checkpoint.is_some())
+    {
+        // Note: approval acceptance checked the live configuration atomically.
+        // A later config edit applies to new executions, not this accepted job.
+        let mut config = match agent
+            .model_config_json
+            .as_deref()
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+        {
+            Ok(value) => value.unwrap_or_else(|| json!({})),
+            Err(error) => return fail_resume(ctx, &error.to_string()).await,
+        };
+        let Some(object) = config.as_object_mut() else {
+            return fail_resume(ctx, "invalid recorded engine configuration").await;
+        };
+        object.insert("engine".into(), json!("rig"));
+        agent.model_config_json = Some(config.to_string());
+    }
     let group = match load_group_runtime_config(&services.pool, &req.group_id).await {
         Ok(group) => group,
         Err(err) => return fail_resume(ctx, &err.to_string()).await,
@@ -4135,7 +4158,9 @@ async fn run_agent_turn_inner(
         .as_ref()
         .map(|resume| resume.turn.clone())
         .unwrap_or_default();
-    engine.restore(turn.driver_checkpoint.as_ref());
+    engine
+        .restore(turn.driver_checkpoint.as_ref())
+        .map_err(StepErr::Db)?;
     turn.effort_override = ctx.effort_override;
     turn.execution_id = Some(
         ctx.resume

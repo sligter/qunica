@@ -613,3 +613,203 @@ async fn rig_resume_keeps_accepted_tools_and_excludes_the_aborted_tail() {
         "audit fragments are retained"
     );
 }
+
+#[tokio::test]
+async fn rig_approval_cannot_resume_under_a_different_engine() {
+    let scenario = Scenario::new(
+        "engine-binding",
+        vec![
+            ok(tool_body(vec![(
+                "remove",
+                "Bash",
+                json!({"command":"rm source.txt"}),
+            )])),
+            ok(text_body("must not request")),
+        ],
+    )
+    .await;
+    std::fs::write(
+        scenario.root.path().join("source.txt"),
+        "keep until the original engine resumes",
+    )
+    .unwrap();
+    let paused = scenario.run().await;
+    assert_eq!(
+        payloads_of_kind(&paused, StreamEventKind::ApprovalRequired).len(),
+        1,
+        "{paused:?}"
+    );
+    let thread: String =
+        sqlx::query_scalar("SELECT thread_id FROM messages WHERE group_id=? AND sender_id=?")
+            .bind(&scenario.group)
+            .bind(&scenario.agent)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    set_agent_model_config(&scenario.state, &scenario.agent, json!({"engine":"native"})).await;
+    let (status, rejected) = send(
+        &scenario.app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/threads/{thread}/resume"),
+            &scenario.token,
+            json!({"approval":{"tool_call_id":"remove","approved":true}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{rejected:?}");
+    assert!(
+        scenario.root.path().join("source.txt").exists(),
+        "the engine mismatch must stop before the approved side effect: {rejected:?}"
+    );
+    assert_eq!(scenario.requests.lock().await.len(), 1);
+    let pending: String = sqlx::query_scalar(
+        "SELECT status FROM pending_approvals WHERE thread_id=? AND tool_call_id='remove'",
+    )
+    .bind(&thread)
+    .fetch_one(scenario.state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        pending, "pending",
+        "a rejected engine change must not consume approval"
+    );
+    set_agent_model_config(&scenario.state, &scenario.agent, json!({"engine":"rig"})).await;
+    let recovered = stream_events(
+        &scenario.app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &scenario.token,
+        json!({"approval":{"tool_call_id":"remove","approved":true}}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&recovered, StreamEventKind::AgentMessage).len(),
+        1,
+        "{recovered:?}"
+    );
+    assert!(!scenario.root.path().join("source.txt").exists());
+    assert_eq!(scenario.requests.lock().await.len(), 2);
+    assert_eq!(
+        scenario.checkpoint().await["driver_checkpoint"]["attempts"],
+        2
+    );
+}
+
+#[tokio::test]
+async fn rig_history_requires_rig_until_native_starts_a_fresh_thread() {
+    let scenario = Scenario::new(
+        "history-engine",
+        vec![
+            ok(text_body("rig answer")),
+            ok(text_body("native fresh answer")),
+        ],
+    )
+    .await;
+    let events = scenario.run().await;
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::AgentMessage).len(),
+        1
+    );
+    let thread: String =
+        sqlx::query_scalar("SELECT thread_id FROM messages WHERE group_id=? AND sender_id=?")
+            .bind(&scenario.group)
+            .bind(&scenario.agent)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    set_agent_model_config(&scenario.state, &scenario.agent, json!({"engine":"native"})).await;
+    let rejected = stream_events(
+        &scenario.app,
+        &format!("/api/v2/groups/{}/messages/stream", scenario.group),
+        &scenario.token,
+        json!({"content":"continue old history","thread_id":thread}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&rejected, StreamEventKind::DispatchFailed).len(),
+        1,
+        "{rejected:?}"
+    );
+    assert_eq!(
+        scenario.requests.lock().await.len(),
+        1,
+        "reject before provider I/O"
+    );
+    let fresh = seed_thread(&scenario.state, &scenario.group, "active").await;
+    let accepted = stream_events(
+        &scenario.app,
+        &format!("/api/v2/groups/{}/messages/stream", scenario.group),
+        &scenario.token,
+        json!({"content":"new native task","thread_id":fresh}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&accepted, StreamEventKind::AgentMessage)
+            .first()
+            .map(|p| &p["content"]),
+        Some(&json!("native fresh answer")),
+        "{accepted:?}"
+    );
+    assert_eq!(scenario.requests.lock().await.len(), 2);
+}
+
+#[tokio::test]
+async fn rig_accepted_resume_keeps_its_engine_after_a_later_config_edit() {
+    let scenario = Scenario::new(
+        "accepted-engine",
+        vec![
+            ok(tool_body(vec![(
+                "remove",
+                "Bash",
+                json!({"command":"rm source.txt"}),
+            )])),
+            ok(text_body("finished original execution")),
+        ],
+    )
+    .await;
+    std::fs::write(scenario.root.path().join("source.txt"), "approved").unwrap();
+    let paused = scenario.run().await;
+    assert_eq!(
+        payloads_of_kind(&paused, StreamEventKind::ApprovalRequired).len(),
+        1
+    );
+    let (thread, message, content, raw): (String, String, String, Option<String>) = sqlx::query_as(
+        "SELECT thread_id,id,content,content_json FROM messages WHERE group_id=? AND sender_id=?",
+    )
+    .bind(&scenario.group)
+    .bind(&scenario.agent)
+    .fetch_one(scenario.state.db.pool())
+    .await
+    .unwrap();
+    let decision: qunica_backend::tools::ApprovalDecision =
+        serde_json::from_value(json!({"tool_call_id":"remove","approved":true})).unwrap();
+    // Represent the accepted approval command before its worker runs.
+    sqlx::query("UPDATE pending_approvals SET status='resolved',version=version+1,decision_json=? WHERE thread_id=? AND tool_call_id='remove'")
+        .bind(serde_json::to_string(&decision).unwrap()).bind(&thread).execute(scenario.state.db.pool()).await.unwrap();
+    set_agent_model_config(&scenario.state, &scenario.agent, json!({"engine":"native"})).await;
+    let services = RuntimeServices::new(
+        scenario.state.db.pool().clone(),
+        scenario.state.write_lock.clone(),
+    );
+    let (tx, mut rx) = mpsc::channel(256);
+    let worker = tokio::spawn(run_thread_resume(
+        services,
+        ResumeRequest {
+            group_id: scenario.group.clone(),
+            thread_id: thread,
+            agent_id: scenario.agent.clone(),
+            message_id: message,
+            existing_content: content,
+            content_json: raw,
+            approval: Some(decision),
+        },
+        tx,
+    ));
+    while rx.recv().await.is_some() {}
+    assert_eq!(worker.await.unwrap(), TurnOutcome::Completed);
+    assert!(!scenario.root.path().join("source.txt").exists());
+    assert_eq!(scenario.requests.lock().await.len(), 2);
+    let saved = scenario.checkpoint().await;
+    assert_eq!(saved["driver_checkpoint"]["attempts"], 2);
+    assert_eq!(saved["driver_checkpoint"]["phase"], "done");
+}

@@ -76,6 +76,29 @@ pub(crate) fn validate_config(config: Option<&serde_json::Value>) -> anyhow::Res
     }
 }
 
+pub(crate) fn validate_resume_engine(
+    config: Option<&str>,
+    content: Option<&str>,
+) -> anyhow::Result<()> {
+    let content: serde_json::Value = content
+        .map(serde_json::from_str)
+        .transpose()?
+        .unwrap_or_default();
+    if content
+        .get("driver_checkpoint")
+        .is_some_and(|value| !value.is_null())
+    {
+        let config: serde_json::Value = config
+            .map(serde_json::from_str)
+            .transpose()?
+            .unwrap_or_default();
+        anyhow::ensure!(config.get("engine").and_then(|value| value.as_str()) == Some("rig"),
+            "This execution belongs to Rig; restore engine=rig before resuming. Native rollback requires a new thread.");
+        validate_config(Some(&config))?;
+    }
+    Ok(())
+}
+
 pub(crate) enum TurnEngine {
     Native,
     #[cfg(feature = "rig-engine")]
@@ -115,13 +138,18 @@ impl TurnEngine {
         }
     }
 
-    pub fn restore(&mut self, checkpoint: Option<&DriverCheckpoint>) {
-        #[cfg(feature = "rig-engine")]
-        if let Self::Rig(driver) = self {
-            driver.restore(checkpoint);
+    pub fn restore(&mut self, checkpoint: Option<&DriverCheckpoint>) -> anyhow::Result<()> {
+        // Note: a config change must not reinterpret an accepted Rig exchange
+        // or reset its budget. See RIG_MIGRATION.md#p3-host-driven-agentrun.
+        match self {
+            Self::Native => anyhow::ensure!(
+                checkpoint.is_none(),
+                "This execution belongs to Rig; restore engine=rig before resuming. Native rollback requires a new thread."
+            ),
+            #[cfg(feature = "rig-engine")]
+            Self::Rig(driver) => driver.restore(checkpoint),
         }
-        #[cfg(not(feature = "rig-engine"))]
-        let _ = checkpoint;
+        Ok(())
     }
 
     pub fn checkpoint(&self) -> Option<DriverCheckpoint> {
@@ -142,11 +170,14 @@ impl TurnEngine {
     }
 
     pub fn prepare(&mut self, request: &ChatRequest) -> anyhow::Result<()> {
-        #[cfg(feature = "rig-engine")]
-        if let Self::Rig(driver) = self {
-            driver.prepare(request)?;
+        match self {
+            Self::Native => anyhow::ensure!(
+                !request.messages.iter().any(|message| message.native_content.as_ref().is_some_and(|native| native.get("rig").is_some())),
+                "Native cannot replay Rig history losslessly; use engine=rig or start a new thread."
+            ),
+            #[cfg(feature = "rig-engine")]
+            Self::Rig(driver) => driver.prepare(request)?,
         }
-        let _ = request;
         Ok(())
     }
 

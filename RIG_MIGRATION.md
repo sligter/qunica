@@ -262,6 +262,15 @@ execution, including request retries and approval resumes. They supplement the
 existing group scheduler budget, which also accounts for summarization and
 delegated agents. They do not reset when an AgentRun is rebuilt.
 
+Before accepting a Rig resume command, the agent must have `engine: "rig"`.
+An engine mismatch is rejected inside the approval transaction, without consuming
+the pending decision; restoring Rig allows the original approval to resume.
+After acceptance, the continuation stays bound to its recorded engine, so later
+engine-setting edits apply to new executions. Native also refuses to replay
+Rig-native history without a verified lossless conversion. A native rollback
+therefore starts a fresh thread. Other agents still read public Rig replies as
+ordinary untrusted conversation text.
+
 `runtime/rig_driver.rs` owns a sans-I/O `AgentRun`. Qunica still drives streaming,
 hooks, tool execution, approval, SQLite persistence, cancellation and scheduling.
 The driver requires `CallModel` before sending a request, accepts a complete
@@ -337,19 +346,23 @@ These fixtures do not establish live-vendor signature acceptance, production
 gateway compatibility or two-release canary stability. The default stays native;
 P4 rollout and P5 deletion require their own evidence.
 
+The recovery guards additionally cover engine changes during approval, restoring
+the original engine without losing approval, and native rollback on a new thread.
+
 ### Local P3 verification (Windows, Rust 1.97.1, 2026-11-01)
 
-The final Rig run passes 713 tests across the library, agents API, AgentAsTool,
+The final Rig run passes 716 tests across the library, agents API, AgentAsTool,
 four scheduler suites, group streaming and provider contracts, with three
-existing ignored tests and no filters. Group streaming includes 21 Rig scenarios,
+existing ignored tests and no filters. Group streaming includes 24 Rig scenarios,
 covering the ten acceptance areas above, explicit resume after invalid/truncated
 attempts, retained accepted tools, all four provider loops and rejected-terminal
 billing. Formatting, strict workspace/all-target/all-feature Clippy and whitespace
 checks pass.
 
-Native passes 627 tests in the same runtime/API/scheduler/library range, plus
-50 provider contracts. The latter passed three complete default-parallel runs
-with `NO_PROXY=127.0.0.1,localhost` scoped to the test process. Ambient Windows
+Native passes 677 tests in the same nine suites, with three existing ignored
+tests and no filters. Both final commands scope `NO_PROXY=127.0.0.1,localhost`
+to the test process; the 50 native provider contracts also passed three complete
+default-parallel runs with this setting. Ambient Windows
 system-proxy runs hit connection abort/reset errors (10053/10054); the system
 proxy did not bypass loopback. A serial contract run also passed. Application
 proxy behavior and production retry policy were not changed.
@@ -360,9 +373,11 @@ missing Shell artifact). Both group cases passed in the final unfiltered Rig run
 their underlying intermittent causes are not claimed fixed. Do not concurrently
 rebuild an executable while its tests are still running on Windows.
 
-The P2 head `172114c` passed [CI run 41194779017](https://github.com/sligter/qunica/actions/runs/41194779017).
-That result does not certify the P3 changes; current cross-platform status belongs
-to the new PR head's CI. Live-vendor replay and P4/P5 remain separate gates.
+P3 head `e8fa38b` passed all eight jobs in [CI run 41262158633](https://github.com/sligter/qunica/actions/runs/41262158633),
+including unfiltered workspace tests: native 1,065 and Rig 1,103 passed, seven
+existing ignored each. The approval-engine binding follow-up requires its own
+head's CI; the older green run is baseline evidence. Live-vendor replay and P4/P5
+remain separate gates.
 
 ## Validation
 

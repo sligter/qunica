@@ -758,6 +758,19 @@ async fn accept_resume(
             "approval checkpoint changed",
         ));
     }
+    // Note: reject an engine switch before consuming an approval. The runtime
+    // binds the accepted continuation to its recorded engine after this commit.
+    let model_config: Option<String> =
+        sqlx::query_scalar("SELECT model_config_json FROM agents WHERE id=?")
+            .bind(&prepared.agent_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_error)?;
+    crate::runtime::rig_driver::validate_resume_engine(
+        model_config.as_deref(),
+        prepared.content_json.as_deref(),
+    )
+    .map_err(|error| ApiError::conflict(error.to_string()))?;
     if decision.is_none() {
         // Preserve the existing explicit Continue action: it skips an unanswered
         // gated call, never grants it, and lets the model choose another action.
