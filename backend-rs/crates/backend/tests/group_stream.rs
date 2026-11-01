@@ -540,6 +540,11 @@ async fn seed_agent(
     agent_id
 }
 
+async fn set_group_engine(state: &AppState, group: &str, engine: &str) {
+    sqlx::query("UPDATE agents SET model_config_json=json_set(COALESCE(model_config_json,'{}'),'$.engine',?) WHERE id IN (SELECT agent_id FROM group_agents WHERE group_id=?)")
+        .bind(engine).bind(group).execute(state.db.pool()).await.unwrap();
+}
+
 async fn set_agent_model_config(state: &AppState, agent_id: &str, config: Value) {
     sqlx::query("UPDATE agents SET model_config_json = ? WHERE id = ?")
         .bind(config.to_string())
@@ -816,7 +821,7 @@ async fn recording_fake_provider_sequence(bodies: Vec<String>) -> (String, Arc<M
                     .lock()
                     .await
                     .pop_front()
-                    .unwrap_or_else(|| "data: [DONE]\n".to_owned());
+                    .unwrap_or_else(|| "data: [DONE]\n\n".to_owned());
                 ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
             }
         }
@@ -875,7 +880,7 @@ async fn fake_provider_sequence(bodies: Vec<String>) -> String {
                 let mut queue = queue.lock().await;
                 queue
                     .pop_front()
-                    .unwrap_or_else(|| "data: [DONE]\n".to_string())
+                    .unwrap_or_else(|| "data: [DONE]\n\n".to_string())
             };
             ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
         }
@@ -992,7 +997,7 @@ async fn fake_provider_status_sequence(responses: Vec<(StatusCode, String)>) -> 
                 let mut queue = queue.lock().await;
                 queue
                     .pop_front()
-                    .unwrap_or((StatusCode::OK, "data: [DONE]\n".to_string()))
+                    .unwrap_or((StatusCode::OK, "data: [DONE]\n\n".to_string()))
             };
             (status, [(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
         }
@@ -1027,7 +1032,7 @@ async fn recording_fake_provider_status_sequence(
                     .lock()
                     .await
                     .pop_front()
-                    .unwrap_or((StatusCode::OK, "data: [DONE]\n".to_string()));
+                    .unwrap_or((StatusCode::OK, "data: [DONE]\n\n".to_string()));
                 (status, [(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
             }
         }
@@ -1081,18 +1086,31 @@ async fn fake_nested_cancellable_provider() -> (String, Arc<Notify>, Arc<Notify>
     (format!("http://{addr}"), leaf_started, release_leaf)
 }
 
+fn wire_text(content: &Value) -> String {
+    match content.as_str() {
+        Some(text) => text.to_string(),
+        None => content
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
 fn text_body(text: &str) -> String {
     format!(
-        "data: {}\ndata: [DONE]\n",
-        json!({"choices": [{"delta": {"content": text}}]})
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]})
     )
 }
 
 fn moderator_body(agent_id: &str, total_tokens: i64) -> String {
     let selection = json!({"agent_id": agent_id}).to_string();
     format!(
-        "data: {}\ndata: {}\ndata: [DONE]\n",
-        json!({"choices": [{"delta": {"content": selection}}]}),
+        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": selection}, "finish_reason": "stop"}]}),
         json!({
             "choices": [],
             "usage": {
@@ -1106,7 +1124,7 @@ fn moderator_body(agent_id: &str, total_tokens: i64) -> String {
 
 fn automatic_moderator_body(decision: Value, total_tokens: i64) -> String {
     format!(
-        "data: {}\ndata: {}\ndata: [DONE]\n",
+        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         json!({"choices": [{"delta": {"content": decision.to_string()}}]}),
         json!({
             "choices": [],
@@ -1135,7 +1153,7 @@ fn tool_body(calls: Vec<(&str, &str, Value)>) -> String {
         })
         .collect();
     format!(
-        "data: {}\ndata: [DONE]\n",
+        "data: {}\n\ndata: [DONE]\n\n",
         json!({"choices": [{"delta": {"tool_calls": tool_calls}, "finish_reason": "tool_calls"}]})
     )
 }
@@ -1158,7 +1176,7 @@ fn text_then_tool_body(text: &str, calls: Vec<(&str, &str, Value)>) -> String {
         })
         .collect();
     format!(
-        "data: {}\ndata: {}\ndata: [DONE]\n",
+        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         json!({"choices": [{"delta": {"content": text}}]}),
         json!({"choices": [{"delta": {"tool_calls": tool_calls}, "finish_reason": "tool_calls"}]})
     )
@@ -1166,10 +1184,10 @@ fn text_then_tool_body(text: &str, calls: Vec<(&str, &str, Value)>) -> String {
 
 fn tool_body_with_usage(calls: Vec<(&str, &str, Value)>, total_tokens: i64) -> String {
     let mut body = tool_body(calls);
-    let done = "data: [DONE]\n";
+    let done = "data: [DONE]\n\n";
     body.truncate(body.len() - done.len());
     body.push_str(&format!(
-        "data: {}\n{done}",
+        "data: {}\n\n{done}",
         json!({
             "choices": [],
             "usage": {
@@ -1356,6 +1374,14 @@ async fn independent_task_jobs_run_concurrently_with_isolated_history_and_cancel
 
 #[tokio::test]
 async fn compacted_context_is_reused_on_the_next_turn() {
+    compacted_context_is_reused_on_the_next_turn_case("native").await;
+}
+#[tokio::test]
+async fn rig_compacted_context_is_reused_on_the_next_turn() {
+    compacted_context_is_reused_on_the_next_turn_case("rig").await;
+}
+
+async fn compacted_context_is_reused_on_the_next_turn_case(engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "compaction-checkpoint@example.com").await;
     let owner = owner_id(&state, "compaction-checkpoint@example.com").await;
@@ -1408,6 +1434,7 @@ async fn compacted_context_is_reused_on_the_next_turn() {
         .await;
     }
 
+    set_group_engine(&state, &group, engine).await;
     for content in ["first new turn", "second new turn"] {
         let events = stream_events(
             &app,
@@ -1815,8 +1842,7 @@ async fn conversation_identity_resume_keeps_peer_and_human_content_untrusted() {
     let owner = owner_id(&state, "identity-resume@example.com").await;
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({})).await;
-    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\" continued\"}}]}\n\
-                         data: [DONE]\n";
+    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\" continued\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let (base_url, captured) = recording_fake_provider(provider_body).await;
     let provider = seed_provider(&state, &owner, &base_url).await;
     let current_agent = seed_agent(
@@ -1886,7 +1912,21 @@ async fn conversation_identity_resume_keeps_peer_and_human_content_untrusted() {
 
     let requests = captured.lock().await;
     assert_eq!(requests.len(), 1);
-    let messages = requests[0]["messages"].as_array().unwrap();
+    let messages: Vec<Value> = requests[0]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| match message["content"].as_array() {
+            Some(parts) => parts
+                .iter()
+                .map(|part| {
+                    assert_eq!(part["type"], "text");
+                    json!({"role":message["role"],"content":part["text"]})
+                })
+                .collect(),
+            None => vec![message.clone()],
+        })
+        .collect();
     assert_eq!(messages[1]["role"], "user");
     assert_eq!(
         messages[1]["content"],
@@ -2009,10 +2049,7 @@ async fn vision_attachment_png_is_native_by_default_and_can_be_disabled() {
 
     // The text agent shares the group workspace, so its relative path is real.
     let text_content = &requests[1]["messages"][1]["content"];
-    assert!(text_content
-        .as_str()
-        .unwrap()
-        .contains("<workspace-attachment name=\"diagram.png\" mime_type=\"image/png\" size=\"4\" path=\"uploads/diagram.png\">"));
+    assert!(wire_text(text_content).contains("<workspace-attachment name=\"diagram.png\" mime_type=\"image/png\" size=\"4\" path=\"uploads/diagram.png\">"));
     assert!(!text_content.to_string().contains("image_url"));
     assert!(!text_content.to_string().contains("AQIDBA=="));
 }
@@ -2084,7 +2121,7 @@ async fn vision_attachment_unsupported_or_unavailable_workspace_files_are_refere
 
     let requests = requests.lock().await;
     let content = &requests[0]["messages"][1]["content"];
-    let text = content.as_str().unwrap();
+    let text = wire_text(content);
     assert!(text.contains("missing.png"));
     assert!(text.contains("diagram.svg"));
     assert!(text.contains("spec.pdf"));
@@ -2561,9 +2598,7 @@ async fn message_send_free_speech_one_agent_returns_persisted_reply_and_history(
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
 
-    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
-                         data: {\"choices\":[{\"delta\":{\"content\":\" from fake\"}}]}\n\
-                         data: [DONE]\n";
+    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" from fake\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(provider_body).await).await;
     let agent = seed_agent(
         &state,
@@ -2620,8 +2655,7 @@ async fn message_send_proactive_silent_turn_returns_warning_without_agent_row() 
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({"proactive_mode": true})).await;
 
-    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\"<SILENT>\"}}]}\n\
-                         data: [DONE]\n";
+    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\"<SILENT>\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(provider_body).await).await;
     let agent = seed_agent(
         &state,
@@ -2655,7 +2689,7 @@ async fn message_send_proactive_silent_turn_returns_warning_without_agent_row() 
     assert_eq!(body["warnings"], json!(["No one replied"]));
 
     let agent_messages: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM messages WHERE group_id = ? AND sender_type = 'agent'",
+        "SELECT COUNT(*) FROM messages WHERE group_id = ? AND sender_type = 'agent' AND status IN ('visible','interrupted')",
     )
     .bind(&group)
     .fetch_one(state.db.pool())
@@ -2673,8 +2707,7 @@ async fn message_send_waiting_for_user_returns_reply_and_stops_fanout() {
     let group = create_group(&app, &token, &workspace, json!({"proactive_mode": true})).await;
 
     let provider_body =
-        "data: {\"choices\":[{\"delta\":{\"content\":\"<WAITING_FOR_USER> need a budget\"}}]}\n\
-         data: [DONE]\n";
+        "data: {\"choices\":[{\"delta\":{\"content\":\"<WAITING_FOR_USER> need a budget\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(provider_body).await).await;
     let first = seed_agent(
         &state,
@@ -3302,9 +3335,7 @@ async fn group_stream_uses_monotonic_sequence_not_timestamps() {
     // free-speech: the single agent responds without an explicit mention.
     let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
 
-    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" world\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
     seed_agent(
         &state,
@@ -3350,8 +3381,7 @@ async fn stream_replay_live_stream_sets_sse_ids() {
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
 
-    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
     seed_agent(
         &state,
@@ -3377,6 +3407,14 @@ async fn stream_replay_live_stream_sets_sse_ids() {
 
 #[tokio::test]
 async fn group_stream_executes_native_tool_and_continues_model() {
+    group_stream_executes_native_tool_and_continues_model_case("native").await;
+}
+#[tokio::test]
+async fn rig_group_stream_executes_native_tool_and_continues_model() {
+    group_stream_executes_native_tool_and_continues_model_case("rig").await;
+}
+
+async fn group_stream_executes_native_tool_and_continues_model_case(engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "native-tool-loop@example.com").await;
     let owner = owner_id(&state, "native-tool-loop@example.com").await;
@@ -3405,6 +3443,7 @@ async fn group_stream_executes_native_tool_and_continues_model() {
     )
     .await;
 
+    set_group_engine(&state, &group, engine).await;
     let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -3871,6 +3910,14 @@ async fn assert_deepseek_tools(search_enabled: bool) {
 
 #[tokio::test]
 async fn provider_retry_preserves_completed_tool_context() {
+    provider_retry_preserves_completed_tool_context_case("native").await;
+}
+#[tokio::test]
+async fn rig_provider_retry_preserves_completed_tool_context() {
+    provider_retry_preserves_completed_tool_context_case("rig").await;
+}
+
+async fn provider_retry_preserves_completed_tool_context_case(engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "provider-retry@example.com").await;
     let owner = owner_id(&state, "provider-retry@example.com").await;
@@ -3905,6 +3952,7 @@ async fn provider_retry_preserves_completed_tool_context() {
     )
     .await;
 
+    set_group_engine(&state, &group, engine).await;
     let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -3937,6 +3985,14 @@ async fn provider_retry_preserves_completed_tool_context() {
 
 #[tokio::test]
 async fn provider_failure_persists_completed_tool_context_for_resume() {
+    provider_failure_persists_completed_tool_context_for_resume_case("native").await;
+}
+#[tokio::test]
+async fn rig_provider_failure_persists_completed_tool_context_for_resume() {
+    provider_failure_persists_completed_tool_context_for_resume_case("rig").await;
+}
+
+async fn provider_failure_persists_completed_tool_context_for_resume_case(engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "provider-resume@example.com").await;
     let owner = owner_id(&state, "provider-resume@example.com").await;
@@ -3987,6 +4043,7 @@ async fn provider_failure_persists_completed_tool_context_for_resume() {
     )
     .await;
 
+    set_group_engine(&state, &group, engine).await;
     let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -4319,6 +4376,14 @@ async fn new_message_supersedes_paused_thread_after_provider_failure() {
 
 #[tokio::test]
 async fn group_stream_continues_past_24_tool_rounds() {
+    group_stream_continues_past_24_tool_rounds_case("native").await;
+}
+#[tokio::test]
+async fn rig_group_stream_continues_past_24_tool_rounds() {
+    group_stream_continues_past_24_tool_rounds_case("rig").await;
+}
+
+async fn group_stream_continues_past_24_tool_rounds_case(engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "unbounded-tool-loop@example.com").await;
     let owner = owner_id(&state, "unbounded-tool-loop@example.com").await;
@@ -4349,6 +4414,7 @@ async fn group_stream_continues_past_24_tool_rounds() {
     )
     .await;
 
+    set_group_engine(&state, &group, engine).await;
     let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -4712,8 +4778,7 @@ async fn stream_replay_after_user_message_returns_durable_tail_without_duplicate
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
 
-    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
     seed_agent(
         &state,
@@ -4817,8 +4882,7 @@ async fn stream_replay_from_done_returns_empty_without_duplicates() {
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
 
-    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
     seed_agent(
         &state,
@@ -4919,8 +4983,7 @@ async fn stream_replay_event_id_from_another_group_returns_not_found() {
     .await;
     let target_group = create_group(&app, &token, &workspace, json!({"name": "Target"})).await;
 
-    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
     seed_agent(
         &state,
@@ -4970,8 +5033,7 @@ async fn group_stream_supports_gemini_provider_kind_without_network() {
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
 
-    let body = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Gemini hello\"}]}}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Gemini hello\"}]},\"finishReason\":\"STOP\"}]}\n\n";
     let provider = seed_provider_kind(&state, &owner, "gemini", &fake_provider(body).await).await;
     seed_agent(
         &state,
@@ -6021,7 +6083,7 @@ async fn scheduler_persists_turn_and_dispatch_lifecycle() {
         &state,
         &owner,
         &fake_provider(
-            "data: {\"choices\":[{\"delta\":{\"content\":\"scheduled\"}}]}\ndata: [DONE]\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"scheduled\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
         )
         .await,
     )
@@ -6156,9 +6218,7 @@ async fn scheduler_token_budget_stops_before_the_next_dispatch() {
         &state,
         &owner,
         &fake_provider_sequence(vec![
-            "data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\
-             data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\
-             data: [DONE]\n"
+            "data: {\"choices\":[{\"delta\":{\"content\":\"first\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n"
                 .to_owned(),
             text_body("second"),
         ])
@@ -6730,13 +6790,13 @@ async fn bounded_handoff_silent_helper_terminalizes_parent_child_and_turn_once()
             .await
             .unwrap();
     let agent_messages: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM messages WHERE group_id = ? AND sender_type = 'agent'",
+        "SELECT COUNT(*) FROM messages WHERE group_id = ? AND sender_type = 'agent' AND status IN ('visible','interrupted')",
     )
     .bind(&group)
     .fetch_one(state.db.pool())
     .await
     .unwrap();
-    assert_eq!(statuses, vec!["completed", "silent"]);
+    assert_eq!(statuses, vec!["completed", "silent"], "{events:?}");
     assert_eq!(turn, ("silence".to_owned(), Some("silence".to_owned())));
     assert_eq!(agent_messages, 0);
     assert!(events.iter().any(|event| event["kind"] == "done"));
@@ -7102,6 +7162,16 @@ async fn assert_public_nested_handoff_state(
 
 #[tokio::test]
 async fn bounded_nested_call_handoff_success_preserves_private_terminal_metadata() {
+    bounded_nested_call_handoff_success_preserves_private_terminal_metadata_case("native").await;
+}
+#[tokio::test]
+async fn rig_bounded_nested_call_handoff_success_preserves_private_terminal_metadata() {
+    bounded_nested_call_handoff_success_preserves_private_terminal_metadata_case("rig").await;
+}
+
+async fn bounded_nested_call_handoff_success_preserves_private_terminal_metadata_case(
+    engine: &str,
+) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "nested-call-handoff@example.com").await;
     let owner = owner_id(&state, "nested-call-handoff@example.com").await;
@@ -7129,6 +7199,7 @@ async fn bounded_nested_call_handoff_success_preserves_private_terminal_metadata
     .await;
     let (caller, _, _) = seed_nested_call_handoff_agents(&state, &owner, &group, &provider).await;
 
+    set_group_engine(&state, &group, engine).await;
     let _ = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -7250,6 +7321,16 @@ async fn bounded_nested_call_handoff_failure_stays_private_and_leaves_no_active_
 
 #[tokio::test]
 async fn bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_once() {
+    bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_once_case("native").await;
+}
+#[tokio::test]
+async fn rig_bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_once() {
+    bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_once_case("rig").await;
+}
+
+async fn bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_once_case(
+    engine: &str,
+) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "nested-call-cancel@example.com").await;
     let owner = owner_id(&state, "nested-call-cancel@example.com").await;
@@ -7259,6 +7340,7 @@ async fn bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_onc
     let provider = seed_provider(&state, &owner, &provider_url).await;
     seed_nested_call_handoff_agents(&state, &owner, &group, &provider).await;
     let cancellation = Arc::new(AtomicBool::new(false));
+    set_group_engine(&state, &group, engine).await;
     let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
         .with_cancellation_flag(Arc::clone(&cancellation));
     let request = TurnRequest {
@@ -7422,7 +7504,9 @@ async fn assert_nested_private_handoff_state(
             .await
             .unwrap();
     let visible_senders: Vec<String> = sqlx::query_scalar(
-        "SELECT sender_id FROM messages WHERE group_id = ? AND sender_type = 'agent' ORDER BY seq",
+        // Internal execution checkpoints retain private helper recovery facts;
+        // only public transcript rows can count as a helper speaking.
+        "SELECT sender_id FROM messages WHERE group_id = ? AND sender_type = 'agent' AND status IN ('visible','interrupted') ORDER BY seq",
     )
     .bind(group_id)
     .fetch_all(state.db.pool())
@@ -7458,7 +7542,7 @@ async fn bounded_private_call_artifact_excludes_reasoning_and_tool_io() {
     std::fs::write(root.path().join("private.txt"), TOOL_SENTINEL).unwrap();
     let group = create_group(&app, &token, &workspace, json!({"scheduler_enabled": true})).await;
     let helper_round = format!(
-        "data: {}\ndata: {}\ndata: [DONE]\n",
+        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         json!({"choices": [{"delta": {"reasoning_content": REASONING_SENTINEL}}]}),
         json!({"choices": [{"delta": {"tool_calls": [{
             "index": 0,
@@ -7852,7 +7936,7 @@ async fn handoff_claims_a_pending_public_responder_without_requeueing_it() {
     )
     .await;
     let senders: Vec<String> = sqlx::query_scalar(
-        "SELECT sender_id FROM messages WHERE sender_type = 'agent' ORDER BY seq",
+        "SELECT sender_id FROM messages WHERE sender_type = 'agent' AND status IN ('visible','interrupted') ORDER BY seq",
     )
     .fetch_all(state.db.pool())
     .await
@@ -7932,8 +8016,7 @@ async fn group_stream_proactive_silent_turn_does_not_persist_agent_message() {
     let group = create_group(&app, &token, &workspace, json!({"proactive_mode": true})).await;
 
     // The agent declines its turn with the silent marker.
-    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"<SILENT>\"}}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"<SILENT>\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
     seed_agent(
         &state,
@@ -7961,7 +8044,7 @@ async fn group_stream_proactive_silent_turn_does_not_persist_agent_message() {
 
     // The silent turn persisted no agent message row.
     let agent_messages: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'agent'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'agent' AND status IN ('visible','interrupted')")
             .fetch_one(state.db.pool())
             .await
             .unwrap();
@@ -7986,8 +8069,7 @@ async fn group_stream_reply_without_visible_text_announces_the_silent_turn() {
     // A reasoning-only round: the model thinks, then ends the turn without ever
     // emitting visible content. The client needs to hear that the turn is over,
     // otherwise the agent's bubble stays on "streaming" with no reply.
-    let body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"}}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
     seed_agent(
         &state,
@@ -8011,7 +8093,7 @@ async fn group_stream_reply_without_visible_text_announces_the_silent_turn() {
     assert!(kinds.contains(&"agent_silent".to_string()));
     assert!(!kinds.contains(&"agent_message".to_string()));
     let agent_messages: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'agent'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE sender_type = 'agent' AND status IN ('visible','interrupted')")
             .fetch_one(state.db.pool())
             .await
             .unwrap();
@@ -8031,8 +8113,10 @@ async fn group_stream_cut_provider_connection_fails_the_turn_instead_of_falling_
     let provider = seed_provider(
         &state,
         &owner,
-        &truncating_fake_provider("data: {\"choices\":[{\"delta\":{\"content\":\"Working\"}}]}\n")
-            .await,
+        &truncating_fake_provider(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Working\"}}]}\n\n",
+        )
+        .await,
     )
     .await;
     seed_agent(
@@ -8075,8 +8159,7 @@ async fn group_stream_waiting_for_user_stops_remaining_proactive_fanout() {
 
     // The first agent pauses for human input; the second must never run.
     let body =
-        "data: {\"choices\":[{\"delta\":{\"content\":\"<WAITING_FOR_USER> need a budget\"}}]}\n\
-                data: [DONE]\n";
+        "data: {\"choices\":[{\"delta\":{\"content\":\"<WAITING_FOR_USER> need a budget\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
     let first = seed_agent(
         &state,
@@ -8135,10 +8218,7 @@ async fn group_stream_client_disconnect_after_visible_token_persists_replayable_
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
 
-    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"content\":\"c\"}}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"c\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
     let agent = seed_agent(
         &state,
@@ -8235,9 +8315,11 @@ async fn group_stream_coalesces_token_deltas_without_losing_text() {
 
     let expected: String = (0..50).map(|i| format!("w{i} ")).collect();
     let mut body: String = (0..50)
-        .map(|i| format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"w{i} \"}}}}]}}\n"))
+        .map(|i| format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"w{i} \"}}}}]}}\n\n"))
         .collect();
-    body.push_str("data: [DONE]\n");
+    body.push_str(
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+    );
     let body: &'static str = Box::leak(body.into_boxed_str());
     let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
     seed_agent(
@@ -8304,13 +8386,7 @@ async fn group_stream_client_disconnect_before_token_runs_to_replayable_terminal
     let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
 
     // Stream many tokens so the runtime is still mid-reply when we disconnect.
-    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"content\":\"c\"}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"content\":\"d\"}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"content\":\"e\"}}]}\n\
-                data: {\"choices\":[{\"delta\":{\"content\":\"f\"}}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"c\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"d\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"e\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"f\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
     seed_agent(
         &state,
@@ -8655,8 +8731,7 @@ async fn resume_thread_success_appends_to_existing_interrupted_message() {
     let owner = owner_id(&state, "resume-success@example.com").await;
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({})).await;
-    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\" continued\"}}]}\n\
-                         data: [DONE]\n";
+    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\" continued\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(provider_body).await).await;
     let agent = seed_agent(
         &state,
@@ -8841,9 +8916,7 @@ async fn resume_thread_disconnect_completes_message_for_replay() {
     let owner = owner_id(&state, "resume-cancel@example.com").await;
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({})).await;
-    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\" more\"}}]}\n\
-                         data: {\"choices\":[{\"delta\":{\"content\":\" later\"}}]}\n\
-                         data: [DONE]\n";
+    let provider_body = "data: {\"choices\":[{\"delta\":{\"content\":\" more\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" later\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(provider_body).await).await;
     let agent = seed_agent(
         &state,
@@ -8927,8 +9000,7 @@ async fn group_stream_no_routed_agents_ends_in_silence() {
     // Neither free-speech nor proactive, and no @mention → nobody responds.
     let group = create_group(&app, &token, &workspace, json!({})).await;
 
-    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"unused\"}}]}\n\
-                data: [DONE]\n";
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"unused\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
     let provider = seed_provider(&state, &owner, &fake_provider(body).await).await;
     seed_agent(
         &state,
@@ -9162,9 +9234,9 @@ async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() 
 // Communication topologies
 // ---------------------------------------------------------------------------
 
-const OK_SSE: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\ndata: [DONE]\n";
+const OK_SSE: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
 const MENTION_SSE: &str =
-    "data: {\"choices\":[{\"delta\":{\"content\":\"over to @Bravo\"}}]}\ndata: [DONE]\n";
+    "data: {\"choices\":[{\"delta\":{\"content\":\"over to @Bravo\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
 
 /// Set a group agent's topology fields directly: the seeding helpers bind
 /// agents without going through the topology API.
@@ -10275,6 +10347,14 @@ async fn a_classic_chat_model_does_not_receive_the_agents_stale_thinking_level()
 
 #[tokio::test]
 async fn a_reasoning_passback_rejection_is_healed_with_one_retry() {
+    a_reasoning_passback_rejection_is_healed_with_one_retry_case("native").await;
+}
+#[tokio::test]
+async fn rig_a_reasoning_passback_rejection_is_healed_with_one_retry() {
+    a_reasoning_passback_rejection_is_healed_with_one_retry_case("rig").await;
+}
+
+async fn a_reasoning_passback_rejection_is_healed_with_one_retry_case(engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "agent-passback-heal@example.com").await;
     let owner = owner_id(&state, "agent-passback-heal@example.com").await;
@@ -10330,6 +10410,7 @@ async fn a_reasoning_passback_rejection_is_healed_with_one_retry() {
     )
     .await;
 
+    set_group_engine(&state, &group, engine).await;
     let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -10339,7 +10420,7 @@ async fn a_reasoning_passback_rejection_is_healed_with_one_retry() {
     .await;
 
     let requests = captured.lock().await;
-    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert_eq!(requests.len(), 2, "events: {events:?}");
     let previous_answer = |request: &Value| {
         request["messages"]
             .as_array()
@@ -10368,6 +10449,436 @@ async fn a_reasoning_passback_rejection_is_healed_with_one_retry() {
 // ---------------------------------------------------------------------------
 // Tool-call approval
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn native_checkpoint_restores_signed_anthropic_blocks_and_remaining_calls() {
+    approval_checkpoint_roundtrip("anthropic", "native").await;
+}
+
+#[tokio::test]
+async fn native_checkpoint_restores_exact_deepseek_reasoning_after_restart() {
+    approval_checkpoint_roundtrip("openai-compatible", "native").await;
+}
+
+#[tokio::test]
+async fn rig_approval_restart_keeps_anthropic_signed_batch() {
+    approval_checkpoint_roundtrip("anthropic", "rig").await;
+}
+#[tokio::test]
+async fn rig_approval_restart_keeps_deepseek_reasoning_batch() {
+    approval_checkpoint_roundtrip("openai-compatible", "rig").await;
+}
+
+async fn approval_checkpoint_roundtrip(kind: &str, engine: &str) {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = format!("checkpoint-{kind}@example.test");
+    let token = register_and_login(&app, &email).await;
+    let owner = owner_id(&state, &email).await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    std::fs::write(root.path().join("build.txt"), "artifact").unwrap();
+    let group = create_group(&app, &token, &workspace, json!({"free_speech":true})).await;
+    let expected_blocks = json!([
+        {"type":"thinking","thinking":"first\nexact ","signature":"sig-one"},
+        {"type":"text","text":"Inspecting."},
+        {"type":"thinking","thinking":"second","signature":"sig-two"},
+        {"type":"redacted_thinking","data":"opaque-original"},
+        {"type":"tool_use","id":"call_rm","name":"Bash","input":{"command":"rm build.txt"}},
+        {"type":"tool_use","id":"call_write","name":"Write","input":{"file_path":"after.txt","content":"original batch"}}
+    ]);
+    let (first, next) = if kind == "anthropic" {
+        let mut events =
+            vec![json!({"type":"message_start","message":{"usage":{"input_tokens":10}}})];
+        for (index, block) in expected_blocks.as_array().unwrap().iter().enumerate() {
+            let mut start = block.clone();
+            if block["type"] == "tool_use" {
+                start["input"] = json!({});
+            }
+            let delta_field = match block["type"].as_str() {
+                Some("thinking") => Some(("thinking", "thinking_delta")),
+                Some("text") => Some(("text", "text_delta")),
+                _ => None,
+            };
+            if let Some((field, _)) = delta_field {
+                start[field] = json!("");
+                if field == "thinking" {
+                    start["signature"] = json!("");
+                }
+            }
+            events.push(json!({"type":"content_block_start","index":index,"content_block":start}));
+            if let Some((field, delta_type)) = delta_field {
+                events.push(json!({"type":"content_block_delta","index":index,"delta":{"type":delta_type,field:block[field]}}));
+                if field == "thinking" {
+                    events.push(json!({"type":"content_block_delta","index":index,"delta":{"type":"signature_delta","signature":block["signature"]}}));
+                }
+            }
+            if block["type"] == "tool_use" {
+                events.push(json!({"type":"content_block_delta","index":index,
+                    "delta":{"type":"input_json_delta","partial_json":block["input"].to_string()}}));
+            }
+            events.push(json!({"type":"content_block_stop","index":index}));
+        }
+        events.push(json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}));
+        events.push(json!({"type":"message_stop"}));
+        let first = events
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect();
+        let next = "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Done.\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n".into();
+        (first, next)
+    } else {
+        let first = format!(
+            "data: {}\n\ndata: {}\n\ndata: {}\n\n{}",
+            json!({"choices":[{"delta":{"reasoning_content":"first\nexact "}}]}),
+            json!({"choices":[{"delta":{"content":"Inspecting."}}]}),
+            json!({"choices":[{"delta":{"reasoning_content":"second"}}]}),
+            tool_body(vec![
+                ("call_rm", "Bash", json!({"command":"rm build.txt"})),
+                (
+                    "call_write",
+                    "Write",
+                    json!({"file_path":"after.txt","content":"original batch"})
+                )
+            ])
+        );
+        (first, text_body("Done."))
+    };
+    let (url, requests) = recording_fake_provider_sequence(vec![first, next]).await;
+    let provider = seed_provider_kind(&state, &owner, kind, &url).await;
+    sqlx::query("UPDATE llm_providers SET reasoning_passback=1 WHERE id=?")
+        .bind(&provider)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let agent = seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Cleaner",
+        "2024-01-01T00:00:00Z",
+        json!({"tools":{"bash":{"enabled":true},"write":{"enabled":true}}}),
+    )
+    .await;
+    set_agent_model_config(
+        &state,
+        &agent,
+        json!({"reasoning_effort":"high", "engine":engine}),
+    )
+    .await;
+    let paused = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content":"clean the artifact then write the report"}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&paused, StreamEventKind::ApprovalRequired).len(),
+        1,
+        "{paused:?}"
+    );
+    let (thread, raw): (String, String) = sqlx::query_as(
+        "SELECT thread_id,content_json FROM messages WHERE group_id=? AND status='interrupted'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let checkpoint: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(checkpoint["schema_version"], 3);
+    assert_eq!(checkpoint["driver_checkpoint"]["attempts"], 1);
+    assert_eq!(checkpoint["driver_checkpoint"]["completion_calls"], 1);
+    assert_eq!(checkpoint["tool_calls"][1]["status"], "pending");
+    qunica_backend::runtime::group_scheduler::SchedulerStore::new(
+        state.db.pool().clone(),
+        state.write_lock.clone(),
+    )
+    .recover_incomplete_turns()
+    .await
+    .unwrap();
+    let mut restarted = state.clone();
+    restarted.active_turns = qunica_backend::runtime::group_scheduler::ActiveTurnRegistry::new();
+    let app = qunica_backend::api::router(restarted);
+    let resumed = stream_events(
+        &app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &token,
+        json!({"approval":{"tool_call_id":"call_rm","approved":true}}),
+    )
+    .await;
+    assert!(
+        payloads_of_kind(&resumed, StreamEventKind::Error).is_empty(),
+        "{resumed:?}"
+    );
+    assert!(!root.path().join("build.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("after.txt")).unwrap(),
+        "original batch"
+    );
+    if engine == "rig" {
+        let raw: String = sqlx::query_scalar(
+            "SELECT content_json FROM messages WHERE group_id=? AND sender_id=?",
+        )
+        .bind(&group)
+        .bind(&agent)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+        let completed: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(completed["driver_checkpoint"]["attempts"], 2);
+        assert_eq!(completed["driver_checkpoint"]["completion_calls"], 2);
+        assert_eq!(completed["driver_checkpoint"]["phase"], "done");
+    }
+    let requests = requests.lock().await;
+    assert_eq!(
+        requests.len(),
+        2,
+        "approval recovery must not ask the model to recreate calls"
+    );
+    let assistant = requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "assistant")
+        .unwrap();
+    if kind == "anthropic" {
+        assert_eq!(assistant["content"], expected_blocks);
+    } else {
+        assert_eq!(assistant["reasoning_content"], "first\nexact second");
+        assert_eq!(assistant["tool_calls"].as_array().unwrap().len(), 2);
+    }
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM messages WHERE group_id=? AND sender_type='agent'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        count, 1,
+        "checkpoints and completion must share a message id"
+    );
+}
+
+#[tokio::test]
+async fn native_checkpoint_does_not_repeat_shell_after_crash_before_result_commit() {
+    native_checkpoint_does_not_repeat_shell_after_crash_before_result_commit_case("native").await;
+}
+#[tokio::test]
+async fn rig_native_checkpoint_does_not_repeat_shell_after_crash_before_result_commit() {
+    native_checkpoint_does_not_repeat_shell_after_crash_before_result_commit_case("rig").await;
+}
+
+async fn native_checkpoint_does_not_repeat_shell_after_crash_before_result_commit_case(
+    engine: &str,
+) {
+    struct CrashWindow(Arc<Notify>);
+    #[async_trait::async_trait]
+    impl qunica_backend::runtime::RuntimeHook for CrashWindow {
+        fn name(&self) -> &'static str {
+            "crash-before-result-commit"
+        }
+        async fn post_tool(
+            &self,
+            _: &qunica_backend::runtime::StepContext,
+            _: &qunica_backend::llm::ToolCall,
+            result: &mut qunica_backend::tools::ToolResult,
+        ) {
+            assert!(matches!(
+                result.status,
+                qunica_backend::tools::ToolStatus::Completed
+            ));
+            self.0.notify_one();
+            std::future::pending::<()>().await;
+        }
+    }
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "checkpoint-crash@example.test").await;
+    let owner = owner_id(&state, "checkpoint-crash@example.test").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech":true})).await;
+    let (url, requests) = recording_fake_provider_sequence(vec![tool_body(vec![(
+        "append",
+        "Bash",
+        json!({"command":"echo once >> marker.txt"}),
+    )])])
+    .await;
+    let provider = seed_provider(&state, &owner, &url).await;
+    let agent = seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Writer",
+        "2024-01-01T00:00:00Z",
+        json!({"tools":{"bash":{"enabled":true}}}),
+    )
+    .await;
+    let reached = Arc::new(Notify::new());
+    set_group_engine(&state, &group, engine).await;
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
+        .with_hooks(
+            qunica_backend::runtime::HookChain::new().with(Arc::new(CrashWindow(reached.clone()))),
+        );
+    let (tx, _rx) = mpsc::channel(128);
+    let worker = tokio::spawn(run_group_turn(
+        services,
+        TurnRequest {
+            group_id: group.clone(),
+            owner_id: owner,
+            thread_id: None,
+            content: "append once".into(),
+            attachments: Vec::new(),
+            model_override: None,
+            effort_override: None,
+        },
+        tx,
+    ));
+    tokio::time::timeout(Duration::from_secs(20), reached.notified())
+        .await
+        .unwrap();
+    let before = std::fs::read(root.path().join("marker.txt")).unwrap();
+    worker.abort();
+    assert!(worker.await.unwrap_err().is_cancelled());
+    qunica_backend::runtime::group_scheduler::SchedulerStore::new(
+        state.db.pool().clone(),
+        state.write_lock.clone(),
+    )
+    .recover_incomplete_turns()
+    .await
+    .unwrap();
+    let (id, thread, content, raw): (String,String,String,String) = sqlx::query_as(
+        "SELECT id,thread_id,content,content_json FROM messages WHERE group_id=? AND status='interrupted'")
+        .bind(&group).fetch_one(state.db.pool()).await.unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&raw).unwrap()["tool_calls"][0]["status"],
+        "outcome_unknown"
+    );
+    let (tx, _rx) = mpsc::channel(128);
+    let outcome = run_thread_resume(
+        RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone()),
+        ResumeRequest {
+            group_id: group,
+            thread_id: thread,
+            agent_id: agent,
+            message_id: id,
+            existing_content: content,
+            content_json: Some(raw),
+            approval: None,
+        },
+        tx,
+    )
+    .await;
+    assert_eq!(outcome, TurnOutcome::Error);
+    assert_eq!(
+        requests.lock().await.len(),
+        1,
+        "unknown effects must stop before the next model call"
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("marker.txt")).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn native_checkpoint_saves_fast_read_before_a_slow_sibling_finishes() {
+    native_checkpoint_saves_fast_read_before_a_slow_sibling_finishes_case("native").await;
+}
+#[tokio::test]
+async fn rig_native_checkpoint_saves_fast_read_before_a_slow_sibling_finishes() {
+    native_checkpoint_saves_fast_read_before_a_slow_sibling_finishes_case("rig").await;
+}
+
+async fn native_checkpoint_saves_fast_read_before_a_slow_sibling_finishes_case(engine: &str) {
+    struct ParallelReads;
+    #[async_trait::async_trait]
+    impl qunica_backend::runtime::RuntimeHook for ParallelReads {
+        fn name(&self) -> &'static str {
+            "parallel-read-crash-window"
+        }
+        async fn pre_tool(
+            &self,
+            _: &qunica_backend::runtime::StepContext,
+            call: &qunica_backend::llm::ToolCall,
+        ) -> Option<qunica_backend::tools::ToolResult> {
+            if call.id == "slow" {
+                std::future::pending::<()>().await;
+            }
+            Some(qunica_backend::tools::ToolResult {
+                status: qunica_backend::tools::ToolStatus::Completed,
+                output: "fast saved".into(),
+            })
+        }
+    }
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "checkpoint-parallel@example.test").await;
+    let owner = owner_id(&state, "checkpoint-parallel@example.test").await;
+    let (_root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech":true})).await;
+    let url = fake_provider_sequence(vec![tool_body(vec![
+        ("slow", "Read", json!({"path":"slow.txt"})),
+        ("fast", "Read", json!({"path":"fast.txt"})),
+    ])])
+    .await;
+    let provider = seed_provider(&state, &owner, &url).await;
+    seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Reader",
+        "2024-01-01T00:00:00Z",
+        json!({"tools":{"read":{"enabled":true}}}),
+    )
+    .await;
+    set_group_engine(&state, &group, engine).await;
+    let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
+        .with_hooks(qunica_backend::runtime::HookChain::new().with(Arc::new(ParallelReads)));
+    let (tx, _rx) = mpsc::channel(128);
+    let worker = tokio::spawn(run_group_turn(
+        services,
+        TurnRequest {
+            group_id: group.clone(),
+            owner_id: owner,
+            thread_id: None,
+            content: "read both".into(),
+            attachments: Vec::new(),
+            model_override: None,
+            effort_override: None,
+        },
+        tx,
+    ));
+    tokio::time::timeout(Duration::from_secs(10),async {
+        loop {
+            let saved: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM messages WHERE group_id=? AND json_valid(content_json) \
+                AND json_extract(content_json,'$.tool_calls[1].result')='fast saved')")
+                .bind(&group).fetch_one(state.db.pool()).await.unwrap();
+            if saved { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    worker.abort();
+    assert!(worker.await.unwrap_err().is_cancelled());
+    qunica_backend::runtime::group_scheduler::SchedulerStore::new(
+        state.db.pool().clone(),
+        state.write_lock.clone(),
+    )
+    .recover_incomplete_turns()
+    .await
+    .unwrap();
+    let raw: String = sqlx::query_scalar(
+        "SELECT content_json FROM messages WHERE group_id=? AND status='interrupted'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let checkpoint: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(checkpoint["tool_calls"][0]["status"], "outcome_unknown");
+    assert_eq!(checkpoint["tool_calls"][1]["status"], "completed");
+    assert_eq!(checkpoint["tool_calls"][1]["result"], "fast saved");
+}
 
 /// Drive a turn until it pauses on an approval, returning what the rest of the
 /// flow needs: the workspace root (holding the file the gated command targets),
@@ -10943,4 +11454,107 @@ async fn a_resume_that_stops_at_a_second_gate_asks_again_instead_of_failing() {
     assert_eq!(pending["status"], "approval_required");
     assert!(pending["result"].is_null());
     assert_eq!(pending["approval_request"]["rule"], "delete-files");
+}
+
+#[path = "group_stream/rig_scenarios.rs"]
+mod rig_scenarios;
+
+#[path = "group_stream/engine_rollout.rs"]
+mod engine_rollout;
+
+#[tokio::test]
+async fn context_checkpoint_invalidation_respects_each_agents_cursor() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "cursor-boundary@example.test").await;
+    let owner = owner_id(&state, "cursor-boundary@example.test").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let provider = seed_provider(&state, &owner, &fake_provider(OK_SSE).await).await;
+    let first = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "A",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let second = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "B",
+        "2024-01-01T00:00:01Z",
+    )
+    .await;
+    let thread = seed_thread(&state, &group, "active").await;
+    for seq in 1..=3 {
+        seed_message(
+            &state,
+            &group,
+            &thread,
+            seq,
+            "visible",
+            "user",
+            Some(&owner),
+            "original",
+            None,
+        )
+        .await;
+    }
+    for (agent, cursor) in [(&first, 1), (&second, 2)] {
+        sqlx::query("INSERT INTO context_checkpoints(thread_id,agent_id,through_seq,messages_json,created_at,updated_at) VALUES(?,?,?,'[]','now','now')")
+            .bind(&thread).bind(agent).bind(cursor).execute(state.db.pool()).await.unwrap();
+    }
+    sqlx::query("UPDATE messages SET content_json='{}' WHERE thread_id=? AND seq=3")
+        .bind(&thread)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM messages WHERE thread_id=? AND seq=3")
+        .bind(&thread)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM context_checkpoints WHERE thread_id=?")
+            .bind(&thread)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        count, 2,
+        "updates and deletes beyond both cursors preserve summaries"
+    );
+    sqlx::query("UPDATE messages SET content='changed' WHERE thread_id=? AND seq=2")
+        .bind(&thread)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let remaining: String =
+        sqlx::query_scalar("SELECT agent_id FROM context_checkpoints WHERE thread_id=?")
+            .bind(&thread)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        remaining, first,
+        "only the summary covering seq 2 is invalidated"
+    );
+    sqlx::query("UPDATE messages SET context_admitted=0 WHERE thread_id=? AND seq=1")
+        .bind(&thread)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM context_checkpoints WHERE thread_id=?")
+            .bind(&thread)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        count, 0,
+        "covered context admission changes invalidate the summary"
+    );
 }

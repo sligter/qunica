@@ -136,15 +136,7 @@ pub async fn accept(
     {
         return Err(ApiError::invalid_input("unsupported command"));
     }
-    let digest = format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json::to_vec(
-                &json!({"name":command.name,"target":command.target,"payload":command.payload})
-            )
-            .unwrap()
-        )
-    );
+    let digest = payload_hash(&command);
     // Read before preflight so tombstones still resolve after resource removal.
     if let Some(response) = receipt(state, owner, &command.request_id, &digest).await? {
         return Ok(response);
@@ -157,6 +149,18 @@ pub async fn accept(
         }
         _ => accept_resume(state, owner, &command, &digest).await,
     }
+}
+
+pub(crate) fn payload_hash(command: &Command) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(
+            crate::canonical_json::to_vec(
+                &json!({"name":command.name,"target":command.target,"payload":command.payload})
+            )
+            .unwrap()
+        )
+    )
 }
 
 async fn receipt(
@@ -754,6 +758,20 @@ async fn accept_resume(
             "approval checkpoint changed",
         ));
     }
+    // Note: reject an engine switch before consuming an approval. The runtime
+    // binds the accepted continuation to its recorded engine after this commit.
+    let (runtime_kind, model_config): (String, Option<String>) =
+        sqlx::query_as("SELECT runtime_kind,model_config_json FROM agents WHERE id=?")
+            .bind(&prepared.agent_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_error)?;
+    crate::runtime::rig_driver::validate_resume_engine(
+        &runtime_kind,
+        model_config.as_deref(),
+        prepared.content_json.as_deref(),
+    )
+    .map_err(|error| ApiError::conflict(error.to_string()))?;
     if decision.is_none() {
         // Preserve the existing explicit Continue action: it skips an unanswered
         // gated call, never grants it, and lets the model choose another action.
@@ -1120,6 +1138,12 @@ async fn finish_job(state: &AppState, job: &Job, outcome: TurnOutcome) -> Result
 
 pub async fn recover(state: &AppState) -> Result<(), sqlx::Error> {
     let mut tx = state.db.begin_write().await?;
+    sqlx::query(
+        "UPDATE engine_executions SET status='interrupted',coverage_complete=0,updated_at=? WHERE status='running'",
+    )
+    .bind(now())
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("UPDATE computer_operations SET status='uncertain' WHERE status='running'")
         .execute(&mut *tx)
         .await?;
@@ -1184,6 +1208,25 @@ async fn ensure_computer_effects_settled(
 #[cfg(test)]
 mod claim_tests {
     use super::{claim_next, AppState};
+
+    #[test]
+    fn command_digest_keeps_legacy_receipt_identity() {
+        use sha2::Digest;
+
+        let command: super::Command = serde_json::from_str(
+            r#"{"request_id":"unused","name":"turn.cancel","target":{"turn_id":"turn-1","extra":{"z":2,"a":1}},"payload":{"z":2,"a":1}}"#,
+        )
+        .unwrap();
+        let sorted = br#"{"name":"turn.cancel","payload":{"a":1,"z":2},"target":{"extra":{"a":1,"z":2},"turn_id":"turn-1"}}"#;
+        let legacy_digest = format!("{:x}", sha2::Sha256::digest(sorted));
+        let actual = super::payload_hash(&command);
+        assert_eq!(actual, legacy_digest);
+        assert_eq!(
+            super::decode_receipt(&legacy_digest, r#"{"job_id":"job-1"}"#, &actual).unwrap()
+                ["job_id"],
+            "job-1"
+        );
+    }
 
     const NOW: &str = "2026-10-18T12:00:00Z";
 

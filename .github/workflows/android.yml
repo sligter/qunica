@@ -57,7 +57,7 @@ jobs:
           # Note: Google removed the legacy tools package; setup-android already supplies cmdline-tools.
           packages: platform-tools
       - uses: gradle/actions/setup-gradle@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           targets: ${{ matrix.triple }}
       - uses: Swatinem/rust-cache@v2

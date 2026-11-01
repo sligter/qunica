@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
-ARG RUST_VERSION=1.88
+ARG RUST_VERSION=1.97.1
 FROM rust:${RUST_VERSION}-bookworm AS build
 WORKDIR /src
+COPY rust-toolchain.toml ./
 COPY backend-rs/ backend-rs/
 RUN --mount=type=cache,id=qunica-supervisor-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=qunica-supervisor-target,target=/build-target \

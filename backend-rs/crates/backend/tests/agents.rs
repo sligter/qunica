@@ -166,8 +166,8 @@ async fn agent_system_prompt_can_be_generated_with_an_owned_provider() {
     let app = app().await;
     let token = register_and_login(&app, "agent-prompt-ai@example.com").await;
     let provider_body = format!(
-        "data: {}\ndata: [DONE]\n",
-        json!({"choices": [{"delta": {"content": "```markdown\n# Role\nReview safely.\n```"}}]})
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": "```markdown\n# Role\nReview safely.\n```"}, "finish_reason": "stop"}]})
     );
     let base_url = fake_provider(provider_body).await;
     let (status, provider) = send(
@@ -1213,4 +1213,49 @@ async fn agent_delete_soft_deletes_and_hides_from_list() {
         .map(|a| a["id"].as_str().unwrap())
         .collect();
     assert!(!ids.contains(&agent_id.as_str()));
+}
+
+#[tokio::test]
+async fn agent_engine_selection_is_validated_before_storage() {
+    let app = app().await;
+    let token = register_and_login(&app, "engine-choice@example.test").await;
+    let workspace = create_workspace(&app, &token).await;
+    let (status, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents",
+            &token,
+            json!({"name":"Rig","workspace_id":workspace,"llm_config":{"engine":"rig"}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created:?}");
+    let (status, native) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents",
+            &token,
+            json!({"name":"Native","workspace_id":workspace,"llm_config":{"engine":"native"}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let uri = format!("/api/v2/agents/{}", native["id"].as_str().unwrap());
+    for invalid in [
+        json!({"engine":"unknown"}),
+        json!({"engine":true}),
+        json!({"engine":"rig","rig_limits":{"max_model_calls":0}}),
+        json!({"engine":"rig","rig_limits":{"unexpected":1}}),
+    ] {
+        let (status, body) = send(
+            &app,
+            authed_json("PATCH", &uri, &token, json!({"llm_config":invalid})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+    }
+    let (_, fetched) = send(&app, authed("GET", &uri, &token)).await;
+    assert_eq!(fetched["llm_config"], json!({"engine":"native"}));
 }

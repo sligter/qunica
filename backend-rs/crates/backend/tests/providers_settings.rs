@@ -154,7 +154,19 @@ async fn catalog_server(
                     uri: request.uri().to_string(),
                     headers: request.headers().clone(),
                 });
-                (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+                (
+                    status,
+                    [(
+                        header::CONTENT_TYPE,
+                        if body.starts_with("data:") {
+                            "text/event-stream"
+                        } else {
+                            "application/json"
+                        },
+                    )],
+                    body,
+                )
+                    .into_response()
             }
         }
     });
@@ -590,7 +602,7 @@ async fn providers_settings_provider_models_require_authentication_and_ownership
 async fn providers_settings_model_test_uses_the_selected_provider_credentials() {
     let (base_url, captures) = catalog_server(
         StatusCode::OK,
-        "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}]}\n\ndata: [DONE]\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
     )
     .await;
     let app = app().await;
@@ -1895,8 +1907,9 @@ async fn providers_settings_responses_creation_discovery_and_model_test() {
     let (base, captures) = catalog_server(
         StatusCode::OK,
         concat!(
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n"
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"msg_test\",\"role\":\"assistant\",\"content\":[]}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"item_id\":\"msg_test\",\"content_index\":0,\"delta\":\"OK\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[{\"type\":\"message\",\"id\":\"msg_test\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK\",\"annotations\":[]}]}]}}\n\n"
         ),
     )
     .await;

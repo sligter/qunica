@@ -10,6 +10,7 @@ pub mod computer_proxy;
 pub mod computers;
 pub mod conversations;
 pub mod direct_chats;
+pub mod engine_rollout;
 pub mod error;
 pub mod group_turns;
 pub mod groups;
@@ -202,6 +203,15 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v2/auth/me", get(auth::me).patch(auth::update_me))
         .route("/api/v2/token-usage", get(token_usage::get))
+        .route("/api/v2/runtime/engines", get(engine_rollout::get))
+        .route(
+            "/api/v2/runtime/engines/rig",
+            axum::routing::patch(engine_rollout::pause),
+        )
+        .route(
+            "/api/v2/runtime/engine-metrics",
+            get(engine_rollout::metrics),
+        )
         .route(
             "/api/v2/workspaces",
             axum::routing::post(workspaces::create).get(workspaces::list),

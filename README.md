@@ -137,7 +137,7 @@ Then create an agent, bind a workspace and tools, and invite it into a group. Th
 
 ## Run it from source
 
-Prerequisites: Node.js 20+, pnpm 9, and a stable Rust toolchain. Desktop builds are supported on Windows, macOS, and Linux.
+Prerequisites: Node.js 20+, pnpm 9, and Rust 1.97.1 (pinned in `rust-toolchain.toml`; rustup installs it automatically). Desktop builds are supported on Windows, macOS, and Linux.
 
 ```powershell
 pnpm install
@@ -197,6 +197,10 @@ pnpm lint
 pnpm --filter @qunica/frontend test
 cargo test --manifest-path backend-rs/Cargo.toml --workspace
 ```
+
+Model execution uses Rig by default, with recovery compatibility for recorded
+native checkpoints. Build, migration and release acceptance boundaries are in
+[RIG_MIGRATION.md](RIG_MIGRATION.md).
 
 ## Community
 

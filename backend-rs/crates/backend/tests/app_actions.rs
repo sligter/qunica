@@ -131,8 +131,8 @@ async fn controlled_provider(text: &'static str) -> (String, Arc<Notify>) {
                 (
                     [(header::CONTENT_TYPE, "text/event-stream")],
                     format!(
-                        "data: {}\ndata: [DONE]\n",
-                        json!({"choices": [{"delta": {"content": text}}]})
+                        "data: {}\n\ndata: [DONE]\n\n",
+                        json!({"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]})
                     ),
                 )
             }

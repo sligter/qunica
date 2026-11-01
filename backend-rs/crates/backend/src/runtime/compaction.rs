@@ -333,6 +333,7 @@ fn snip_compact(messages: &mut Vec<ChatMessage>) -> SnipOutcome {
             && message.content.trim().is_empty()
             && message.tool_calls.is_empty()
             && message.parts.is_empty()
+            && message.native_content.is_none()
             && message
                 .reasoning_content
                 .as_deref()
@@ -777,6 +778,12 @@ pub fn estimate_tool_schema_tokens(tools: &[ToolDefinition]) -> i64 {
 fn estimate_message_tokens(message: &ChatMessage) -> i64 {
     /// Role, delimiters, and per-message framing the provider adds.
     const PER_MESSAGE_OVERHEAD: i64 = 8;
+
+    if let Some(native) = &message.native_content {
+        // The native blocks include text, reasoning, signatures and tool calls.
+        // Counting only display fields underestimates opaque replay material.
+        return PER_MESSAGE_OVERHEAD + estimate_text_tokens(&native.to_string());
+    }
 
     let mut tokens = PER_MESSAGE_OVERHEAD;
     // `ChatMessage::with_parts` derives `content` by concatenating the text

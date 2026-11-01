@@ -22,6 +22,7 @@
 //! runtime keeps running to a replayable terminal state so reconnect can
 //! converge from the client's last event id.
 
+use super::rig_driver::{DriverBudgetExhausted, DriverCheckpoint, TurnEngine};
 #[cfg(test)]
 use std::collections::BTreeMap;
 use std::sync::{
@@ -33,10 +34,12 @@ use std::{
     future::Future,
     io::Read,
     path::{Path, PathBuf},
+    pin::Pin,
     time::Duration,
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use futures_util::{stream::FuturesUnordered, StreamExt};
 use qunica_domain::events::{StreamEvent, StreamEventKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -52,10 +55,9 @@ use crate::acp::{
 };
 use crate::decision::{self, DecisionGate, DecisionScenario};
 use crate::llm::{
-    build_provider, effort_from_config, model_from_config, provider_headers_from_json,
-    temperature_from_config, top_p_from_config, vision_enabled, ChatDelta, ChatMessage,
-    ChatRequest, LlmProvider, ProviderConfig, ProviderHttpError, ReasoningEffort, ToolCall,
-    ToolDefinition,
+    effort_from_config, model_from_config, provider_headers_from_json, temperature_from_config,
+    top_p_from_config, vision_enabled, ChatDelta, ChatMessage, ChatRequest, LlmProvider,
+    ProviderConfig, ProviderHttpError, ReasoningEffort, ToolCall, ToolDefinition,
 };
 use crate::mcp::{McpManager, McpServerConfig, McpToolBinding};
 use crate::runtime::agent_as_tool::{
@@ -107,7 +109,7 @@ use crate::runtime::sequence::{NewMessage, SequenceAllocator};
 
 /// Schema version for the structured `content_json` payload persisted on agent
 /// messages. Bump when the shape changes so readers can migrate old rows.
-const CONTENT_JSON_SCHEMA_VERSION: i64 = 1;
+const CONTENT_JSON_SCHEMA_VERSION: i64 = 3;
 
 /// A proactive agent replies with exactly this marker to stay silent.
 pub const SILENT_MARKER: &str = "<SILENT>";
@@ -393,20 +395,25 @@ pub async fn run_thread_resume_with_stream_id(
     .fetch_optional(&services.pool)
     .await
     .unwrap_or(None);
-    let claim_error = match if reserved.is_some() {
-        Ok(true)
+    let parsed_turn = TurnData::from_content_json(req.content_json.as_deref());
+    let claim_error = if parsed_turn.is_err() {
+        Some("invalid or unsupported persisted agent checkpoint")
     } else {
-        allocator.claim_paused_thread(&req.thread_id).await
-    } {
-        Ok(true) => None,
-        Ok(false) => Some("thread is not paused"),
-        Err(error) => {
-            tracing::error!(
-                thread_id = req.thread_id,
-                error = %error,
-                "failed to claim thread for resume"
-            );
-            Some("failed to resume thread")
+        match if reserved.is_some() {
+            Ok(true)
+        } else {
+            allocator.claim_paused_thread(&req.thread_id).await
+        } {
+            Ok(true) => None,
+            Ok(false) => Some("thread is not paused"),
+            Err(error) => {
+                tracing::error!(
+                    thread_id = req.thread_id,
+                    error = %error,
+                    "failed to claim thread for resume"
+                );
+                Some("failed to resume thread")
+            }
         }
     };
     if let Some(message) = claim_error {
@@ -436,7 +443,7 @@ pub async fn run_thread_resume_with_stream_id(
             reserved.unwrap_or_else(|| format!("runtime:{}", Uuid::new_v4())),
         )
         .await;
-    let resume_turn = TurnData::from_content_json(req.content_json.as_deref());
+    let resume_turn = parsed_turn.expect("invalid checkpoint returned before claiming the thread");
     let mut ctx = StreamCtx {
         stream_id,
         seq: 0,
@@ -1621,6 +1628,8 @@ async fn run_scheduled_turn(
                         };
                         let usage_thread_id = ctx.thread_id.clone();
                         let dimensions = TokenUsageDimensions {
+                            execution_id: None,
+                            engine: Some("moderator"),
                             owner_id: &group.owner_id,
                             group_id: &group.id,
                             group_name: &group.name,
@@ -2691,6 +2700,8 @@ async fn flush_decision_usage(
             .clone()
             .unwrap_or_else(|| gate.model().to_string());
         let dimensions = TokenUsageDimensions {
+            execution_id: None,
+            engine: Some("moderator"),
             owner_id: &group.owner_id,
             group_id: &group.id,
             group_name: &group.name,
@@ -2894,15 +2905,55 @@ async fn await_with_cancellation<T>(
     Ok(future.await)
 }
 
+async fn sync_engine_checkpoint(
+    engine: &TurnEngine,
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    content: &str,
+    turn: &mut TurnData,
+) -> Result<(), StepErr> {
+    if let Some(checkpoint) = engine.checkpoint() {
+        turn.driver_checkpoint = Some(checkpoint);
+        if cancellation_requested(ctx) {
+            return Ok(());
+        }
+        persist_turn_checkpoint(ctx, agent, content, turn).await?;
+    }
+    Ok(())
+}
+
+async fn abort_engine_attempt(
+    engine: &mut TurnEngine,
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    content: &str,
+    turn: &mut TurnData,
+) -> Result<(), StepErr> {
+    engine.abort();
+    sync_engine_checkpoint(engine, ctx, agent, content, turn).await
+}
+
 async fn start_provider_stream(
-    ctx: &StreamCtx,
+    ctx: &mut StreamCtx,
     provider: &dyn LlmProvider,
     mut request: ChatRequest,
+    engine: &mut TurnEngine,
+    agent: &Candidate,
+    content: &str,
+    turn: &mut TurnData,
 ) -> Result<(tokio::sync::mpsc::Receiver<ChatDelta>, bool), StepErr> {
     let mut retry = 0;
     let mut passback_retried = false;
     loop {
-        match await_with_cancellation(ctx, provider.stream(request.clone())).await? {
+        engine.prepare(&request).map_err(StepErr::Db)?;
+        sync_engine_checkpoint(engine, ctx, agent, content, turn).await?;
+        let result =
+            await_with_cancellation(ctx, Box::pin(engine.stream(provider, request.clone()))).await;
+        if !matches!(&result, Ok(Ok(_))) {
+            engine.abort();
+        }
+        sync_engine_checkpoint(engine, ctx, agent, content, turn).await?;
+        match result? {
             // The flag tells the caller to remember the heal for the rest of
             // this turn's tool loop, rather than take the 400 once per round.
             Ok(stream) => return Ok((stream, passback_retried)),
@@ -2961,6 +3012,24 @@ fn is_transient_provider_error(error: &anyhow::Error) -> bool {
     // survives now that the body is preserved.
     if let Some(http) = error.downcast_ref::<ProviderHttpError>() {
         return http.is_transient();
+    }
+    // Note: an established connection can be aborted before response headers
+    // arrive (Windows 10053). reqwest does not classify that as is_connect().
+    // This path runs only before streaming; visible/truncated turns never retry.
+    if error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|cause| {
+            matches!(
+                cause.kind(),
+                std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+            )
+        })
+    {
+        return true;
     }
     let Some(error) = error.downcast_ref::<reqwest::Error>() else {
         return false;
@@ -3210,10 +3279,32 @@ async fn run_resume_inner(
     req: &ResumeRequest,
     ctx: &mut StreamCtx,
 ) -> Result<TurnOutcome, Cancelled> {
-    let agent = match load_resume_candidate(&services.pool, &req.group_id, &req.agent_id).await {
+    let mut agent = match load_resume_candidate(&services.pool, &req.group_id, &req.agent_id).await
+    {
         Ok(agent) => agent,
         Err(err) => return fail_resume(ctx, &err.to_string()).await,
     };
+    if ctx.resume.as_ref().is_some_and(|resume| {
+        resume.turn.driver_checkpoint.is_some() || !resume.turn.assistant_turns.is_empty()
+    }) {
+        // Note: approval acceptance checked the live configuration atomically.
+        // A later config edit applies to new executions, not this accepted job.
+        let mut config = match agent
+            .model_config_json
+            .as_deref()
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+        {
+            Ok(value) => value.unwrap_or_else(|| json!({})),
+            Err(error) => return fail_resume(ctx, &error.to_string()).await,
+        };
+        let Some(object) = config.as_object_mut() else {
+            return fail_resume(ctx, "invalid recorded engine configuration").await;
+        };
+        object.insert("engine".into(), json!("rig"));
+        agent.model_config_json = Some(config.to_string());
+        agent.runtime_kind = "llm_chat".into();
+    }
     let group = match load_group_runtime_config(&services.pool, &req.group_id).await {
         Ok(group) => group,
         Err(err) => return fail_resume(ctx, &err.to_string()).await,
@@ -3439,7 +3530,9 @@ enum AgentRunResult {
 
 struct AgentExecution {
     final_content: String,
-    turn_data: TurnData,
+    // Note: checkpoints grow independently of the lightweight scheduler result
+    // enums, so keep their storage off nested dispatch stack frames.
+    turn_data: Box<TurnData>,
     outcome: AgentExecutionOutcome,
 }
 
@@ -3478,6 +3571,11 @@ struct RecordedToolCall {
     result_summary: Option<String>,
     args: Option<Value>,
     result: Option<String>,
+    #[serde(default)]
+    provider_metadata: Option<Value>,
+    /// Exact provider-facing result, separate from the UI's public summary.
+    #[serde(default)]
+    model_output: Option<String>,
     /// The question a paused call is waiting on, kept so a resume can replay
     /// the exact call the user was shown rather than re-prompting the model.
     /// `None` for every call that never needed approval.
@@ -3491,6 +3589,20 @@ struct RecordedToolCall {
 /// of truth; this is the durable mirror.
 #[derive(Clone, Default, Deserialize)]
 struct TurnData {
+    #[serde(default)]
+    execution_id: Option<String>,
+    #[serde(default)]
+    driver_checkpoint: Option<DriverCheckpoint>,
+    #[serde(default)]
+    checkpoint_version: u64,
+    #[serde(default)]
+    phase: Option<String>,
+    #[serde(default)]
+    history_cursor: Option<i64>,
+    /// Original messages are replayed per model round, never reconstructed
+    /// from the display-oriented reasoning/response segments.
+    #[serde(default)]
+    assistant_turns: Vec<ChatMessage>,
     /// The question's explicit depth must survive approval and restart recovery.
     #[serde(default)]
     effort_override: Option<ReasoningEffort>,
@@ -3510,10 +3622,20 @@ struct TurnData {
 }
 
 impl TurnData {
-    fn from_content_json(content_json: Option<&str>) -> Self {
-        content_json
-            .and_then(|raw| serde_json::from_str(raw).ok())
-            .unwrap_or_default()
+    fn from_content_json(content_json: Option<&str>) -> anyhow::Result<Self> {
+        let Some(raw) = content_json else {
+            return Ok(Self::default());
+        };
+        let value: Value = serde_json::from_str(raw)?;
+        if let Some(version) = value.get("schema_version") {
+            anyhow::ensure!(
+                version
+                    .as_i64()
+                    .is_some_and(|version| (1..=CONTENT_JSON_SCHEMA_VERSION).contains(&version)),
+                "unsupported agent checkpoint schema"
+            );
+        }
+        Ok(serde_json::from_value(value)?)
     }
 
     fn push_response(&mut self, text: &str, new_segment: bool) {
@@ -3556,6 +3678,14 @@ impl TurnData {
         status: Option<String>,
         args_summary: Option<String>,
     ) {
+        if let Some(existing) = self
+            .tool_calls
+            .iter_mut()
+            .find(|call| tool_call_id.is_some() && call.tool_call_id == tool_call_id)
+        {
+            existing.status = status;
+            return;
+        }
         let args = args_summary
             .as_deref()
             .and_then(|raw| serde_json::from_str(raw).ok());
@@ -3567,6 +3697,8 @@ impl TurnData {
             result_summary: None,
             args,
             result: None,
+            provider_metadata: None,
+            model_output: None,
             approval_request: None,
         });
     }
@@ -3606,6 +3738,8 @@ impl TurnData {
             result_summary,
             args: None,
             result,
+            provider_metadata: None,
+            model_output: None,
             approval_request: None,
         });
     }
@@ -3631,7 +3765,7 @@ impl TurnData {
                 id: tool_call_id.to_string(),
                 name: recorded.tool_name.clone()?,
                 args: recorded.args.clone()?,
-                provider_metadata: None,
+                provider_metadata: recorded.provider_metadata.clone(),
             },
             request,
         ))
@@ -3688,6 +3822,53 @@ impl TurnData {
         }
     }
 
+    fn prepare_tool_round(&mut self, assistant: ChatMessage) -> anyhow::Result<()> {
+        // See docs/guide/realtime.md#native-tool-execution-checkpoints.
+        // Note: save the entire batch before dispatch, including calls after an
+        // approval gate. A restart must not ask a model to invent the remainder.
+        let mut ids = HashSet::new();
+        for call in &assistant.tool_calls {
+            anyhow::ensure!(
+                ids.insert(&call.id),
+                "provider repeated a tool call id in one batch"
+            );
+            anyhow::ensure!(
+                !self
+                    .tool_calls
+                    .iter()
+                    .any(|old| old.tool_call_id.as_deref() == Some(&call.id)),
+                "provider reused a tool call id within an execution"
+            );
+        }
+        for call in &assistant.tool_calls {
+            self.record_tool_start(
+                Some(call.id.clone()),
+                Some(call.name.clone()),
+                Some("pending".into()),
+                Some(summarize_value(&call.args)),
+            );
+            self.record_tool_args(&call.id, call.args.clone());
+            self.tool_calls.last_mut().unwrap().provider_metadata = call.provider_metadata.clone();
+        }
+        self.assistant_turns.push(assistant);
+        self.phase = Some("tools_pending".into());
+        Ok(())
+    }
+
+    fn record_model_output(&mut self, call: &ToolCall, result: &ToolResult) {
+        if let Some(recorded) = self
+            .tool_calls
+            .iter_mut()
+            .find(|recorded| recorded.tool_call_id.as_deref() == Some(&call.id))
+        {
+            recorded.model_output = Some(format!(
+                "status: {:?}\n{}",
+                result.status,
+                computer_public_output(&call.name, &result.output)
+            ));
+        }
+    }
+
     fn set_context_usage(&mut self, usage: Value) {
         self.context_usage = Some(usage);
     }
@@ -3701,12 +3882,13 @@ impl TurnData {
             && self.tool_calls.is_empty()
             && self.todos.is_empty()
             && self.context_usage.is_none()
+            && self.driver_checkpoint.is_none()
     }
 
     /// Serialize to the versioned `content_json` schema, or `None` when empty so
     /// plain-text messages keep a `NULL` column.
     fn to_content_json(&self) -> Option<String> {
-        if self.is_empty() && self.effort_override.is_none() {
+        if self.is_empty() && self.effort_override.is_none() && self.driver_checkpoint.is_none() {
             return None;
         }
         let reasoning: Vec<&String> = self
@@ -3732,17 +3914,27 @@ impl TurnData {
                     "args": call.args,
                     "result": call.result,
                     "approval_request": call.approval_request,
+                    "provider_metadata": call.provider_metadata,
+                    "model_output": call.model_output,
                 })
             })
             .collect();
         let mut payload = json!({
-            "schema_version": CONTENT_JSON_SCHEMA_VERSION,
+            "schema_version": if self.driver_checkpoint.is_some() { CONTENT_JSON_SCHEMA_VERSION } else { 2 },
             "response_segments": response_segments,
             "reasoning": reasoning,
             "tool_calls": tool_calls,
             "todos": self.todos,
             "context_usage": self.context_usage,
+            "execution_id": self.execution_id,
+            "checkpoint_version": self.checkpoint_version,
+            "phase": self.phase,
+            "history_cursor": self.history_cursor,
+            "assistant_turns": self.assistant_turns,
         });
+        if let Some(checkpoint) = &self.driver_checkpoint {
+            payload["driver_checkpoint"] = json!(checkpoint);
+        }
         if let Some(effort) = self.effort_override {
             payload["effort_override"] = json!(effort);
         }
@@ -3772,6 +3964,8 @@ fn context_usage_to_json(
 }
 
 struct TokenUsageDimensions<'a> {
+    execution_id: Option<&'a str>,
+    engine: Option<&'a str>,
     owner_id: &'a str,
     group_id: &'a str,
     group_name: &'a str,
@@ -3803,8 +3997,8 @@ async fn persist_token_usage(
     sqlx::query(
         "INSERT INTO token_usage_records (id, owner_id, group_id, group_name, conversation_kind, \
             thread_id, agent_id, agent_name, provider_id, provider_name, model, input_tokens, \
-            cached_input_tokens, output_tokens, total_tokens, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            cached_input_tokens, output_tokens, total_tokens, created_at, updated_at, execution_id, engine) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(id) DO UPDATE SET input_tokens = excluded.input_tokens, \
             cached_input_tokens = excluded.cached_input_tokens, \
             output_tokens = excluded.output_tokens, total_tokens = excluded.total_tokens, \
@@ -3827,12 +4021,153 @@ async fn persist_token_usage(
     .bind(total_tokens)
     .bind(&now)
     .bind(&now)
+    .bind(dimensions.execution_id)
+    .bind(dimensions.engine)
     .execute(pool)
     .await?;
     Ok(())
 }
 
-async fn run_agent_turn(
+async fn legacy_native_resume(
+    services: &RuntimeServices,
+    ctx: &StreamCtx,
+) -> Result<bool, StepErr> {
+    let Some(resume) = ctx.resume.as_ref() else {
+        return Ok(false);
+    };
+    if resume.turn.driver_checkpoint.is_some() {
+        return Ok(false);
+    }
+    // A Rig execution can fail before its first driver checkpoint. Its frozen
+    // observation disambiguates that case from pre-migration native history.
+    let recorded: Option<String> =
+        sqlx::query_scalar("SELECT engine FROM engine_executions WHERE id=?")
+            .bind(&resume.message_id)
+            .fetch_optional(&services.pool)
+            .await
+            .map_err(|error| StepErr::Db(error.into()))?;
+    Ok(recorded.as_deref() != Some("rig"))
+}
+
+// Note: nested AgentAsTool calls must not embed the entire driver future
+// in every parent frame; Windows worker threads have a small default stack.
+fn run_agent_turn<'a>(
+    services: &'a RuntimeServices,
+    ctx: &'a mut StreamCtx,
+    agent: &'a Candidate,
+    group: &'a GroupRuntimeConfig,
+    handoff_depth: usize,
+    delegated_input: Option<&'a str>,
+    scheduler: Option<&'a mut ScheduledTurnRuntime>,
+) -> Pin<Box<dyn Future<Output = Result<AgentRunResult, StepErr>> + Send + 'a>> {
+    Box::pin(async move {
+        let execution_id = ctx
+            .resume
+            .as_ref()
+            .map(|resume| resume.message_id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let observation = if agent.runtime_kind == "llm_chat" {
+            let engine = if legacy_native_resume(services, ctx).await? {
+                "native"
+            } else {
+                super::rig_driver::configured_engine(agent.model_config_json.as_deref())
+                    .map_err(StepErr::Db)?
+            };
+            Some(
+                Box::pin(super::engine_observation::Observation::begin(
+                    &services.pool,
+                    &services.write_lock,
+                    super::engine_observation::Start {
+                        id: &execution_id,
+                        owner: &agent.owner_id,
+                        group: &group.id,
+                        thread: &ctx.thread_id,
+                        agent: &agent.agent_id,
+                        provider: agent.provider_id.as_deref(),
+                        engine,
+                        resumed: ctx.resume.is_some(),
+                    },
+                ))
+                .await
+                .map_err(StepErr::Db)?,
+            )
+        } else {
+            None
+        };
+        if observation
+            .as_ref()
+            .is_some_and(|observation| observation.paused)
+        {
+            ctx.emit(StreamEventKind::Warning,json!({"message":"New Rig executions are paused. Existing approvals may still resume.","agent_id":agent.agent_id})).await?;
+            return Err(StepErr::Db(anyhow::anyhow!("Rig canary intake is paused")));
+        }
+        let result = run_agent_turn_inner(
+            services,
+            ctx,
+            agent,
+            group,
+            handoff_depth,
+            delegated_input,
+            scheduler,
+            &execution_id,
+        )
+        .await;
+        if let Some(observation) = observation {
+            let (status, snapshot) = match &result {
+                Ok(AgentRunResult::WaitingForUser) => ("waiting_for_user", None),
+                Ok(AgentRunResult::Private(execution)) => (
+                    match execution.outcome {
+                        AgentExecutionOutcome::WaitingForUser => "waiting_for_user",
+                        AgentExecutionOutcome::Failed => "failed",
+                        _ => "completed",
+                    },
+                    execution
+                        .turn_data
+                        .to_content_json()
+                        .and_then(|raw| serde_json::from_str(&raw).ok()),
+                ),
+                Ok(_) => ("completed", None),
+                Err(StepErr::Cancelled) => ("cancelled", None),
+                Err(_) => ("failed", None),
+            };
+            // Measurement failure cannot reinterpret an already committed tool
+            // or public reply. An unfinished measurement is excluded from rates.
+            if let Err(error) = Box::pin(observation.finish(&services.pool, status, snapshot)).await
+            {
+                tracing::error!(%error,execution_id=observation.id,"failed to finalize engine measurement");
+            }
+        }
+        result
+    })
+}
+
+#[allow(clippy::too_many_arguments)] // The same id binds telemetry, billing and the original checkpoint.
+fn run_agent_turn_inner<'a>(
+    services: &'a RuntimeServices,
+    ctx: &'a mut StreamCtx,
+    agent: &'a Candidate,
+    group: &'a GroupRuntimeConfig,
+    handoff_depth: usize,
+    delegated_input: Option<&'a str>,
+    scheduler: Option<&'a mut ScheduledTurnRuntime>,
+    execution_id: &'a str,
+) -> Pin<Box<dyn Future<Output = Result<AgentRunResult, StepErr>> + Send + 'a>> {
+    // Note: constructing the large driver inside the observation poll reserves
+    // its temporary on every nested poll stack, even when immediately boxed.
+    Box::pin(run_agent_turn_body(
+        services,
+        ctx,
+        agent,
+        group,
+        handoff_depth,
+        delegated_input,
+        scheduler,
+        execution_id,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_agent_turn_body(
     services: &RuntimeServices,
     ctx: &mut StreamCtx,
     agent: &Candidate,
@@ -3840,6 +4175,7 @@ async fn run_agent_turn(
     handoff_depth: usize,
     delegated_input: Option<&str>,
     mut scheduler: Option<&mut ScheduledTurnRuntime>,
+    execution_id: &str,
 ) -> Result<AgentRunResult, StepErr> {
     ctx.emit(
         StreamEventKind::AgentStart,
@@ -3855,14 +4191,16 @@ async fn run_agent_turn(
             .as_ref()
             .is_some_and(|dispatch| dispatch.action_kind == ActionKind::Speak);
     if agent.runtime_kind == "acp" {
-        return run_acp_agent_turn(
+        // Note: an unused ACP branch still sets the host driver's future size.
+        // Keep its state off each nested AgentAsTool poll frame.
+        return Box::pin(run_acp_agent_turn(
             services,
             ctx,
             agent,
             group,
             delegated_input,
             checkpoint_interrupted,
-        )
+        ))
         .await;
     }
 
@@ -3870,16 +4208,34 @@ async fn run_agent_turn(
         resolve_provider(&services.pool, agent, ctx.model_override.as_deref())
             .await
             .map_err(StepErr::Db)?;
-    let provider: Arc<dyn LlmProvider> =
-        Arc::from(build_provider(&provider_cfg).map_err(StepErr::Db)?);
+    let (mut engine, provider) = TurnEngine::build(
+        agent.model_config_json.as_deref(),
+        &provider_cfg,
+        legacy_native_resume(services, ctx).await?,
+    )
+    .map_err(StepErr::Db)?;
     // A per-message override wins over the agent's configured model. The API
     // layer already checked it against the bound provider's catalog.
     let model = ctx.model_override.clone().unwrap_or_else(|| {
         model_from_config(&agent.model_config_json, &provider_cfg.default_model)
     });
-    let invocation = build_invocation_context(services, ctx, agent, group, scheduler.as_deref())
-        .await
-        .map_err(StepErr::Db)?;
+    Box::pin(super::engine_observation::Observation::model(
+        &services.pool,
+        execution_id,
+        &provider_cfg.kind,
+        &model,
+    ))
+    .await
+    .map_err(StepErr::Db)?;
+    let invocation = Box::pin(build_invocation_context(
+        services,
+        ctx,
+        agent,
+        group,
+        scheduler.as_deref(),
+    ))
+    .await
+    .map_err(StepErr::Db)?;
     // Hooks summarize through the agent's own provider and model, so a
     // compacted span is described by the model that produced it. Built after
     // the invocation context because the tool schemas it resolved are part of
@@ -3938,7 +4294,80 @@ async fn run_agent_turn(
         .as_ref()
         .map(|resume| resume.turn.clone())
         .unwrap_or_default();
+    engine
+        .restore(turn.driver_checkpoint.as_ref())
+        .map_err(StepErr::Db)?;
     turn.effort_override = ctx.effort_override;
+    turn.execution_id = Some(execution_id.to_owned());
+    turn.history_cursor = loaded_through_seq;
+    let pending_round = turn
+        .assistant_turns
+        .last()
+        .filter(|assistant| {
+            assistant.tool_calls.iter().any(|call| {
+                turn.tool_calls.iter().any(|recorded| {
+                    recorded.tool_call_id.as_deref() == Some(&call.id) && recorded.result.is_none()
+                })
+            })
+        })
+        .cloned();
+    if turn.tool_calls.iter().any(|call| {
+        call.result.is_none()
+            && matches!(call.status.as_deref(), Some("started" | "outcome_unknown"))
+    }) {
+        for call in &mut turn.tool_calls {
+            if call.result.is_none() && call.status.as_deref() == Some("started") {
+                call.status = Some("outcome_unknown".into());
+            }
+        }
+        turn.phase = Some("outcome_unknown".into());
+        persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
+        return Err(StepErr::Db(anyhow::anyhow!(
+            "A previous tool execution has an unknown outcome; it cannot be automatically replayed. Inspect its effects before starting new work.")));
+    }
+
+    if ctx
+        .resume
+        .as_ref()
+        .is_some_and(|resume| resume.approval.is_none())
+    {
+        // Legacy Continue cancels the unanswered question. Close its original
+        // call explicitly instead of dropping the exchange or asking again.
+        let skipped: Vec<_> = turn
+            .tool_calls
+            .iter()
+            .filter_map(|recorded| {
+                if recorded.status.as_deref() != Some("approval_required")
+                    || recorded.result.is_some()
+                {
+                    return None;
+                }
+                Some(ToolCall {
+                    id: recorded.tool_call_id.clone()?,
+                    name: recorded.tool_name.clone()?,
+                    args: recorded.args.clone()?,
+                    provider_metadata: recorded.provider_metadata.clone(),
+                })
+            })
+            .collect();
+        for call in skipped {
+            let result = ToolResult {
+                status: ToolStatus::Failed,
+                output:
+                    "Approval was skipped by the user's continuation; this tool was not executed."
+                        .into(),
+            };
+            settle_tool_result(&mut turn, &call, &result);
+            persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
+            ctx.emit(
+                StreamEventKind::ToolCallResult,
+                json!({"agent_id":agent.agent_id,
+                "display_name":agent.display_name,"tool_call_id":call.id,"tool_name":call.name,
+                "status":"failed","output":result.output,"result_summary":result.output}),
+            )
+            .await?;
+        }
+    }
 
     // A resume carrying an approval answer runs the paused call *before* the
     // model is asked anything. Re-prompting instead would let the replayed turn
@@ -3959,7 +4388,8 @@ async fn run_agent_turn(
         )
         .await?
         {
-            Some(exchange) => messages.extend(exchange),
+            Some(exchange) if pending_round.is_none() => messages.extend(exchange),
+            Some(_) => {}
             None => {
                 // The card no longer matches anything pending — answered twice,
                 // or replayed from a stale page. Say so rather than silently
@@ -3976,8 +4406,101 @@ async fn run_agent_turn(
         }
     }
 
+    if let Some(assistant) = pending_round {
+        // Note: finish the original batch before any model request. Neither
+        // validated history nor a fresh model turn restores execution state.
+        let remaining: Vec<_> = assistant
+            .tool_calls
+            .iter()
+            .filter(|call| {
+                turn.tool_calls.iter().any(|old| {
+                    old.tool_call_id.as_deref() == Some(&call.id) && old.result.is_none()
+                })
+            })
+            .cloned()
+            .collect();
+        for batch in tool_call_batches(&remaining) {
+            for call in batch {
+                if let Some((call, request)) = turn.pending_approval(&call.id) {
+                    return pause_for_approval(
+                        ctx,
+                        agent,
+                        &content,
+                        turn,
+                        &call,
+                        &request,
+                        checkpoint_interrupted,
+                    )
+                    .await;
+                }
+            }
+            let results = Box::pin(execute_tool_batch(
+                &services.hooks,
+                &step,
+                ctx,
+                agent,
+                &invocation.executor,
+                batch,
+                checkpoint_interrupted,
+                &content,
+                &mut turn,
+            ))
+            .await?;
+            for (call, result) in results {
+                if matches!(result.status, ToolStatus::ApprovalRequired) {
+                    if let Some(request) = tool_approval_request(&result.output) {
+                        return pause_for_approval(
+                            ctx,
+                            agent,
+                            &content,
+                            turn,
+                            &call,
+                            &request,
+                            checkpoint_interrupted,
+                        )
+                        .await;
+                    }
+                }
+                if matches!(result.status, ToolStatus::WaitingForUser) {
+                    close_unstarted_tool_calls(
+                        &mut turn,
+                        "Not executed: the original batch is waiting for user input.",
+                    );
+                    turn.phase = Some("waiting_for_user".into());
+                    persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
+                    persist_interrupted_agent(ctx, agent, &content, &turn).await?;
+                    ctx.emit(
+                        StreamEventKind::WaitingForUser,
+                        json!({"agent_id":agent.agent_id,
+                        "input_request":tool_input_request_payload(&result.output)}),
+                    )
+                    .await?;
+                    return Ok(AgentRunResult::WaitingForUser);
+                }
+            }
+        }
+        messages.push(assistant.clone());
+        for call in &assistant.tool_calls {
+            let recorded = turn
+                .tool_calls
+                .iter()
+                .find(|old| old.tool_call_id.as_deref() == Some(&call.id))
+                .ok_or_else(|| StepErr::Db(anyhow::anyhow!("missing original tool checkpoint")))?;
+            let output = recorded
+                .model_output
+                .clone()
+                .or_else(|| recorded.result.clone())
+                .ok_or_else(|| {
+                    StepErr::Db(anyhow::anyhow!("original tool batch is not settled"))
+                })?;
+            messages.push(ChatMessage::tool_result(&call.id, &call.name, output));
+        }
+    }
+
     let usage_thread_id = ctx.thread_id.clone();
     let usage_dimensions = TokenUsageDimensions {
+        execution_id: Some(execution_id),
+        engine: Some(engine.name()),
         owner_id: &agent.owner_id,
         group_id: &group.id,
         group_name: &group.name,
@@ -4016,6 +4539,7 @@ async fn run_agent_turn(
     let mut reasoning_passback = provider_cfg.reasoning_passback;
 
     loop {
+        engine.settle(&messages).map_err(StepErr::Db)?;
         // `pre_step` is where compaction runs: the message list is reduced
         // before a request is derived from it, not after the provider rejects
         // it. Notices are surfaced so a shrinking context is visible rather than
@@ -4066,7 +4590,17 @@ async fn run_agent_turn(
                 })
                 .flatten(),
         };
-        let mut deltas = match start_provider_stream(ctx, provider.as_ref(), request).await {
+        let mut deltas = match start_provider_stream(
+            ctx,
+            provider.as_ref(),
+            request,
+            &mut engine,
+            agent,
+            &content,
+            &mut turn,
+        )
+        .await
+        {
             Ok((deltas, healed)) => {
                 if healed {
                     reasoning_passback = true;
@@ -4074,6 +4608,18 @@ async fn run_agent_turn(
                 deltas
             }
             Err(StepErr::Db(error)) => {
+                if error.downcast_ref::<DriverBudgetExhausted>().is_some() {
+                    abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn).await?;
+                    maybe_persist_interrupted_agent(
+                        ctx,
+                        agent,
+                        &content,
+                        &turn,
+                        checkpoint_interrupted,
+                    )
+                    .await?;
+                    return Err(StepErr::Db(error));
+                }
                 // A rejected request may still be recoverable — a context
                 // overflow shrinks and retries rather than ending the turn.
                 // A hook only asks for a retry when it actually changed
@@ -4112,6 +4658,7 @@ async fn run_agent_turn(
                         continue;
                     }
                     RequestRecovery::Propagate => {
+                        abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn).await?;
                         maybe_persist_interrupted_agent(
                             ctx,
                             agent,
@@ -4125,6 +4672,7 @@ async fn run_agent_turn(
                 }
             }
             Err(error) => {
+                abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn).await?;
                 maybe_persist_interrupted_agent(
                     ctx,
                     agent,
@@ -4136,6 +4684,11 @@ async fn run_agent_turn(
                 return Err(error);
             }
         };
+        let usage_record_id = engine
+            .checkpoint()
+            .and_then(|state| state.attempt_id)
+            .unwrap_or(usage_record_id);
+        let mut received_done = false;
         let mut round_content = String::new();
         let mut tool_calls = Vec::new();
         // This round's thinking, kept apart from `turn.reasoning` (which spans
@@ -4147,6 +4700,7 @@ async fn run_agent_turn(
         // thinks. Kept for the round rather than the turn for the same reason:
         // it is verified against the thinking it travels with.
         let mut round_signature: Option<String> = None;
+        let mut native_content = None;
         // A reasoning delta starts a new segment when the previous delta was not
         // reasoning (so token/tool interleaving splits reasoning blocks).
         let mut last_was_reasoning = false;
@@ -4157,6 +4711,7 @@ async fn run_agent_turn(
                 Ok(Some(delta)) => delta,
                 Ok(None) => break,
                 Err(error) => {
+                    abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn).await?;
                     maybe_persist_interrupted_agent(
                         ctx,
                         agent,
@@ -4185,6 +4740,8 @@ async fn run_agent_turn(
                             round_content.push_str(&text);
                         }
                         Err(StepErr::Cancelled) => {
+                            abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn)
+                                .await?;
                             maybe_persist_interrupted_agent(
                                 ctx,
                                 agent,
@@ -4214,6 +4771,8 @@ async fn run_agent_turn(
                         .await
                     {
                         if matches!(err, StepErr::Cancelled) {
+                            abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn)
+                                .await?;
                             maybe_persist_interrupted_agent(
                                 ctx,
                                 agent,
@@ -4231,6 +4790,7 @@ async fn run_agent_turn(
                     // signs can travel back with this round's tool calls.
                     round_signature = Some(signature);
                 }
+                ChatDelta::NativeContent(value) => native_content = Some(value),
                 ChatDelta::ToolCall(call) => {
                     last_was_reasoning = false;
                     last_was_response = false;
@@ -4238,6 +4798,8 @@ async fn run_agent_turn(
                 }
                 ChatDelta::Usage(usage) => {
                     last_was_reasoning = false;
+                    engine.observe_usage(&usage);
+                    sync_engine_checkpoint(&engine, ctx, agent, &content, &mut turn).await?;
                     let usage = augment_context_usage(usage, &provider_cfg);
                     persist_token_usage(
                         &services.pool,
@@ -4260,6 +4822,8 @@ async fn run_agent_turn(
                     });
                     if let Err(err) = ctx.emit(StreamEventKind::ContextUsage, payload).await {
                         if matches!(err, StepErr::Cancelled) {
+                            abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn)
+                                .await?;
                             maybe_persist_interrupted_agent(
                                 ctx,
                                 agent,
@@ -4278,6 +4842,7 @@ async fn run_agent_turn(
                     // round: reporting a cut connection as a finished turn is how
                     // a ten-minute tool chain ends up filed as "completed
                     // silently" with nothing to show for it.
+                    abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn).await?;
                     maybe_persist_interrupted_agent(
                         ctx,
                         agent,
@@ -4299,11 +4864,34 @@ async fn run_agent_turn(
                         "provider stream ended early: {reason}"
                     )));
                 }
-                ChatDelta::Done => break,
+                ChatDelta::Done => {
+                    received_done = true;
+                    break;
+                }
             }
         }
 
+        let mut assistant = ChatMessage::assistant_tool_calls(round_content, tool_calls.clone())
+            .with_reasoning(round_reasoning)
+            .with_reasoning_signature(round_signature);
+        assistant.native_content = native_content;
+        if let Err(error) = Box::pin(engine.accept(&assistant, received_done)).await {
+            tracing::warn!(agent_id = %agent.agent_id, %error, "model turn was not accepted by the driver");
+            abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn).await?;
+            maybe_persist_interrupted_agent(ctx, agent, &content, &turn, checkpoint_interrupted)
+                .await?;
+            return Err(StepErr::Db(error));
+        }
+        // Commit acceptance with its original assistant/batch, rather than
+        // persisting a tools-pending phase without the calls it refers to.
+        if let Some(checkpoint) = engine.checkpoint() {
+            turn.driver_checkpoint = Some(checkpoint);
+        }
         if tool_calls.is_empty() {
+            // The legacy recovery host also uses Rig's transport. Its final
+            // signed/opaque response must survive subsequent conversation turns.
+            turn.assistant_turns.push(assistant);
+            turn.phase = Some("done".into());
             return finish_agent_content(
                 ctx,
                 agent,
@@ -4317,8 +4905,20 @@ async fn run_agent_turn(
 
         checkpoint_safe = false;
 
+        turn.prepare_tool_round(assistant.clone())
+            .map_err(StepErr::Db)?;
+        persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
+
         if let Some(call) = agent_as_tool_call(&tool_calls) {
-            let outcome = handle_agent_as_tool(
+            turn.record_tool_start(
+                Some(call.id.clone()),
+                Some(call.name.clone()),
+                Some("started".into()),
+                None,
+            );
+            turn.phase = Some("executing_tools".into());
+            persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
+            let outcome = Box::pin(handle_agent_as_tool(
                 services,
                 ctx,
                 agent,
@@ -4327,32 +4927,71 @@ async fn run_agent_turn(
                 call.clone(),
                 &mut turn,
                 scheduler.as_deref_mut(),
-            )
+            ))
             .await?;
             match outcome {
-                AgentAsToolOutcome::Terminal(result) => return Ok(result),
+                AgentAsToolOutcome::Terminal(result) => {
+                    ctx.allocator
+                        .hide_native_checkpoint(
+                            &ctx.thread_id,
+                            turn.execution_id.as_deref(),
+                            turn.to_content_json().as_deref(),
+                        )
+                        .await
+                        .map_err(StepErr::Db)?;
+                    return Ok(result);
+                }
                 AgentAsToolOutcome::Continue(result) => {
-                    messages.push(
-                        ChatMessage::assistant_tool_calls(round_content, vec![call.clone()])
-                            .with_reasoning(round_reasoning)
-                            .with_reasoning_signature(round_signature),
-                    );
-                    messages.push(ChatMessage::tool_result(call.id, call.name, result));
+                    if let Some(recorded) = turn
+                        .tool_calls
+                        .iter_mut()
+                        .find(|recorded| recorded.tool_call_id.as_deref() == Some(&call.id))
+                    {
+                        recorded.model_output = Some(result.clone());
+                    }
+                    // AgentAsTool owns this batch. Preserve its historical
+                    // skip-siblings behavior while closing every original call.
+                    for sibling in &assistant.tool_calls {
+                        if sibling.id == call.id {
+                            continue;
+                        }
+                        let skipped = ToolResult {
+                            status: ToolStatus::Failed,
+                            output: "Not executed: AgentAsTool handled this tool batch.".into(),
+                        };
+                        settle_tool_result(&mut turn, sibling, &skipped);
+                        persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
+                        ctx.emit(StreamEventKind::ToolCallResult, json!({"agent_id":agent.agent_id,
+                            "display_name":agent.display_name,"tool_call_id":sibling.id,"tool_name":sibling.name,
+                            "status":"failed","output":skipped.output,"result_summary":skipped.output})).await?;
+                    }
+                    turn.phase = Some("model_pending".into());
+                    persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
+                    messages.push(assistant.clone());
+                    for original in &assistant.tool_calls {
+                        let output = turn
+                            .tool_calls
+                            .iter()
+                            .find(|recorded| recorded.tool_call_id.as_deref() == Some(&original.id))
+                            .and_then(|recorded| recorded.model_output.clone())
+                            .unwrap_or_default();
+                        messages.push(ChatMessage::tool_result(
+                            &original.id,
+                            &original.name,
+                            output,
+                        ));
+                    }
                     continue;
                 }
             }
         }
 
-        messages.push(
-            ChatMessage::assistant_tool_calls(round_content, tool_calls.clone())
-                .with_reasoning(round_reasoning)
-                .with_reasoning_signature(round_signature),
-        );
+        messages.push(assistant);
 
         let mut wait_for_user: Option<Value> = None;
         let mut pending_approval: Option<(ToolCall, ApprovalRequest)> = None;
         for batch in tool_call_batches(&tool_calls) {
-            let results = execute_tool_batch(
+            let results = Box::pin(execute_tool_batch(
                 &services.hooks,
                 &step,
                 ctx,
@@ -4362,7 +5001,7 @@ async fn run_agent_turn(
                 checkpoint_interrupted,
                 &content,
                 &mut turn,
-            )
+            ))
             .await?;
             for (call, result) in results {
                 // A call awaiting approval gets no tool result: the turn stops
@@ -4420,17 +5059,26 @@ async fn run_agent_turn(
         }
 
         if let Some(input_request) = wait_for_user {
+            close_unstarted_tool_calls(
+                &mut turn,
+                "Not executed: the tool batch is waiting for user input.",
+            );
+            turn.phase = Some("waiting_for_user".into());
+            persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
             if ctx.private_execution || ctx.resume.is_some() {
                 return Ok(AgentRunResult::Private(AgentExecution {
                     final_content: "Helper requested additional input.".to_string(),
-                    turn_data: turn,
+                    turn_data: Box::new(turn),
                     outcome: AgentExecutionOutcome::WaitingForUser,
                 }));
             }
             let visible = interrupted_visible_content(&content)
                 .unwrap_or_else(|| "Waiting for your input".to_string());
             let agent_message = NewMessage {
-                id: Uuid::new_v4().to_string(),
+                id: turn
+                    .execution_id
+                    .clone()
+                    .unwrap_or_else(|| Uuid::new_v4().to_string()),
                 sender_type: "agent".to_string(),
                 sender_id: Some(agent.agent_id.clone()),
                 message_type: "text".to_string(),
@@ -4506,7 +5154,7 @@ async fn pause_for_approval(
                 "This step needs approval before it can run: {}",
                 request.summary()
             ),
-            turn_data: turn,
+            turn_data: Box::new(turn),
             outcome: AgentExecutionOutcome::WaitingForUser,
         }));
     }
@@ -4567,6 +5215,19 @@ async fn replay_approved_call(
 
     emit_tool_call_start(ctx, agent, &call).await?;
     let result = if decision.approved {
+        turn.record_tool_start(
+            Some(call.id.clone()),
+            Some(call.name.clone()),
+            Some("started".into()),
+            None,
+        );
+        turn.phase = Some("executing_tools".into());
+        let content = ctx
+            .resume
+            .as_ref()
+            .map(|resume| resume.existing_content.clone())
+            .unwrap_or_default();
+        persist_turn_checkpoint(ctx, agent, &content, turn).await?;
         // The executor was built with this rule granted, so the policy that
         // paused the call now lets it through.
         await_with_cancellation(ctx, executor.execute(&call.name, call.args.clone())).await?
@@ -4584,6 +5245,14 @@ async fn replay_approved_call(
         Some(summarize_text(&result.output)),
     );
     turn.record_tool_output(&call.id, result.output.clone());
+    turn.record_model_output(&call, &result);
+    turn.phase = Some("tools_pending".into());
+    let content = ctx
+        .resume
+        .as_ref()
+        .map(|resume| resume.existing_content.clone())
+        .unwrap_or_default();
+    persist_turn_checkpoint(ctx, agent, &content, turn).await?;
     ctx.emit(
         StreamEventKind::ToolCallResult,
         json!({
@@ -4607,8 +5276,14 @@ async fn replay_approved_call(
         // The replayed call is presented as the model made it, thinking
         // included: a provider in thinking mode rejects a tool-call message
         // whose reasoning went missing across the pause.
-        ChatMessage::assistant_tool_calls("", vec![call])
-            .with_reasoning(turn.latest_reasoning().unwrap_or_default()),
+        turn.assistant_turns
+            .iter()
+            .find(|assistant| assistant.tool_calls.iter().any(|old| old.id == call.id))
+            .cloned()
+            .unwrap_or_else(|| {
+                ChatMessage::assistant_tool_calls("", vec![call])
+                    .with_reasoning(turn.latest_reasoning().unwrap_or_default())
+            }),
         tool_message,
     ]))
 }
@@ -4755,6 +5430,8 @@ async fn run_acp_agent_turn(
     let usage_record_id = Uuid::new_v4().to_string();
     let usage_thread_id = ctx.thread_id.clone();
     let usage_dimensions = TokenUsageDimensions {
+        execution_id: None,
+        engine: Some("acp"),
         owner_id: &agent.owner_id,
         group_id: &group.id,
         group_name: &group.name,
@@ -5211,48 +5888,52 @@ async fn execute_tool_batch(
             return Err(err);
         }
     }
+    turn.phase = Some("executing_tools".into());
+    persist_turn_checkpoint(ctx, agent, content, turn).await?;
 
-    let pending = calls.iter().map(|call| async move {
-        // A hook may answer for the tool without running it; that decision has
-        // to happen inside the concurrent unit so a blocked call does not hold
-        // up the batch.
-        if let Some(result) = hooks.pre_tool(step, call).await {
-            return result;
-        }
-        executor.execute(&call.name, call.args.clone()).await
-    });
-    let results = match await_with_cancellation(ctx, futures_util::future::join_all(pending)).await
-    {
-        Ok(results) => results,
-        Err(error) => {
-            maybe_persist_interrupted_agent(ctx, agent, content, turn, checkpoint_interrupted)
-                .await?;
-            return Err(error);
-        }
-    };
+    let mut pending: FuturesUnordered<_> = calls
+        .iter()
+        .enumerate()
+        .map(|(index, call)| async move {
+            // A hook may answer for the tool without running it; that decision has
+            // to happen inside the concurrent unit so a blocked call does not hold
+            // up the batch.
+            if let Some(result) = hooks.pre_tool(step, call).await {
+                return (index, result);
+            }
+            (index, executor.execute(&call.name, call.args.clone()).await)
+        })
+        .collect();
+    let mut results = Vec::with_capacity(calls.len());
+    loop {
+        let next = match await_with_cancellation(ctx, pending.next()).await {
+            Ok(next) => next,
+            Err(error) => {
+                maybe_persist_interrupted_agent(ctx, agent, content, turn, checkpoint_interrupted)
+                    .await?;
+                return Err(error);
+            }
+        };
+        let Some((index, mut result)) = next else {
+            break;
+        };
+        let call = &calls[index];
+        hooks.post_tool(step, call, &mut result).await;
+        settle_tool_result(turn, call, &result);
+        // Note: persist each completed call before waiting on slower siblings.
+        // Stream events retain model order; crash recovery uses these facts.
+        persist_turn_checkpoint(ctx, agent, content, turn).await?;
+        results.push((index, result));
+    }
+    results.sort_by_key(|(index, _)| *index);
 
     let mut completed = Vec::with_capacity(calls.len());
-    for (call, mut result) in calls.iter().zip(results) {
-        hooks.post_tool(step, call, &mut result).await;
+    for (call, (_, result)) in calls.iter().zip(results) {
         // A call awaiting approval has produced no result. Recording one would
         // make `to_llm_messages` replay it as a completed tool call on the next
         // turn, so the model would read a result for a command that never ran —
         // and the replay path would have nothing left to execute.
         let public_output = computer_public_output(&call.name, &result.output);
-        let awaiting_approval = matches!(result.status, ToolStatus::ApprovalRequired);
-        turn.record_tool_result(
-            Some(call.id.clone()),
-            Some(call.name.clone()),
-            Some(tool_status_wire(result.status).to_string()),
-            (!awaiting_approval).then(|| summarize_text(&public_output)),
-        );
-        if awaiting_approval {
-            if let Some(request) = tool_approval_request(&result.output) {
-                turn.record_tool_approval_request(&call.id, &request);
-            }
-        } else {
-            turn.record_tool_output(&call.id, public_output.clone());
-        }
         // A checklist is turn state, not one tool's output. The client renders
         // it as its own block and a reload rebuilds it from the turn record, so
         // it travels as its own event rather than staying buried in the
@@ -5304,6 +5985,97 @@ async fn execute_tool_batch(
     Ok(completed)
 }
 
+fn close_unstarted_tool_calls(turn: &mut TurnData, reason: &str) {
+    let pending: Vec<_> = turn
+        .tool_calls
+        .iter()
+        .filter_map(|recorded| {
+            if recorded.status.as_deref() != Some("pending") || recorded.result.is_some() {
+                return None;
+            }
+            Some(ToolCall {
+                id: recorded.tool_call_id.clone()?,
+                name: recorded.tool_name.clone()?,
+                args: recorded.args.clone()?,
+                provider_metadata: recorded.provider_metadata.clone(),
+            })
+        })
+        .collect();
+    for call in pending {
+        settle_tool_result(
+            turn,
+            &call,
+            &ToolResult {
+                status: ToolStatus::Failed,
+                output: reason.into(),
+            },
+        );
+    }
+}
+
+fn settle_tool_result(turn: &mut TurnData, call: &ToolCall, result: &ToolResult) {
+    let awaiting_approval = matches!(result.status, ToolStatus::ApprovalRequired);
+    let output = computer_public_output(&call.name, &result.output);
+    turn.record_tool_result(
+        Some(call.id.clone()),
+        Some(call.name.clone()),
+        Some(tool_status_wire(result.status).into()),
+        (!awaiting_approval).then(|| summarize_text(&output)),
+    );
+    if awaiting_approval {
+        if let Some(request) = tool_approval_request(&result.output) {
+            turn.record_tool_approval_request(&call.id, &request);
+        }
+        turn.phase = Some("approval_required".into());
+    } else {
+        turn.record_tool_output(&call.id, output);
+        turn.record_model_output(call, result);
+        turn.phase = Some("tools_pending".into());
+    }
+}
+
+async fn persist_turn_checkpoint(
+    ctx: &StreamCtx,
+    agent: &Candidate,
+    content: &str,
+    turn: &mut TurnData,
+) -> Result<(), StepErr> {
+    let Some(id) = turn.execution_id.clone() else {
+        return Ok(());
+    };
+    if cancellation_requested(ctx) {
+        return Err(StepErr::Cancelled);
+    }
+    let expected = turn.checkpoint_version;
+    turn.checkpoint_version += 1;
+    let message = NewMessage {
+        id,
+        sender_type: "agent".into(),
+        sender_id: Some(agent.agent_id.clone()),
+        message_type: "text".into(),
+        content: content.into(),
+        content_json: turn.to_content_json(),
+    };
+    if let Err(error) = Box::pin(
+        ctx.allocator.checkpoint_native_execution(
+            &ctx.thread_id,
+            &ctx.group_id,
+            &message,
+            expected,
+            ctx.scheduled_dispatch
+                .as_ref()
+                .map(|dispatch| dispatch.id.as_str()),
+            ctx.private_execution,
+        ),
+    )
+    .await
+    {
+        turn.checkpoint_version = expected;
+        return Err(StepErr::Db(error));
+    }
+    Ok(())
+}
+
 fn tool_status_wire(status: ToolStatus) -> &'static str {
     match status {
         ToolStatus::Completed => "completed",
@@ -5334,7 +6106,18 @@ fn tool_input_request_payload(output: &str) -> Value {
         .unwrap_or_else(|| json!({ "question": "The agent requested input.", "required": true }))
 }
 
-async fn persist_interrupted_agent(
+// Note: cancellation unwinds multiple nested drivers on a small Windows stack.
+// Do not inline another SQLite transaction future in every cancellation frame.
+fn persist_interrupted_agent<'a>(
+    ctx: &'a mut StreamCtx,
+    agent: &'a Candidate,
+    content: &'a str,
+    turn: &'a TurnData,
+) -> Pin<Box<dyn Future<Output = Result<(), StepErr>> + Send + 'a>> {
+    Box::pin(persist_interrupted_agent_inner(ctx, agent, content, turn))
+}
+
+async fn persist_interrupted_agent_inner(
     ctx: &mut StreamCtx,
     agent: &Candidate,
     content: &str,
@@ -5359,7 +6142,10 @@ async fn persist_interrupted_agent(
         return Ok(());
     }
     let message = NewMessage {
-        id: Uuid::new_v4().to_string(),
+        id: turn
+            .execution_id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
         sender_type: "agent".to_string(),
         sender_id: Some(agent.agent_id.clone()),
         message_type: "text".to_string(),
@@ -5673,7 +6459,27 @@ enum HelperOutcome {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn handle_scheduled_agent_as_tool(
+fn handle_scheduled_agent_as_tool<'a>(
+    services: &'a RuntimeServices,
+    ctx: &'a mut StreamCtx,
+    agent: &'a Candidate,
+    group: &'a GroupRuntimeConfig,
+    hop: usize,
+    parsed: &'a AgentAsToolCall,
+    dispatch: crate::runtime::agent_as_tool::AgentAsToolDispatch,
+    helper: Candidate,
+    turn: &'a mut TurnData,
+    scheduler: &'a mut ScheduledTurnRuntime,
+) -> Pin<Box<dyn Future<Output = Result<HelperOutcome, StepErr>> + Send + 'a>> {
+    // Note: helper failure and cancellation poll through every parent driver.
+    // Their transaction states must not be embedded in each delegation frame.
+    Box::pin(handle_scheduled_agent_as_tool_inner(
+        services, ctx, agent, group, hop, parsed, dispatch, helper, turn, scheduler,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_scheduled_agent_as_tool_inner(
     services: &RuntimeServices,
     ctx: &mut StreamCtx,
     agent: &Candidate,
@@ -5881,7 +6687,7 @@ async fn handle_scheduled_agent_as_tool(
                 let failure_result = if defer_private_call_parent {
                     AgentRunResult::Private(AgentExecution {
                         final_content: failure.message,
-                        turn_data: turn.clone(),
+                        turn_data: Box::new(turn.clone()),
                         outcome: AgentExecutionOutcome::Failed,
                     })
                 } else {
@@ -6239,7 +7045,25 @@ fn agent_as_tool_call(tool_calls: &[ToolCall]) -> Option<ToolCall> {
         .cloned()
 }
 
-async fn finish_agent_content(
+fn finish_agent_content<'a>(
+    ctx: &'a mut StreamCtx,
+    agent: &'a Candidate,
+    proactive: bool,
+    content: String,
+    turn: &'a TurnData,
+    checkpoint_interrupted: bool,
+) -> Pin<Box<dyn Future<Output = Result<AgentRunResult, StepErr>> + Send + 'a>> {
+    Box::pin(finish_agent_content_inner(
+        ctx,
+        agent,
+        proactive,
+        content,
+        turn,
+        checkpoint_interrupted,
+    ))
+}
+
+async fn finish_agent_content_inner(
     ctx: &mut StreamCtx,
     agent: &Candidate,
     proactive: bool,
@@ -6250,10 +7074,18 @@ async fn finish_agent_content(
     let trimmed = content.trim();
 
     if proactive && trimmed == SILENT_MARKER {
+        ctx.allocator
+            .hide_native_checkpoint(
+                &ctx.thread_id,
+                turn.execution_id.as_deref(),
+                turn.to_content_json().as_deref(),
+            )
+            .await
+            .map_err(StepErr::Db)?;
         if ctx.private_execution || ctx.resume.is_some() {
             return Ok(AgentRunResult::Private(AgentExecution {
                 final_content: String::new(),
-                turn_data: turn.clone(),
+                turn_data: Box::new(turn.clone()),
                 outcome: AgentExecutionOutcome::NoVisible,
             }));
         }
@@ -6278,10 +7110,18 @@ async fn finish_agent_content(
     };
 
     if visible.trim().is_empty() {
+        ctx.allocator
+            .hide_native_checkpoint(
+                &ctx.thread_id,
+                turn.execution_id.as_deref(),
+                turn.to_content_json().as_deref(),
+            )
+            .await
+            .map_err(StepErr::Db)?;
         if ctx.private_execution || ctx.resume.is_some() {
             return Ok(AgentRunResult::Private(AgentExecution {
                 final_content: String::new(),
-                turn_data: turn.clone(),
+                turn_data: Box::new(turn.clone()),
                 outcome: AgentExecutionOutcome::NoVisible,
             }));
         }
@@ -6301,7 +7141,7 @@ async fn finish_agent_content(
     if ctx.private_execution || ctx.resume.is_some() {
         return Ok(AgentRunResult::Private(AgentExecution {
             final_content: visible,
-            turn_data: turn.clone(),
+            turn_data: Box::new(turn.clone()),
             outcome: if is_waiting {
                 AgentExecutionOutcome::WaitingForUser
             } else {
@@ -6312,7 +7152,10 @@ async fn finish_agent_content(
 
     let content_json = turn.to_content_json();
     let agent_message = NewMessage {
-        id: Uuid::new_v4().to_string(),
+        id: turn
+            .execution_id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
         sender_type: "agent".to_string(),
         sender_id: Some(agent.agent_id.clone()),
         message_type: "text".to_string(),
@@ -10010,6 +10853,32 @@ mod tests {
     }
 
     #[test]
+    fn provider_connection_aborts_retry_before_streaming_but_other_io_failures_do_not() {
+        for kind in [
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::UnexpectedEof,
+        ] {
+            let error = anyhow::Error::new(std::io::Error::new(kind, "transport closed"))
+                .context("request failed before response headers");
+            assert!(is_transient_provider_error(&error));
+        }
+        let error = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ));
+        assert!(!is_transient_provider_error(&error));
+        assert!(!is_transient_provider_error(
+            &ProviderHttpError {
+                status: 400,
+                body: "invalid request".into()
+            }
+            .into()
+        ));
+    }
+
+    #[test]
     fn turn_data_persists_response_bubble_boundaries() {
         let mut turn = TurnData::default();
         turn.push_response("First ", true);
@@ -10038,6 +10907,7 @@ mod tests {
             attachments: Vec::new(),
             tool_calls: Vec::new(),
             reasoning: Vec::new(),
+            assistant_turns: Vec::new(),
         }
     }
 
@@ -10056,6 +10926,7 @@ mod tests {
             attachments: Vec::new(),
             tool_calls: Vec::new(),
             reasoning: Vec::new(),
+            assistant_turns: Vec::new(),
         }
     }
 

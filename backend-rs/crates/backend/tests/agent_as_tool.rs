@@ -399,8 +399,8 @@ fn agent_as_tool_schema(request: &Value) -> Option<&Value> {
 
 fn text_body(text: &str) -> String {
     format!(
-        "data: {}\ndata: [DONE]\n",
-        json!({"choices": [{"delta": {"content": text}}]})
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]})
     )
 }
 
@@ -420,7 +420,7 @@ fn tool_body(calls: Vec<(&str, &str, Value)>) -> String {
         })
         .collect();
     format!(
-        "data: {}\ndata: [DONE]\n",
+        "data: {}\n\ndata: [DONE]\n\n",
         json!({"choices": [{"delta": {"tool_calls": tool_calls}, "finish_reason": "tool_calls"}]})
     )
 }
@@ -478,12 +478,19 @@ async fn agent_as_tool_call_is_private_and_returns_to_caller() {
     let workspace = create_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace).await;
     let helper_id = uuid::Uuid::new_v4().to_string();
-    let provider_url = fake_provider_sequence(vec![
-        tool_body(vec![(
-            "call_private",
-            "AgentAsTool",
-            json!({"assistant": helper_id, "task": "inspect privately", "mode": "call"}),
-        )]),
+    let (provider_url, captured) = recording_fake_provider_sequence(vec![
+        tool_body(vec![
+            (
+                "call_skipped",
+                "Bash",
+                json!({"command":"echo should-not-run"}),
+            ),
+            (
+                "call_private",
+                "AgentAsTool",
+                json!({"assistant": helper_id, "task": "inspect privately", "mode": "call"}),
+            ),
+        ]),
         text_body("private findings"),
         text_body("caller final answer"),
     ])
@@ -509,7 +516,7 @@ async fn agent_as_tool_call_is_private_and_returns_to_caller() {
         "caller-agent",
         "Caller",
         "2024-01-01T00:00:00Z",
-        Some(json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]})),
+        Some(json!({"assistant_agents": [{"agent_id": helper, "enabled": true}],"tools":{"bash":{"enabled":true}}})),
     )
     .await;
 
@@ -548,6 +555,26 @@ async fn agent_as_tool_call_is_private_and_returns_to_caller() {
         .unwrap()
         .contains("private findings"));
     assert_eq!(dispatches[1].5, None);
+    let requests = captured.lock().await;
+    assert_eq!(requests.len(), 3);
+    let messages = requests[2]["messages"].as_array().unwrap();
+    let assistant = messages
+        .iter()
+        .find(|message| {
+            message["tool_calls"]
+                .as_array()
+                .is_some_and(|calls| calls.iter().any(|call| call["id"] == "call_private"))
+        })
+        .unwrap();
+    assert_eq!(assistant["tool_calls"].as_array().unwrap().len(), 2);
+    for id in ["call_skipped", "call_private"] {
+        assert!(messages
+            .iter()
+            .any(|message| message["role"] == "tool" && message["tool_call_id"] == id));
+    }
+    assert!(payloads_of_kind(&events, StreamEventKind::ToolCallStart)
+        .iter()
+        .all(|event| event["tool_call_id"] != "call_skipped"));
 }
 
 #[tokio::test]
@@ -1004,7 +1031,8 @@ async fn agent_as_tool_terminal_handoff_skips_sibling_tools() {
         "caller-agent",
         "Caller",
         "2024-01-01T00:00:00Z",
-        Some(json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]})),
+        // The sibling is callable, so only terminal handoff prevents execution.
+        Some(json!({"tools":{"bash":{"enabled":true}},"assistant_agents": [{"agent_id": helper, "enabled": true}]})),
     )
     .await;
 
@@ -1621,12 +1649,12 @@ mod agent_as_tool {
             (0..16)
                 .map(|index| {
                     format!(
-                        "data: {}\n",
+                        "data: {}\n\n",
                         json!({"choices": [{"delta": {"content": index.to_string()}}]})
                     )
                 })
                 .collect::<String>()
-                + "data: [DONE]\n",
+                + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
         ])
         .await;
         let provider = seed_provider(&state, &owner, &provider_url).await;

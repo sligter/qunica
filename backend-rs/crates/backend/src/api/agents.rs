@@ -437,6 +437,7 @@ pub async fn generate_system_prompt(
             }
             ChatDelta::Reasoning(_)
             | ChatDelta::ReasoningSignature(_)
+            | ChatDelta::NativeContent(_)
             | ChatDelta::ToolCall(_)
             | ChatDelta::Usage(_) => {}
         }
@@ -611,6 +612,8 @@ pub(crate) async fn create_inner(
     let description = normalize_description(body.description.as_deref());
     let avatar_url = normalize_avatar_url(body.avatar_url.as_deref())?;
     let skill_ids_json = validate_skill_ids(body.skill_ids.as_deref())?;
+    crate::runtime::rig_driver::validate_config(body.llm_config.as_ref())
+        .map_err(|error| ApiError::invalid_input(error.to_string()))?;
     let model_config_json = json_to_db_string(body.llm_config.as_ref());
     let tool_config_json = json_to_db_string(body.tool_config.as_ref());
 
@@ -786,6 +789,10 @@ pub(crate) async fn update_inner(
         }
         (None, _) => None,
     };
+    if let Some(value) = &body.llm_config {
+        crate::runtime::rig_driver::validate_config(value.as_ref())
+            .map_err(|error| ApiError::invalid_input(error.to_string()))?;
+    }
     let model_config_json = match body.llm_config {
         Some(ref value) => json_to_db_string(value.as_ref()),
         None => existing.model_config_json.clone(),

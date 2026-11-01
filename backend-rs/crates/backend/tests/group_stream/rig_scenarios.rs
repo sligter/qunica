@@ -1,0 +1,1300 @@
+use super::*;
+
+struct Scenario {
+    app: Router,
+    state: AppState,
+    token: String,
+    root: tempfile::TempDir,
+    group: String,
+    agent: String,
+    requests: Arc<Mutex<Vec<Value>>>,
+}
+
+impl Scenario {
+    async fn new(name: &str, responses: Vec<(StatusCode, String)>) -> Self {
+        let (app, state) = router_with_state_for_tests().await;
+        let email = format!("rig-{name}@example.test");
+        let token = register_and_login(&app, &email).await;
+        let owner = owner_id(&state, &email).await;
+        let (root, workspace) = create_local_workspace(&app, &token).await;
+        let group = create_group(&app, &token, &workspace, json!({"free_speech":true})).await;
+        let (url, requests) = recording_fake_provider_status_sequence(responses).await;
+        let provider = seed_provider(&state, &owner, &url).await;
+        let agent = seed_agent_with_tool_config(&state, &owner, &group, &provider, "Worker",
+            "2024-01-01T00:00:00Z", json!({"tools":{
+                "read":{"enabled":true},"write":{"enabled":true},"edit":{"enabled":true},"bash":{"enabled":true}
+            }})).await;
+        set_agent_model_config(&state, &agent, json!({"engine":"rig"})).await;
+        Self {
+            app,
+            state,
+            token,
+            root,
+            group,
+            agent,
+            requests,
+        }
+    }
+
+    async fn run(&self) -> Vec<Value> {
+        stream_events(
+            &self.app,
+            &format!("/api/v2/groups/{}/messages/stream", self.group),
+            &self.token,
+            json!({"content":"perform the task"}),
+        )
+        .await
+    }
+
+    async fn checkpoint(&self) -> Value {
+        let raw: String = sqlx::query_scalar("SELECT content_json FROM messages WHERE group_id=? AND sender_id=? ORDER BY seq DESC LIMIT 1")
+            .bind(&self.group).bind(&self.agent).fetch_one(self.state.db.pool()).await.unwrap();
+        serde_json::from_str(&raw).unwrap()
+    }
+}
+
+fn ok(body: String) -> (StatusCode, String) {
+    (StatusCode::OK, body)
+}
+
+#[tokio::test]
+async fn rig_explicit_empty_completion_is_silent_and_committed_once() {
+    let scenario = Scenario::new("empty-completion", vec![ok(text_body(""))]).await;
+    let events = scenario.run().await;
+    assert!(payloads_of_kind(&events, StreamEventKind::AgentMessage).is_empty());
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::AgentSilent).len(),
+        1,
+        "{events:?}"
+    );
+    assert_eq!(scenario.requests.lock().await.len(), 1);
+    let checkpoint = scenario.checkpoint().await;
+    assert_eq!(checkpoint["driver_checkpoint"]["phase"], "done");
+    assert_eq!(checkpoint["driver_checkpoint"]["completion_calls"], 1);
+    assert_eq!(checkpoint["driver_checkpoint"]["failed_attempts"], 0);
+}
+
+/// A pre-P5 SQLite snapshot has original messages/tool ownership, but no
+/// AgentRun counters. Seed that format rather than exercising a retired engine.
+async fn legacy_snapshot(scenario: &Scenario) -> (String, String) {
+    let (id, thread, raw): (String, String, String) = sqlx::query_as(
+        "SELECT id,thread_id,content_json FROM messages WHERE group_id=? AND sender_id=? ORDER BY seq DESC LIMIT 1",
+    ).bind(&scenario.group).bind(&scenario.agent).fetch_one(scenario.state.db.pool()).await.unwrap();
+    let mut checkpoint: Value = serde_json::from_str(&raw).unwrap();
+    checkpoint
+        .as_object_mut()
+        .unwrap()
+        .remove("driver_checkpoint");
+    checkpoint["schema_version"] = json!(2);
+    for assistant in checkpoint["assistant_turns"].as_array_mut().unwrap() {
+        assistant.as_object_mut().unwrap().remove("native_content");
+        for call in assistant["tool_calls"].as_array_mut().unwrap() {
+            call.as_object_mut().unwrap().remove("provider_metadata");
+        }
+    }
+    sqlx::query("UPDATE messages SET content_json=? WHERE id=?")
+        .bind(checkpoint.to_string())
+        .bind(&id)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE engine_executions SET engine='native',engine_version='0.1.7' WHERE id=?")
+        .bind(&id)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE token_usage_records SET engine='native' WHERE execution_id=?")
+        .bind(&id)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    set_agent_model_config(&scenario.state, &scenario.agent, json!({"engine":"native"})).await;
+    (id, thread)
+}
+
+#[tokio::test]
+async fn legacy_native_approval_settles_once_with_original_attribution_and_new_rig_work() {
+    let scenario = Scenario::new(
+        "legacy-recovery",
+        vec![
+            ok(tool_body_with_usage(
+                vec![("remove", "Bash", json!({"command":"rm source.txt"}))],
+                10,
+            )),
+            ok(billed_text("legacy batch settled", 20)),
+            ok(text_body("new Rig execution")),
+        ],
+    )
+    .await;
+    std::fs::write(scenario.root.path().join("source.txt"), "approved bytes").unwrap();
+    assert_eq!(
+        payloads_of_kind(&scenario.run().await, StreamEventKind::ApprovalRequired).len(),
+        1
+    );
+    let (id, thread) = legacy_snapshot(&scenario).await;
+    // Legacy approvals retain the same runtime validation as Rig approvals.
+    sqlx::query("UPDATE agents SET runtime_kind='acp' WHERE id=?")
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let approval = json!({"approval":{"tool_call_id":"remove","approved":true}});
+    let uri = format!("/api/v2/threads/{thread}/resume");
+    let (status, body) = send(
+        &scenario.app,
+        authed_json("POST", &uri, &scenario.token, approval.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body:?}");
+    assert!(scenario.root.path().join("source.txt").exists());
+    sqlx::query("UPDATE agents SET runtime_kind='llm_chat' WHERE id=?")
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let resumed = stream_events(&scenario.app, &uri, &scenario.token, approval.clone()).await;
+    assert_eq!(
+        payloads_of_kind(&resumed, StreamEventKind::AgentMessage)
+            .first()
+            .map(|p| &p["content"]),
+        Some(&json!("legacy batch settled")),
+        "{resumed:?}"
+    );
+    assert!(!scenario.root.path().join("source.txt").exists());
+    assert_eq!(scenario.requests.lock().await.len(), 2);
+    let checkpoint = scenario.checkpoint().await;
+    assert!(checkpoint.get("driver_checkpoint").is_none());
+    assert!(checkpoint["assistant_turns"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["native_content"]["rig"]
+        .is_object());
+    let (engine, complete): (String, bool) =
+        sqlx::query_as("SELECT engine,coverage_complete FROM engine_executions WHERE id=?")
+            .bind(&id)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(engine, "native");
+    assert!(
+        !complete,
+        "a transport cutover cannot remain a complete native comparison sample"
+    );
+    let (status, _) = send(
+        &scenario.app,
+        authed_json("POST", &uri, &scenario.token, approval),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let fresh = seed_thread(&scenario.state, &scenario.group, "active").await;
+    let events = stream_events(
+        &scenario.app,
+        &format!("/api/v2/groups/{}/messages/stream", scenario.group),
+        &scenario.token,
+        json!({"content":"new work","thread_id":fresh}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::AgentMessage).len(),
+        1,
+        "{events:?}"
+    );
+    let raw:String=sqlx::query_scalar("SELECT content_json FROM messages WHERE thread_id=? AND sender_id=? ORDER BY seq DESC LIMIT 1").bind(&fresh).bind(&scenario.agent).fetch_one(scenario.state.db.pool()).await.unwrap();
+    assert!(serde_json::from_str::<Value>(&raw).unwrap()["driver_checkpoint"].is_object());
+    assert_eq!(scenario.requests.lock().await.len(), 3);
+    let native: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM engine_executions WHERE agent_id=? AND engine='native'",
+    )
+    .bind(&scenario.agent)
+    .fetch_one(scenario.state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        native, 1,
+        "only the recorded legacy continuation uses the old host"
+    );
+}
+
+#[tokio::test]
+async fn legacy_native_started_tool_with_no_result_is_never_replayed() {
+    let scenario = Scenario::new(
+        "legacy-unknown",
+        vec![ok(tool_body(vec![(
+            "remove",
+            "Bash",
+            json!({"command":"rm source.txt"}),
+        )]))],
+    )
+    .await;
+    std::fs::write(scenario.root.path().join("source.txt"), "original").unwrap();
+    assert_eq!(
+        payloads_of_kind(&scenario.run().await, StreamEventKind::ApprovalRequired).len(),
+        1
+    );
+    let (id, thread) = legacy_snapshot(&scenario).await;
+    let mut checkpoint = scenario.checkpoint().await;
+    checkpoint["tool_calls"][0]["status"] = json!("started");
+    // Simulate the external effect completing just before the result commit.
+    std::fs::remove_file(scenario.root.path().join("source.txt")).unwrap();
+    sqlx::query("UPDATE messages SET content_json=? WHERE id=?")
+        .bind(checkpoint.to_string())
+        .bind(id)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let resumed = stream_events(
+        &scenario.app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &scenario.token,
+        json!({"approval":{"tool_call_id":"remove","approved":true}}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&resumed, StreamEventKind::Error).len(),
+        1,
+        "{resumed:?}"
+    );
+    assert!(payloads_of_kind(&resumed, StreamEventKind::ToolCallStart).is_empty());
+    assert_eq!(scenario.requests.lock().await.len(), 1);
+    assert_eq!(scenario.checkpoint().await["phase"], "outcome_unknown");
+}
+
+fn billed_text(text: &str, tokens: u64) -> String {
+    text_body(text).replace("data: [DONE]", &format!("data: {}\n\ndata: [DONE]",
+        json!({"choices":[],"usage":{"prompt_tokens":tokens,"completion_tokens":0,"total_tokens":tokens}})))
+}
+
+#[tokio::test]
+async fn rig_read_edit_bash_finishes_with_one_completion_per_attempt() {
+    let scenario = Scenario::new(
+        "edit",
+        vec![
+            ok(tool_body(vec![(
+                "read",
+                "Read",
+                json!({"file_path":"source.txt"}),
+            )])),
+            ok(tool_body(vec![(
+                "edit",
+                "Edit",
+                json!({"file_path":"source.txt","old_string":"before","new_string":"after"}),
+            )])),
+            ok(tool_body(vec![(
+                "shell",
+                "Bash",
+                json!({"command":"echo checked"}),
+            )])),
+            ok(billed_text("finished", 20)),
+        ],
+    )
+    .await;
+    std::fs::write(scenario.root.path().join("source.txt"), "before").unwrap();
+    let events = scenario.run().await;
+    assert!(
+        payloads_of_kind(&events, StreamEventKind::Error).is_empty(),
+        "{events:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(scenario.root.path().join("source.txt")).unwrap(),
+        "after"
+    );
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::ToolCallResult).len(),
+        3
+    );
+    let saved = scenario.checkpoint().await;
+    assert_eq!(saved["driver_checkpoint"]["attempts"], 4);
+    assert_eq!(saved["driver_checkpoint"]["completion_calls"], 4);
+    assert_eq!(
+        saved["driver_checkpoint"]["total_tokens"], 20,
+        "usage is not counted twice"
+    );
+    assert_eq!(saved["driver_checkpoint"]["phase"], "done");
+    assert_eq!(
+        saved["assistant_turns"].as_array().unwrap().len(),
+        4,
+        "final no-tool message is preserved too"
+    );
+}
+
+#[tokio::test]
+async fn rig_overflow_rebuilds_after_settlement_without_resetting_budget() {
+    struct Compact;
+    #[async_trait::async_trait]
+    impl qunica_backend::runtime::RuntimeHook for Compact {
+        fn name(&self) -> &'static str {
+            "safe-boundary-compaction"
+        }
+        async fn request_error(
+            &self,
+            _: &qunica_backend::runtime::StepContext,
+            messages: &mut Vec<qunica_backend::llm::ChatMessage>,
+            error: &anyhow::Error,
+        ) -> qunica_backend::runtime::RequestRecovery {
+            if !error
+                .downcast_ref::<qunica_backend::llm::ProviderHttpError>()
+                .is_some_and(|error| error.is_context_overflow())
+            {
+                return qunica_backend::runtime::RequestRecovery::Propagate;
+            }
+            assert!(
+                messages.iter().any(|message| message.role == "tool"),
+                "compaction sees settled tools"
+            );
+            let prompt = messages
+                .iter_mut()
+                .find(|message| message.role == "user")
+                .unwrap();
+            prompt.content = "compacted summary".into();
+            qunica_backend::runtime::RequestRecovery::Retry {
+                reason: "compacted at safe boundary".into(),
+            }
+        }
+    }
+    let scenario = Scenario::new(
+        "overflow",
+        vec![
+            ok(tool_body_with_usage(
+                vec![(
+                    "append",
+                    "Bash",
+                    json!({"command":"echo once >> marker.txt"}),
+                )],
+                40,
+            )),
+            (
+                StatusCode::BAD_REQUEST,
+                json!({"error":{"message":"context window exceeded"}}).to_string(),
+            ),
+            ok(billed_text("recovered", 20)),
+        ],
+    )
+    .await;
+    let owner = owner_id(&scenario.state, "rig-overflow@example.test").await;
+    let services = RuntimeServices::new(
+        scenario.state.db.pool().clone(),
+        scenario.state.write_lock.clone(),
+    )
+    .with_hooks(qunica_backend::runtime::HookChain::new().with(Arc::new(Compact)));
+    let (tx, mut rx) = mpsc::channel(256);
+    let task = tokio::spawn(run_group_turn(
+        services,
+        TurnRequest {
+            group_id: scenario.group.clone(),
+            owner_id: owner,
+            thread_id: None,
+            content: "append once".into(),
+            attachments: vec![],
+            model_override: None,
+            effort_override: None,
+        },
+        tx,
+    ));
+    let mut events = Vec::new();
+    while let Some(event) = rx.recv().await {
+        events.push(serde_json::to_value(event).unwrap());
+    }
+    assert_eq!(task.await.unwrap(), TurnOutcome::Completed, "{events:?}");
+    assert_eq!(
+        std::fs::read_to_string(scenario.root.path().join("marker.txt"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    let saved = scenario.checkpoint().await;
+    assert_eq!(saved["driver_checkpoint"]["attempts"], 3);
+    assert_eq!(saved["driver_checkpoint"]["failed_attempts"], 1);
+    assert_eq!(saved["driver_checkpoint"]["completion_calls"], 2);
+    assert_eq!(saved["driver_checkpoint"]["total_tokens"], 60);
+    let requests = scenario.requests.lock().await;
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].to_string().contains("compacted summary"));
+    assert_eq!(
+        requests[2]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn rig_invalid_or_cut_stream_never_dispatches_or_retries_visible_output() {
+    let fixtures = [
+        (
+            sse(vec![
+                json!({"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}),
+            ]) + "data: [DONE]\n\n",
+            1,
+        ),
+        (
+            sse(vec![
+                json!({"choices":[{"delta":{"content":"partial"}}]}),
+                json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"Bash","arguments":"{\"command\":\"echo forbidden\"}"}}]},"finish_reason":"tool_calls"}]}),
+            ]) + "data: [DONE]\n\n",
+            1,
+        ),
+        (
+            format!(
+                "data: {}\n\n{}",
+                json!({"choices":[{"delta":{"content":"partial"}}]}),
+                tool_body(vec![("unknown", "Undeclared", json!({}))])
+            ),
+            1,
+        ),
+        (
+            format!(
+                "data: {}\n\n",
+                json!({"choices":[{"delta":{"content":"partial"}}]})
+            ),
+            0,
+        ),
+        (
+            format!(
+                "data: {}\n\n{}",
+                json!({"choices":[{"delta":{"content":"partial"}}]}),
+                tool_body(vec![("bad", "Bash", Value::Null)])
+            ),
+            1,
+        ),
+    ];
+    for (index, (fixture, completions)) in fixtures.into_iter().enumerate() {
+        let scenario = Scenario::new(
+            &format!("invalid-{index}"),
+            vec![ok(fixture), ok(text_body("must not retry"))],
+        )
+        .await;
+        let events = scenario.run().await;
+        assert!(
+            payloads_of_kind(&events, StreamEventKind::ToolCallStart).is_empty(),
+            "{events:?}"
+        );
+        assert!(
+            !payloads_of_kind(&events, StreamEventKind::DispatchFailed).is_empty(),
+            "{events:?}"
+        );
+        assert_eq!(scenario.requests.lock().await.len(), 1);
+        let saved = scenario.checkpoint().await;
+        assert_eq!(saved["driver_checkpoint"]["phase"], "aborted");
+        assert_eq!(saved["driver_checkpoint"]["failed_attempts"], 1);
+        assert_eq!(saved["driver_checkpoint"]["completion_calls"], completions);
+        assert!(saved["assistant_turns"].as_array().unwrap().is_empty());
+        assert!(saved["response_segments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|text| text == "partial"));
+        let thread: String =
+            sqlx::query_scalar("SELECT thread_id FROM messages WHERE group_id=? AND sender_id=?")
+                .bind(&scenario.group)
+                .bind(&scenario.agent)
+                .fetch_one(scenario.state.db.pool())
+                .await
+                .unwrap();
+        let resumed = stream_events(
+            &scenario.app,
+            &format!("/api/v2/threads/{thread}/resume"),
+            &scenario.token,
+            json!({}),
+        )
+        .await;
+        assert_eq!(
+            payloads_of_kind(&resumed, StreamEventKind::AgentMessage).len(),
+            1,
+            "{resumed:?}"
+        );
+        let requests = scenario.requests.lock().await;
+        assert_eq!(
+            requests.len(),
+            2,
+            "only an explicit resume may request again"
+        );
+        assert!(
+            !requests[1].to_string().contains("partial"),
+            "aborted display is not a model message: {}",
+            requests[1]
+        );
+        assert_eq!(
+            scenario.checkpoint().await["driver_checkpoint"]["attempts"],
+            2
+        );
+    }
+}
+
+#[tokio::test]
+async fn rig_disabled_shell_is_rejected_before_host_dispatch() {
+    let scenario = Scenario::new(
+        "disabled-shell",
+        vec![ok(tool_body(vec![(
+            "disabled",
+            "Bash",
+            json!({"command":"echo must-not-run"}),
+        )]))],
+    )
+    .await;
+    sqlx::query("UPDATE agents SET tool_config_json='{}' WHERE id=?")
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let events = scenario.run().await;
+    assert!(payloads_of_kind(&events, StreamEventKind::ToolCallStart).is_empty());
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::DispatchFailed).len(),
+        1
+    );
+    assert_eq!(scenario.requests.lock().await.len(), 1);
+    let checkpoint = scenario.checkpoint().await;
+    assert_eq!(checkpoint["driver_checkpoint"]["phase"], "aborted");
+    assert_eq!(checkpoint["driver_checkpoint"]["failed_attempts"], 1);
+}
+
+#[tokio::test]
+async fn rig_call_and_failure_limits_stop_before_another_request() {
+    for (name, first, limits, failures) in [
+        (
+            "call-limit",
+            ok(tool_body(vec![(
+                "read",
+                "Read",
+                json!({"file_path":"source.txt"}),
+            )])),
+            json!({"max_model_calls":1}),
+            0,
+        ),
+        (
+            "failure-limit",
+            (StatusCode::TOO_MANY_REQUESTS, "rate limit".into()),
+            json!({"max_failed_attempts":1}),
+            1,
+        ),
+    ] {
+        let scenario = Scenario::new(name, vec![first, ok(text_body("must not request"))]).await;
+        std::fs::write(scenario.root.path().join("source.txt"), "source").unwrap();
+        set_agent_model_config(
+            &scenario.state,
+            &scenario.agent,
+            json!({"engine":"rig","rig_limits":limits}),
+        )
+        .await;
+        let events = scenario.run().await;
+        assert!(
+            !payloads_of_kind(&events, StreamEventKind::DispatchFailed).is_empty(),
+            "{events:?}"
+        );
+        assert_eq!(scenario.requests.lock().await.len(), 1);
+        let saved = scenario.checkpoint().await;
+        assert_eq!(saved["driver_checkpoint"]["attempts"], 1);
+        assert_eq!(saved["driver_checkpoint"]["failed_attempts"], failures);
+    }
+}
+
+#[tokio::test]
+async fn rig_token_limit_records_charge_but_blocks_tool_execution() {
+    let scenario = Scenario::new(
+        "token-limit",
+        vec![ok(tool_body_with_usage(
+            vec![(
+                "write",
+                "Bash",
+                json!({"command":"echo forbidden >> marker.txt"}),
+            )],
+            10,
+        ))],
+    )
+    .await;
+    set_agent_model_config(
+        &scenario.state,
+        &scenario.agent,
+        json!({"engine":"rig","rig_limits":{"max_total_tokens":5}}),
+    )
+    .await;
+    let events = scenario.run().await;
+    assert!(
+        payloads_of_kind(&events, StreamEventKind::ToolCallStart).is_empty(),
+        "{events:?}"
+    );
+    assert!(!scenario.root.path().join("marker.txt").exists());
+    let saved = scenario.checkpoint().await;
+    assert_eq!(saved["driver_checkpoint"]["completion_calls"], 1);
+    assert_eq!(saved["driver_checkpoint"]["total_tokens"], 10);
+    assert_eq!(saved["driver_checkpoint"]["failed_attempts"], 1);
+    let billed: i64 =
+        sqlx::query_scalar("SELECT SUM(total_tokens) FROM token_usage_records WHERE group_id=?")
+            .bind(&scenario.group)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(billed, 10);
+}
+
+fn sse(events: Vec<Value>) -> String {
+    events
+        .iter()
+        .map(|event| format!("data: {event}\n\n"))
+        .collect()
+}
+
+#[tokio::test]
+async fn rig_gemini_and_responses_keep_native_metadata_through_the_tool_loop() {
+    for kind in ["gemini", "openai-responses"] {
+        let (first, next, retained) = if kind == "gemini" {
+            (
+                sse(vec![
+                    json!({"candidates":[{"content":{"role":"model","parts":[
+                {"text":"plan","thought":true},
+                {"functionCall":{"name":"Read","args":{"file_path":"source.txt"}},"thoughtSignature":"c2lnLW9yaWdpbmFs","opaqueMetadata":{"revision":7}}
+            ]},"finishReason":"STOP"}]}),
+                ]),
+                sse(vec![
+                    json!({"candidates":[{"content":{"role":"model","parts":[{"text":"done"}]},"finishReason":"STOP"}]}),
+                ]),
+                "c2lnLW9yaWdpbmFs",
+            )
+        } else {
+            (
+                sse(vec![
+                    json!({"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs","encrypted_content":"cipher-final","summary":[],"opaqueMetadata":{"revision":7}}}),
+                    json!({"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc","call_id":"read","name":"Read","arguments":"{\"file_path\":\"source.txt\"}"}}),
+                    json!({"type":"response.completed","response":{"status":"completed"}}),
+                ]),
+                sse(vec![
+                    json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg","role":"assistant","content":[]}}),
+                    json!({"type":"response.output_text.delta","output_index":0,"item_id":"msg","content_index":0,"delta":"done"}),
+                    json!({"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg","role":"assistant","content":[{"type":"output_text","text":"done"}]}}),
+                    json!({"type":"response.completed","response":{"status":"completed"}}),
+                ]),
+                "cipher-final",
+            )
+        };
+        let scenario = Scenario::new(kind, vec![ok(first), ok(next)]).await;
+        sqlx::query(
+            "UPDATE llm_providers SET kind=? WHERE id=(SELECT provider_id FROM agents WHERE id=?)",
+        )
+        .bind(kind)
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+        std::fs::write(scenario.root.path().join("source.txt"), "source").unwrap();
+        let events = scenario.run().await;
+        assert_eq!(
+            payloads_of_kind(&events, StreamEventKind::ToolCallResult).len(),
+            1,
+            "{kind}: {events:?}"
+        );
+        assert_eq!(
+            payloads_of_kind(&events, StreamEventKind::AgentMessage)
+                .first()
+                .map(|value| &value["content"]),
+            Some(&json!("done")),
+            "{kind}: {events:?}"
+        );
+        let saved = scenario.checkpoint().await;
+        assert_eq!(saved["driver_checkpoint"]["attempts"], 2);
+        assert_eq!(saved["driver_checkpoint"]["completion_calls"], 2);
+        let requests = scenario.requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests[1].to_string().contains(retained),
+            "{kind}: {}",
+            requests[1]
+        );
+        assert!(
+            requests[1].to_string().contains("opaqueMetadata"),
+            "{kind}: {}",
+            requests[1]
+        );
+    }
+}
+
+#[tokio::test]
+async fn rig_silent_checkpoint_never_becomes_public() {
+    let scenario = Scenario::new("silent", vec![ok(text_body("<SILENT>"))]).await;
+    sqlx::query("UPDATE groups SET proactive_mode=1 WHERE id=?")
+        .bind(&scenario.group)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let events = scenario.run().await;
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::AgentSilent).len(),
+        1,
+        "{events:?}"
+    );
+    assert!(payloads_of_kind(&events, StreamEventKind::AgentMessage).is_empty());
+    let count:i64=sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE group_id=? AND sender_type='agent' AND status='visible'")
+        .bind(&scenario.group).fetch_one(scenario.state.db.pool()).await.unwrap();
+    assert_eq!(count, 0);
+    let saved = scenario.checkpoint().await;
+    assert_eq!(saved["driver_checkpoint"]["phase"], "done");
+    assert_eq!(saved["driver_checkpoint"]["attempts"], 1);
+}
+
+#[tokio::test]
+async fn rig_rejected_terminal_is_billed_once_without_accepting_a_turn() {
+    for kind in ["response.failed", "response.incomplete"] {
+        let fixture = sse(vec![
+            json!({"type":kind,"response":{"error":{"message":"failed"},"incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}),
+        ]);
+        let scenario =
+            Scenario::new(kind, vec![ok(fixture), ok(text_body("must not retry"))]).await;
+        sqlx::query("UPDATE llm_providers SET kind='openai-responses' WHERE id=(SELECT provider_id FROM agents WHERE id=?)")
+            .bind(&scenario.agent).execute(scenario.state.db.pool()).await.unwrap();
+        let events = scenario.run().await;
+        assert!(payloads_of_kind(&events, StreamEventKind::ToolCallStart).is_empty());
+        assert!(payloads_of_kind(&events, StreamEventKind::AgentMessage).is_empty());
+        assert_eq!(scenario.requests.lock().await.len(), 1);
+        let saved = scenario.checkpoint().await;
+        assert_eq!(saved["driver_checkpoint"]["attempts"], 1, "{kind}: {saved}");
+        assert_eq!(
+            saved["driver_checkpoint"]["completion_calls"], 1,
+            "{kind}: {saved}"
+        );
+        assert_eq!(saved["driver_checkpoint"]["failed_attempts"], 1);
+        assert_eq!(
+            saved["driver_checkpoint"]["total_tokens"], 12,
+            "{kind}: {saved}"
+        );
+        assert!(saved["assistant_turns"].as_array().unwrap().is_empty());
+        let billed: i64 = sqlx::query_scalar(
+            "SELECT SUM(total_tokens) FROM token_usage_records WHERE group_id=?",
+        )
+        .bind(&scenario.group)
+        .fetch_one(scenario.state.db.pool())
+        .await
+        .unwrap();
+        assert_eq!(billed, 12);
+    }
+}
+
+#[tokio::test]
+async fn rig_resume_keeps_accepted_tools_and_excludes_the_aborted_tail() {
+    let scenario = Scenario::new(
+        "accepted-tail",
+        vec![
+            ok(text_then_tool_body(
+                "accepted",
+                vec![("read", "Read", json!({"file_path":"source.txt"}))],
+            )),
+            ok(sse(vec![
+                json!({"choices":[{"delta":{"content":"aborted-tail"}}]}),
+            ])),
+            ok(text_body("resumed")),
+        ],
+    )
+    .await;
+    std::fs::write(scenario.root.path().join("source.txt"), "source").unwrap();
+    let events = scenario.run().await;
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::ToolCallResult).len(),
+        1
+    );
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::DispatchFailed).len(),
+        1
+    );
+    let thread: String =
+        sqlx::query_scalar("SELECT thread_id FROM messages WHERE group_id=? AND sender_id=?")
+            .bind(&scenario.group)
+            .bind(&scenario.agent)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    let events = stream_events(
+        &scenario.app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &scenario.token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::AgentMessage).len(),
+        1,
+        "{events:?}"
+    );
+    assert!(
+        payloads_of_kind(&events, StreamEventKind::ToolCallStart).is_empty(),
+        "the settled Read is not repeated"
+    );
+    let requests = scenario.requests.lock().await;
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].to_string().contains("accepted"));
+    assert!(!requests[2].to_string().contains("aborted-tail"));
+    assert_eq!(
+        requests[2]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .count(),
+        1
+    );
+    let saved = scenario.checkpoint().await;
+    assert_eq!(saved["driver_checkpoint"]["attempts"], 3);
+    assert_eq!(saved["driver_checkpoint"]["failed_attempts"], 1);
+    assert_eq!(saved["driver_checkpoint"]["completion_calls"], 2);
+    assert!(
+        saved["response_segments"]
+            .to_string()
+            .contains("aborted-tail"),
+        "audit fragments are retained"
+    );
+}
+
+#[tokio::test]
+async fn rig_approval_rejects_invalid_config_and_runtime_before_consuming_decisions() {
+    let scenario = Scenario::new(
+        "engine-binding",
+        vec![
+            ok(tool_body(vec![(
+                "remove",
+                "Bash",
+                json!({"command":"rm source.txt"}),
+            )])),
+            ok(text_body("must not request")),
+        ],
+    )
+    .await;
+    std::fs::write(
+        scenario.root.path().join("source.txt"),
+        "keep until the original engine resumes",
+    )
+    .unwrap();
+    let paused = scenario.run().await;
+    assert_eq!(
+        payloads_of_kind(&paused, StreamEventKind::ApprovalRequired).len(),
+        1,
+        "{paused:?}"
+    );
+    let thread: String =
+        sqlx::query_scalar("SELECT thread_id FROM messages WHERE group_id=? AND sender_id=?")
+            .bind(&scenario.group)
+            .bind(&scenario.agent)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    set_agent_model_config(
+        &scenario.state,
+        &scenario.agent,
+        json!({"engine":"invalid"}),
+    )
+    .await;
+    let (status, rejected) = send(
+        &scenario.app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/threads/{thread}/resume"),
+            &scenario.token,
+            json!({"approval":{"tool_call_id":"remove","approved":true}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{rejected:?}");
+    assert!(
+        scenario.root.path().join("source.txt").exists(),
+        "the engine mismatch must stop before the approved side effect: {rejected:?}"
+    );
+    assert_eq!(scenario.requests.lock().await.len(), 1);
+    let pending: String = sqlx::query_scalar(
+        "SELECT status FROM pending_approvals WHERE thread_id=? AND tool_call_id='remove'",
+    )
+    .bind(&thread)
+    .fetch_one(scenario.state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        pending, "pending",
+        "a rejected engine change must not consume approval"
+    );
+    set_agent_model_config(&scenario.state, &scenario.agent, json!({"engine":"rig"})).await;
+    sqlx::query("UPDATE agents SET runtime_kind='acp' WHERE id=?")
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let (status, rejected) = send(
+        &scenario.app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/threads/{thread}/resume"),
+            &scenario.token,
+            json!({"approval":{"tool_call_id":"remove","approved":true}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{rejected}");
+    assert_eq!(scenario.requests.lock().await.len(), 1);
+    sqlx::query("UPDATE agents SET runtime_kind='llm_chat' WHERE id=?")
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let recovered = stream_events(
+        &scenario.app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &scenario.token,
+        json!({"approval":{"tool_call_id":"remove","approved":true}}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&recovered, StreamEventKind::AgentMessage).len(),
+        1,
+        "{recovered:?}"
+    );
+    assert!(!scenario.root.path().join("source.txt").exists());
+    assert_eq!(scenario.requests.lock().await.len(), 2);
+    assert_eq!(
+        scenario.checkpoint().await["driver_checkpoint"]["attempts"],
+        2
+    );
+}
+
+#[tokio::test]
+async fn saved_native_alias_runs_new_agentrun_turns_without_losing_rig_history() {
+    let scenario = Scenario::new(
+        "native-alias",
+        vec![
+            ok(text_body("first answer")),
+            ok(text_body("continued answer")),
+        ],
+    )
+    .await;
+    let events = scenario.run().await;
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::AgentMessage).len(),
+        1
+    );
+    let thread: String =
+        sqlx::query_scalar("SELECT thread_id FROM messages WHERE group_id=? AND sender_id=?")
+            .bind(&scenario.group)
+            .bind(&scenario.agent)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    set_agent_model_config(&scenario.state, &scenario.agent, json!({"engine":"native"})).await;
+    let accepted = stream_events(
+        &scenario.app,
+        &format!("/api/v2/groups/{}/messages/stream", scenario.group),
+        &scenario.token,
+        json!({"content":"continue old history","thread_id":thread}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&accepted, StreamEventKind::AgentMessage)
+            .first()
+            .map(|p| &p["content"]),
+        Some(&json!("continued answer")),
+        "{accepted:?}"
+    );
+    let checkpoint = scenario.checkpoint().await;
+    assert_eq!(checkpoint["driver_checkpoint"]["phase"], "done");
+    let requests = scenario.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["role"] == "assistant" && m["content"] == "first answer"));
+}
+
+#[tokio::test]
+async fn rig_accepted_resume_keeps_its_engine_after_a_later_config_edit() {
+    let scenario = Scenario::new(
+        "accepted-engine",
+        vec![
+            ok(tool_body(vec![(
+                "remove",
+                "Bash",
+                json!({"command":"rm source.txt"}),
+            )])),
+            ok(text_body("finished original execution")),
+        ],
+    )
+    .await;
+    std::fs::write(scenario.root.path().join("source.txt"), "approved").unwrap();
+    let paused = scenario.run().await;
+    assert_eq!(
+        payloads_of_kind(&paused, StreamEventKind::ApprovalRequired).len(),
+        1
+    );
+    let (thread, message, content, raw): (String, String, String, Option<String>) = sqlx::query_as(
+        "SELECT thread_id,id,content,content_json FROM messages WHERE group_id=? AND sender_id=?",
+    )
+    .bind(&scenario.group)
+    .bind(&scenario.agent)
+    .fetch_one(scenario.state.db.pool())
+    .await
+    .unwrap();
+    let decision: qunica_backend::tools::ApprovalDecision =
+        serde_json::from_value(json!({"tool_call_id":"remove","approved":true})).unwrap();
+    // Represent the accepted approval command before its worker runs.
+    sqlx::query("UPDATE pending_approvals SET status='resolved',version=version+1,decision_json=? WHERE thread_id=? AND tool_call_id='remove'")
+        .bind(serde_json::to_string(&decision).unwrap()).bind(&thread).execute(scenario.state.db.pool()).await.unwrap();
+    set_agent_model_config(&scenario.state, &scenario.agent, json!({"engine":"native"})).await;
+    let services = RuntimeServices::new(
+        scenario.state.db.pool().clone(),
+        scenario.state.write_lock.clone(),
+    );
+    sqlx::query("UPDATE agents SET runtime_kind='acp' WHERE id=?")
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let (tx, mut rx) = mpsc::channel(256);
+    let worker = tokio::spawn(run_thread_resume(
+        services,
+        ResumeRequest {
+            group_id: scenario.group.clone(),
+            thread_id: thread,
+            agent_id: scenario.agent.clone(),
+            message_id: message,
+            existing_content: content,
+            content_json: raw,
+            approval: Some(decision),
+        },
+        tx,
+    ));
+    while rx.recv().await.is_some() {}
+    assert_eq!(worker.await.unwrap(), TurnOutcome::Completed);
+    assert!(!scenario.root.path().join("source.txt").exists());
+    assert_eq!(scenario.requests.lock().await.len(), 2);
+    let saved = scenario.checkpoint().await;
+    assert_eq!(saved["driver_checkpoint"]["attempts"], 2);
+    assert_eq!(saved["driver_checkpoint"]["phase"], "done");
+}
+
+#[tokio::test]
+async fn rig_canary_pause_blocks_new_io_but_settles_existing_approval_once() {
+    let scenario = Scenario::new(
+        "canary-pause",
+        vec![
+            ok(tool_body_with_usage(
+                vec![("remove", "Bash", json!({"command":"rm source.txt"}))],
+                15,
+            )),
+            ok(billed_text("approved execution finished", 25)),
+            ok(billed_text("after reopening intake", 10)),
+        ],
+    )
+    .await;
+    std::fs::write(scenario.root.path().join("source.txt"), "approved original").unwrap();
+    let events = scenario.run().await;
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::ApprovalRequired).len(),
+        1,
+        "{events:?}"
+    );
+    let (thread, execution): (String, String) =
+        sqlx::query_as("SELECT thread_id,id FROM messages WHERE group_id=? AND sender_id=?")
+            .bind(&scenario.group)
+            .bind(&scenario.agent)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    let (status, _) = send(
+        &scenario.app,
+        authed_json(
+            "PATCH",
+            "/api/v2/runtime/engines/rig",
+            &scenario.token,
+            json!({"paused":true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let fresh = seed_thread(&scenario.state, &scenario.group, "active").await;
+    let blocked = stream_events(
+        &scenario.app,
+        &format!("/api/v2/groups/{}/messages/stream", scenario.group),
+        &scenario.token,
+        json!({"content":"new canary task","thread_id":fresh}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&blocked, StreamEventKind::DispatchFailed).len(),
+        1,
+        "{blocked:?}"
+    );
+    assert!(payloads_of_kind(&blocked, StreamEventKind::ToolCallStart).is_empty());
+    assert_eq!(
+        scenario.requests.lock().await.len(),
+        1,
+        "pause blocks provider I/O"
+    );
+    let resumed = stream_events(
+        &scenario.app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &scenario.token,
+        json!({"approval":{"tool_call_id":"remove","approved":true}}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&resumed, StreamEventKind::AgentMessage).len(),
+        1,
+        "{resumed:?}"
+    );
+    assert!(!scenario.root.path().join("source.txt").exists());
+    assert_eq!(scenario.requests.lock().await.len(), 2);
+    let (status, metrics) = send(
+        &scenario.app,
+        authed_empty(
+            "GET",
+            "/api/v2/runtime/engine-metrics?days=7",
+            &scenario.token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{metrics}");
+    let rows = metrics["rows"].as_array().unwrap();
+    let row = rows
+        .iter()
+        .find(|row| row["model"] == "test-model")
+        .unwrap();
+    assert_eq!(row["engine"], "rig");
+    assert_eq!(row["completed"], 1);
+    assert_eq!(row["partial_executions"], 0);
+    assert_eq!(row["failed"], 0);
+    assert_eq!(
+        row["total_tokens"], 40,
+        "resume must not multiply original billed calls"
+    );
+    assert_eq!(row["tool_calls"], 1);
+    assert_eq!(row["settled_tool_calls"], 1);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["blocked"].as_i64().unwrap())
+            .sum::<i64>(),
+        1
+    );
+    let invocations: i64 =
+        sqlx::query_scalar("SELECT invocations FROM engine_executions WHERE id=?")
+            .bind(&execution)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(invocations, 2);
+    let config: String = sqlx::query_scalar("SELECT model_config_json FROM agents WHERE id=?")
+        .bind(&scenario.agent)
+        .fetch_one(scenario.state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&config).unwrap()["engine"],
+        "rig"
+    );
+    let (status, _) = send(
+        &scenario.app,
+        authed_json(
+            "PATCH",
+            "/api/v2/runtime/engines/rig",
+            &scenario.token,
+            json!({"paused":false}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let fresh = seed_thread(&scenario.state, &scenario.group, "active").await;
+    let reopened = stream_events(
+        &scenario.app,
+        &format!("/api/v2/groups/{}/messages/stream", scenario.group),
+        &scenario.token,
+        json!({"content":"new task after reopening","thread_id":fresh}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&reopened, StreamEventKind::AgentMessage).len(),
+        1,
+        "{reopened:?}"
+    );
+    assert_eq!(scenario.requests.lock().await.len(), 3);
+}
+
+#[tokio::test]
+async fn rig_canary_resumes_without_full_coverage_never_become_comparison_samples() {
+    for change_model in [false, true] {
+        let scenario = Scenario::new(
+            &format!("canary-partial-{change_model}"),
+            vec![
+                ok(tool_body_with_usage(
+                    vec![("remove", "Bash", json!({"command":"rm source.txt"}))],
+                    7,
+                )),
+                ok(billed_text("finished", 11)),
+            ],
+        )
+        .await;
+        std::fs::write(scenario.root.path().join("source.txt"), "original").unwrap();
+        let events = scenario.run().await;
+        assert_eq!(
+            payloads_of_kind(&events, StreamEventKind::ApprovalRequired).len(),
+            1,
+            "{events:?}"
+        );
+        let (thread, execution): (String, String) =
+            sqlx::query_as("SELECT thread_id,id FROM messages WHERE group_id=? AND sender_id=?")
+                .bind(&scenario.group)
+                .bind(&scenario.agent)
+                .fetch_one(scenario.state.db.pool())
+                .await
+                .unwrap();
+        if change_model {
+            set_agent_model_config(
+                &scenario.state,
+                &scenario.agent,
+                json!({"engine":"rig","model":"changed-model"}),
+            )
+            .await;
+        } else {
+            // An approval that predates P4 has no execution measurement.
+            sqlx::query("DELETE FROM engine_executions WHERE id=?")
+                .bind(&execution)
+                .execute(scenario.state.db.pool())
+                .await
+                .unwrap();
+        }
+        let resumed = stream_events(
+            &scenario.app,
+            &format!("/api/v2/threads/{thread}/resume"),
+            &scenario.token,
+            json!({"approval":{"tool_call_id":"remove","approved":true}}),
+        )
+        .await;
+        assert_eq!(
+            payloads_of_kind(&resumed, StreamEventKind::AgentMessage).len(),
+            1,
+            "{resumed:?}"
+        );
+        let (_, metrics) = send(
+            &scenario.app,
+            authed_empty(
+                "GET",
+                "/api/v2/runtime/engine-metrics?days=7",
+                &scenario.token,
+            ),
+        )
+        .await;
+        let row = &metrics["rows"][0];
+        assert_eq!(row["partial_executions"], 1, "{metrics}");
+        assert_eq!(row["completed"], 0);
+        assert_eq!(row["failure_rate"], Value::Null);
+        assert_eq!(row["total_tokens"], 0);
+        assert_eq!(row["model"], "test-model");
+        let ledger: i64 = sqlx::query_scalar(
+            "SELECT SUM(total_tokens) FROM token_usage_records WHERE group_id=?",
+        )
+        .bind(&scenario.group)
+        .fetch_one(scenario.state.db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            ledger, 18,
+            "billing remains intact even when comparison coverage is incomplete"
+        );
+        assert_eq!(scenario.requests.lock().await.len(), 2);
+    }
+}

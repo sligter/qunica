@@ -12,6 +12,7 @@ import type { AgentRead } from '@/types/api'
 import i18n from '@/i18n'
 
 const mocks = vi.hoisted(() => ({
+  engineAvailable: true,
   capabilityHook: vi.fn(),
   capabilityRefetch: vi.fn(),
   capabilityState: {
@@ -88,6 +89,10 @@ const mocks = vi.hoisted(() => ({
       updated_at: '2026-07-16T00:00:00Z',
     },
   ],
+}))
+
+vi.mock('@/hooks/useEngineRollout', () => ({
+  useEngineCapabilities: () => ({ data: { rig_available: mocks.engineAvailable, rig_paused: false } }),
 }))
 
 vi.mock('@/hooks/useAcpRuntimeCapabilities', () => ({
@@ -196,6 +201,7 @@ class ResizeObserverMock {
 
 describe('agent runtime capabilities', () => {
   beforeEach(() => {
+    mocks.engineAvailable = true
     vi.stubGlobal('ResizeObserver', ResizeObserverMock)
     mocks.capabilityHook.mockReset()
     mocks.capabilityRefetch.mockReset()
@@ -381,6 +387,48 @@ describe('agent runtime capabilities', () => {
         llm_config: expect.objectContaining({ model: 'create-only-model' }),
       }),
     )
+  })
+
+  it('preserves Rig limits and opaque model settings when editing visible fields', async () => {
+    const user = userEvent.setup()
+    renderForm(<EditAgentForm agent={agent({
+      llm_config: { engine: 'rig', model: 'original', vision: false, rig_limits: { max_model_calls: 9 }, opaque: { version: 2 } },
+    })} />)
+    expect(screen.queryByLabelText('Execution engine')).not.toBeInTheDocument()
+    await user.clear(screen.getByLabelText('Name'))
+    await user.type(screen.getByLabelText('Name'), 'Renamed')
+    fireEvent.submit(document.getElementById(EDIT_AGENT_FORM_ID)!)
+    await waitFor(() => expect(mocks.updateMutate).toHaveBeenCalledOnce())
+    expect(mocks.updateMutate).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'Renamed', llm_config: expect.objectContaining({
+        engine: 'rig', model: 'original', vision: false, rig_limits: { max_model_calls: 9 }, opaque: { version: 2 },
+      }),
+    }))
+  })
+
+  it('normalizes legacy native configuration while preserving limits', async () => {
+    mocks.engineAvailable = false
+    renderForm(<EditAgentForm agent={agent({ llm_config: { engine: 'native', rig_limits: { max_model_calls: 9 } } })} />)
+    expect(screen.queryByLabelText('Execution engine')).not.toBeInTheDocument()
+    fireEvent.submit(document.getElementById(EDIT_AGENT_FORM_ID)!)
+    await waitFor(() => expect(mocks.updateMutate).toHaveBeenCalledOnce())
+    expect(mocks.updateMutate).toHaveBeenCalledWith(expect.objectContaining({
+      llm_config: expect.objectContaining({ engine: 'rig', rig_limits: { max_model_calls: 9 } }),
+    }))
+  })
+
+  it('creates model agents with Rig without a retired engine selector', async () => {
+    const user = userEvent.setup()
+    mocks.createMutate.mockResolvedValue(agent({}))
+    renderForm(<CreateAgentForm />)
+    expect(screen.queryByLabelText('Execution engine')).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText('Name'), 'Canary')
+    await user.selectOptions(screen.getByLabelText('Workspace'), 'workspace-1')
+    await user.click(screen.getByRole('button', { name: 'Create agent' }))
+    await waitFor(() => expect(mocks.createMutate).toHaveBeenCalledOnce())
+    expect(mocks.createMutate).toHaveBeenCalledWith(expect.objectContaining({
+      llm_config: expect.objectContaining({ engine: 'rig' }),
+    }))
   })
 
   it('starts the create form image input control enabled', async () => {

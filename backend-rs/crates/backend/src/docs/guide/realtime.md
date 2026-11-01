@@ -153,6 +153,58 @@ crashed remains interrupted and needs observation before any manual recovery:
 `turn.acknowledge_stopped` releases the group only after a person confirms the old
 worker and its external effects stopped.
 
+### Native tool execution checkpoints
+
+Rig is the default model engine and sole provider transport. The native name in
+this anchor refers to the original host checkpoint format. Recorded legacy
+continuations retain a recovery-only host branch; new tasks, including saved
+`engine: "native"` aliases, enter Rig. Existing native measurements retain their
+original label and become partial when resumed through the new transport. The project document `RIG_MIGRATION.md` defines the retirement and recovery
+contract.
+
+Native `llm_chat` messages use `content_json` schema 2. Legacy schema 1 remains
+readable. New model executions use Rig and schema 3, adding a Qunica-owned
+`driver_checkpoint` with attempt id, phase and cumulative call/failure/token
+budgets. Approval recovery and compaction do not reset these counters. This is
+not a serialized Rig run; the original tool batch is settled before constructing
+another run. Native execution continues to write schema 2. See the
+[Rig migration contract](../../../../../../RIG_MIGRATION.md#p3-host-driven-agentrun).
+Signatures absent from old records cannot be reconstructed. Invalid
+or newer checkpoint schemas stop continuation instead of discarding execution
+state and asking the model again.
+
+Each model tool round retains its original Assistant message, including exact
+reasoning, signatures, provider-native content blocks and tool metadata. Results
+retain the provider-facing output separately from display summaries. Replay
+preserves model-round boundaries and exposes private blocks only to their owning
+agent. Compaction treats a tool exchange as a unit and includes opaque blocks in
+its token estimate.
+
+Summary invalidation is scoped to each agent's saved `through_seq`: changes to
+covered rows invalidate the summary, including context-admission changes. Updates
+or deletion of later execution-checkpoint rows preserve the summary; the later
+history is loaded separately.
+
+The complete batch is committed before dispatch, including calls after an
+approval gate. A checkpoint revision is atomically claimed before execution;
+stale revisions cannot dispatch a tool. Each completed result is committed before
+waiting for slower parallel reads. Internal `running_checkpoint` and
+`private_checkpoint` rows do not announce unfinished public messages. Public
+completion updates the same message id and sequence. Pausing promotes the public
+checkpoint to `interrupted` and persists its approval question atomically.
+
+Startup changes started calls without a durable result to `outcome_unknown`.
+It does not infer whether the external action succeeded or replay that call.
+Such a continuation stops before a model request; inspect the external effects
+and use the existing stop-confirmation workflow before starting new work.
+Known results and pending calls retain their original ids and order. Approval
+continuation settles that original batch before the next model request. Legacy
+Continue records an explicit not-executed result for the skipped approval.
+SQLite and an external Shell cannot provide an atomic exactly-once transaction.
+Connection aborts/resets before response streaming consume the existing bounded
+request retry budget. Once a stream starts, truncation fails the turn instead of
+automatically replaying its visible output.
+
 ## Client recovery and instance selection
 
 Desktop offers a local instance or a server connection. Only local mode invokes

@@ -13,6 +13,7 @@ import {
   parseAcpEnv,
 } from '@/components/agents/acpRuntimeConfig'
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
+import { mergeModelConfig } from '@/components/agents/modelConfig'
 import { AgentAvatarPicker } from '@/components/agents/AgentAvatarPicker'
 import { AgentSystemPromptActions } from '@/components/agents/AgentSystemPromptActions'
 import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
@@ -272,7 +273,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       const llm_config: Record<string, unknown> = {}
       const model = values.model?.trim()
       if (model) llm_config.model = model
-      if (values.vision) llm_config.vision = true
+      llm_config.vision = values.vision
       if (values.temperature !== undefined) llm_config.temperature = values.temperature
       if (values.top_p !== undefined && values.top_p !== 1) llm_config.top_p = values.top_p
       if (values.reasoning_effort !== 'default') {
@@ -308,8 +309,8 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
               }
             : null,
         llm_config:
-          values.runtime_kind === 'llm_chat' && Object.keys(llm_config).length > 0
-            ? llm_config
+          values.runtime_kind === 'llm_chat'
+            ? mergeModelConfig(null, llm_config)
             : null,
         tool_config: values.runtime_kind === 'llm_chat' ? currentToolConfig : null,
         workspace_id: values.workspace_id,
@@ -540,6 +541,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
                 : null
             }
           />
+
 
           <div className="space-y-1.5">
             <button
