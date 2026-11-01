@@ -554,10 +554,11 @@ Current commit results are reported on [draft PR #4](https://github.com/sligter/
 The preceding P0-P4 test totals are historical evidence for their named commits,
 not results for P5. The earlier protocol-only cleanup `09c6c31` passed
 [all eight CI jobs](https://github.com/sligter/qunica/actions/runs/41279028299).
-No production instance or real Agent cohort is changed by this branch. Real
-vendor signature/gateway acceptance and two release observation windows remain
-unverified release evidence. P5 code retirement does not assert those results,
-merge the PR or publish a release. A deployed native instance must be drained
+Code verification does not migrate any production data. Real vendor
+signature/gateway acceptance and two release observation windows remain
+unverified release evidence. Publication of v0.1.8 is a separate owner-authorized
+operation using the existing tag workflow and signed platform build gates; it
+does not establish those observations. A deployed native instance must be drained
 and backed up before upgrade; never downgrade a migrated database or replay an
 unknown Shell outcome as a rollback shortcut.
 
