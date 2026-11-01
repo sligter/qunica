@@ -213,7 +213,36 @@ async fn load_conversation_rows(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows.into_iter().map(ConversationMessage::from).collect())
+    Ok(rows.into_iter().filter_map(committed_model_row).collect())
+}
+
+fn committed_model_row(row: ConversationRow) -> Option<ConversationMessage> {
+    let rig = row.sender_type == "agent"
+        && row
+            .content_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .is_some_and(|value| value.get("driver_checkpoint").is_some());
+    let mut rendered = ConversationMessage::from(row);
+    if rig {
+        // Note: an aborted attempt's display text remains in the audit/UI row,
+        // but only accepted Rig turns may enter another model request. This
+        // applies on explicit resume as well as subsequent normal turns.
+        if rendered.assistant_turns.is_empty() {
+            return None;
+        }
+        rendered.content = rendered
+            .assistant_turns
+            .iter()
+            .map(|turn| turn.content.as_str())
+            .collect();
+        rendered.reasoning = rendered
+            .assistant_turns
+            .iter()
+            .filter_map(|turn| turn.reasoning_content.clone())
+            .collect();
+    }
+    Some(rendered)
 }
 
 impl From<ConversationRow> for ConversationMessage {

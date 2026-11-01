@@ -1,4 +1,4 @@
-# Rig migration: build baseline
+# Rig migration: providers and host-driven execution
 
 The migration keeps Qunica's scheduler, tool executor, approval boundary and
 SQLite history authoritative. Native execution remains the default. P0's
@@ -14,8 +14,8 @@ The application crates retain edition 2021; Rig uses its own edition 2024.
 
 The non-default Cargo feature `rig-engine` enables exactly pinned `rig-core`,
 `rig-agent` and `rig-reqwest` 0.45.0 dependencies. It is forwarded by the desktop
-crate. This is a build-time PoC boundary, **not** an Agent runtime selector:
-enabling it does not route model requests through Rig yet.
+crate. Enabling the feature alone keeps native execution. P3 adds an explicit
+per-agent selector described below; builds without the feature reject it.
 
 The existing `reqwest` 0.12 clients stay unchanged. The `reqwest_013` alias is
 reserved for the explicitly injected Rig transport. Both use native-tls so P1
@@ -95,10 +95,10 @@ acceptance gates.
 ## P2 message adapter and provider
 
 `llm::rig_engine` (feature `rig-engine` only) holds `RigMessageAdapter` and
-`RigProvider`. Nothing in the runtime selects it; `build_provider` is unchanged.
+`RigProvider`. The native `build_provider` factory is unchanged; P3's explicit
+engine selector constructs the Rig provider separately.
 It serves OpenAI-compatible, Anthropic (including its compatible aliases), and
-Gemini/Google kinds, plus OpenAI Responses. The runtime continues to select
-native for every kind.
+Gemini/Google kinds, plus OpenAI Responses. All kinds default to native.
 
 - **History.** A Rig assistant turn is stored whole as `native_content["rig"]`,
   beside its display fields. It is replayed only while its projection still
@@ -237,7 +237,132 @@ The local contracts cover out-of-order done items, partial-vs-complete
 ciphertext, JSON persistence followed by a second request, no-tool reasoning,
 missing identity, malformed calls, HTTP errors, EOF/transport failure,
 sampling, query routing and credential precedence. Live provider acceptance
-and P3 durable Driver behavior remain unverified.
+remains unverified. P3 exercises durable Driver behavior with local fixtures.
+
+## P3 host-driven AgentRun
+
+An agent may opt in through its existing `llm_config` API field:
+
+```json
+{
+  "engine": "rig",
+  "rig_limits": {
+    "max_model_calls": 128,
+    "max_failed_attempts": 16,
+    "max_total_tokens": 120000
+  }
+}
+```
+
+Missing `engine` means `native`. Unknown engines and invalid limits fail at API
+validation and again when loading a stored configuration. `rig` requires the
+`rig-engine` Cargo feature. The default model-call and failed-attempt limits are
+128 and 16; the optional token cap has no default. These limits cover one agent
+execution, including request retries and approval resumes. They supplement the
+existing group scheduler budget, which also accounts for summarization and
+delegated agents. They do not reset when an AgentRun is rebuilt.
+
+`runtime/rig_driver.rs` owns a sans-I/O `AgentRun`. Qunica still drives streaming,
+hooks, tool execution, approval, SQLite persistence, cancellation and scheduling.
+The driver requires `CallModel` before sending a request, accepts a complete
+model turn through `streamed_turn`, then requires matching `CallTools` or `Done`.
+It never executes tools through Rig. Tool names and arguments must agree with
+the accepted batch; shell compatibility aliases follow ToolExecutor and are
+allowed only when that execution already has a shell tool.
+
+Each prepared request gets a durable UUID attempt id and consumes the call
+budget before HTTP I/O. Its terminal metadata travels on a private channel,
+separate from frontend deltas. The lifecycle is Prepared → Streaming →
+TerminalReceived → CompletionRecorded → StreamedTurnAccepted → ToolsPending /
+Done. Failed or cancelled attempts become Aborted. Completion metadata is
+recorded at most once; an incomplete or rejected terminal response can still
+incur usage without becoming an accepted turn. Repeated usage snapshots are
+accounted by their positive difference. Accepted calls and their original
+assistant message are persisted together before execution.
+Only successful stop/tool-call finishes can be accepted; token-limit and other
+incomplete finishes abort even if the transport has ended cleanly. Original
+tool arguments must be objects, and required provider ids/names cannot be repaired
+before dispatch.
+
+The driver sets `max_invalid_tool_call_retries(0)`. There is no model retry after
+streamed output, including invalid-call and validation failures. Existing bounded
+HTTP and reasoning-passback retries happen before any visible output and consume
+separate attempt ids. Context-overflow hooks may compact only after the previous
+tool batch has settled. The host validates the complete call/result history,
+then splits the last prompt to construct a new run. `with_validated_history`
+alone cannot validate an exchange whose final result is that prompt. Neither
+pairing repair nor `canonical_history()` is used to decide whether tools ran.
+
+Rig executions use Qunica `content_json` schema 3, adding `driver_checkpoint`
+with cumulative attempts, failures, completions and token counts. Native still
+writes schema 2. No serialized Rig state is stored. On approval/restart the host
+first settles the original persisted batch, without asking a model to recreate
+calls, then starts AgentRun at the next model boundary. A previously started
+tool without a durable result remains outcome-unknown and stops recovery.
+Final assistant messages without tools also retain their native blocks.
+Model-history loading projects Rig rows from accepted assistant messages only,
+including during explicit Resume. Failed display fragments remain in the UI and
+audit row but never become a successful assistant message in a later prompt.
+Gemini's calls may have Rig-local identifiers. Result conversion restores the
+original identity variant as well as its UUID string, so pairing remains valid
+after SQLite/JSON persistence. Provider-native blocks remain unchanged.
+
+Migration 0050 makes context-summary invalidation respect each agent's cursor.
+Editing or deleting a covered row invalidates that summary; execution-checkpoint
+updates beyond the cursor leave it usable and are loaded as incremental history.
+This also invalidates a covered row when its context-admission flag changes.
+
+Rig HTTP opening is polled in a separate awaited task: reqwest 0.13's Windows
+debug connector otherwise exhausts the small default stack beneath nested
+AgentAsTool frames. Dropping the opener aborts that task. This does not detach
+tool execution or change the scheduler's sequential dispatch contract.
+
+The P3 acceptance tests exercise actual local file/shell operations against fake
+providers. Required scenarios are:
+
+| Scenario | Required invariant |
+| --- | --- |
+| Read → Edit → Shell | One accepted batch and one completion per attempt |
+| Approval + restart | Original calls, reasoning and signatures survive |
+| Cancellation | No duplicate dispatch or late tool execution |
+| Text/reasoning/usage/tool events | Existing SSE contracts and billing remain |
+| AgentAsTool | Private output, order and scheduler budget remain |
+| Overflow + compaction | Settled history, prior output and cumulative budget survive |
+| Anthropic / DeepSeek replay | Signed blocks and complete reasoning are preserved |
+| Parallel reads | Fast results become durable before slow siblings |
+| Shell succeeded, result not committed | Unknown outcome blocks automatic replay |
+| Invalid calls / truncation / 429 / limits | No tool side effects, polluted history or unbounded retry |
+
+These fixtures do not establish live-vendor signature acceptance, production
+gateway compatibility or two-release canary stability. The default stays native;
+P4 rollout and P5 deletion require their own evidence.
+
+### Local P3 verification (Windows, Rust 1.97.1, 2026-11-01)
+
+The final Rig run passes 713 tests across the library, agents API, AgentAsTool,
+four scheduler suites, group streaming and provider contracts, with three
+existing ignored tests and no filters. Group streaming includes 21 Rig scenarios,
+covering the ten acceptance areas above, explicit resume after invalid/truncated
+attempts, retained accepted tools, all four provider loops and rejected-terminal
+billing. Formatting, strict workspace/all-target/all-feature Clippy and whitespace
+checks pass.
+
+Native passes 627 tests in the same runtime/API/scheduler/library range, plus
+50 provider contracts. The latter passed three complete default-parallel runs
+with `NO_PROXY=127.0.0.1,localhost` scoped to the test process. Ambient Windows
+system-proxy runs hit connection abort/reset errors (10053/10054); the system
+proxy did not bypass loopback. A serial contract run also passed. Application
+proxy behavior and production retry policy were not changed.
+
+An intermediate overlapping Windows test/build run failed to relink a running
+test executable and had two group-test failures (early end of the 25-call chain,
+missing Shell artifact). Both group cases passed in the final unfiltered Rig run;
+their underlying intermittent causes are not claimed fixed. Do not concurrently
+rebuild an executable while its tests are still running on Windows.
+
+The P2 head `172114c` passed [CI run 41194779017](https://github.com/sligter/qunica/actions/runs/41194779017).
+That result does not certify the P3 changes; current cross-platform status belongs
+to the new PR head's CI. Live-vendor replay and P4/P5 remain separate gates.
 
 ## Validation
 

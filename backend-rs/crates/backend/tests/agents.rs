@@ -1214,3 +1214,56 @@ async fn agent_delete_soft_deletes_and_hides_from_list() {
         .collect();
     assert!(!ids.contains(&agent_id.as_str()));
 }
+
+#[tokio::test]
+async fn agent_engine_selection_is_validated_before_storage() {
+    let app = app().await;
+    let token = register_and_login(&app, "engine-choice@example.test").await;
+    let workspace = create_workspace(&app, &token).await;
+    let (status, created) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents",
+            &token,
+            json!({"name":"Rig","workspace_id":workspace,"llm_config":{"engine":"rig"}}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        if cfg!(feature = "rig-engine") {
+            StatusCode::CREATED
+        } else {
+            StatusCode::BAD_REQUEST
+        },
+        "{created:?}"
+    );
+    let (status, native) = send(
+        &app,
+        authed_json(
+            "POST",
+            "/api/v2/agents",
+            &token,
+            json!({"name":"Native","workspace_id":workspace,"llm_config":{"engine":"native"}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let uri = format!("/api/v2/agents/{}", native["id"].as_str().unwrap());
+    for invalid in [
+        json!({"engine":"unknown"}),
+        json!({"engine":true}),
+        json!({"engine":"rig","rig_limits":{"max_model_calls":0}}),
+        json!({"engine":"rig","rig_limits":{"unexpected":1}}),
+    ] {
+        let (status, body) = send(
+            &app,
+            authed_json("PATCH", &uri, &token, json!({"llm_config":invalid})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body:?}");
+    }
+    let (_, fetched) = send(&app, authed("GET", &uri, &token)).await;
+    assert_eq!(fetched["llm_config"], json!({"engine":"native"}));
+}

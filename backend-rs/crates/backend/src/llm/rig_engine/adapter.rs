@@ -35,7 +35,7 @@ pub(super) fn provider_history(
     request: &ChatRequest,
     protocol: Protocol,
 ) -> anyhow::Result<Vec<Message>> {
-    request
+    let mut history = request
         .messages
         .iter()
         .map(|message| {
@@ -72,7 +72,9 @@ pub(super) fn provider_history(
             }
             Ok(mapped)
         })
-        .collect()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    correlate_call_ids(&mut history);
+    Ok(history)
 }
 
 fn import_anthropic(
@@ -244,7 +246,12 @@ fn anthropic_block(item: &Value) -> anyhow::Result<AssistantContent> {
 
 impl RigMessageAdapter {
     pub fn to_rig(messages: &[ChatMessage]) -> anyhow::Result<Vec<Message>> {
-        messages.iter().map(Self::message_to_rig).collect()
+        let mut mapped = messages
+            .iter()
+            .map(Self::message_to_rig)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        correlate_call_ids(&mut mapped);
+        Ok(mapped)
     }
 
     pub fn message_to_rig(message: &ChatMessage) -> anyhow::Result<Message> {
@@ -303,6 +310,39 @@ impl RigMessageAdapter {
                 .map(|turn| json!({ NATIVE_KEY: turn }));
         }
         message
+    }
+}
+
+fn correlate_call_ids(messages: &mut [Message]) {
+    let mut ids = std::collections::HashMap::new();
+    for message in messages {
+        match message {
+            Message::Assistant(turn) => {
+                for block in &turn.content {
+                    if let AssistantContent::ToolCall(call) = block {
+                        ids.insert(
+                            call.id.wire().into_owned(),
+                            (call.id.clone(), call.function.name.clone()),
+                        );
+                    }
+                }
+            }
+            Message::User { content } => {
+                for part in content {
+                    if let UserContent::ToolResult(result) = part {
+                        if let Some((id, name)) = ids.get(result.call.wire().as_ref()) {
+                            if name == &result.name {
+                                // Note: Gemini calls may have Rig-local ids. A
+                                // neutral string must regain that exact identity,
+                                // not a provider-id variant of the same UUID.
+                                result.call = id.clone();
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 

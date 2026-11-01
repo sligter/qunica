@@ -19,6 +19,7 @@ pub mod conversation_context;
 pub mod group;
 pub mod group_scheduler;
 pub mod hooks;
+pub(crate) mod rig_driver;
 pub mod sequence;
 pub mod tool_output;
 pub mod workspace_scope;

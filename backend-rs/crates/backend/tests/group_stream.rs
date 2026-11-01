@@ -540,6 +540,11 @@ async fn seed_agent(
     agent_id
 }
 
+async fn set_group_engine(state: &AppState, group: &str, engine: &str) {
+    sqlx::query("UPDATE agents SET model_config_json=json_set(COALESCE(model_config_json,'{}'),'$.engine',?) WHERE id IN (SELECT agent_id FROM group_agents WHERE group_id=?)")
+        .bind(engine).bind(group).execute(state.db.pool()).await.unwrap();
+}
+
 async fn set_agent_model_config(state: &AppState, agent_id: &str, config: Value) {
     sqlx::query("UPDATE agents SET model_config_json = ? WHERE id = ?")
         .bind(config.to_string())
@@ -1083,15 +1088,15 @@ async fn fake_nested_cancellable_provider() -> (String, Arc<Notify>, Arc<Notify>
 
 fn text_body(text: &str) -> String {
     format!(
-        "data: {}\ndata: [DONE]\n",
-        json!({"choices": [{"delta": {"content": text}}]})
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]})
     )
 }
 
 fn moderator_body(agent_id: &str, total_tokens: i64) -> String {
     let selection = json!({"agent_id": agent_id}).to_string();
     format!(
-        "data: {}\ndata: {}\ndata: [DONE]\n",
+        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         json!({"choices": [{"delta": {"content": selection}}]}),
         json!({
             "choices": [],
@@ -1106,7 +1111,7 @@ fn moderator_body(agent_id: &str, total_tokens: i64) -> String {
 
 fn automatic_moderator_body(decision: Value, total_tokens: i64) -> String {
     format!(
-        "data: {}\ndata: {}\ndata: [DONE]\n",
+        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         json!({"choices": [{"delta": {"content": decision.to_string()}}]}),
         json!({
             "choices": [],
@@ -1135,7 +1140,7 @@ fn tool_body(calls: Vec<(&str, &str, Value)>) -> String {
         })
         .collect();
     format!(
-        "data: {}\ndata: [DONE]\n",
+        "data: {}\n\ndata: [DONE]\n\n",
         json!({"choices": [{"delta": {"tool_calls": tool_calls}, "finish_reason": "tool_calls"}]})
     )
 }
@@ -1158,7 +1163,7 @@ fn text_then_tool_body(text: &str, calls: Vec<(&str, &str, Value)>) -> String {
         })
         .collect();
     format!(
-        "data: {}\ndata: {}\ndata: [DONE]\n",
+        "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
         json!({"choices": [{"delta": {"content": text}}]}),
         json!({"choices": [{"delta": {"tool_calls": tool_calls}, "finish_reason": "tool_calls"}]})
     )
@@ -1166,10 +1171,10 @@ fn text_then_tool_body(text: &str, calls: Vec<(&str, &str, Value)>) -> String {
 
 fn tool_body_with_usage(calls: Vec<(&str, &str, Value)>, total_tokens: i64) -> String {
     let mut body = tool_body(calls);
-    let done = "data: [DONE]\n";
+    let done = "data: [DONE]\n\n";
     body.truncate(body.len() - done.len());
     body.push_str(&format!(
-        "data: {}\n{done}",
+        "data: {}\n\n{done}",
         json!({
             "choices": [],
             "usage": {
@@ -1356,6 +1361,15 @@ async fn independent_task_jobs_run_concurrently_with_isolated_history_and_cancel
 
 #[tokio::test]
 async fn compacted_context_is_reused_on_the_next_turn() {
+    compacted_context_is_reused_on_the_next_turn_case("native").await;
+}
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn rig_compacted_context_is_reused_on_the_next_turn() {
+    compacted_context_is_reused_on_the_next_turn_case("rig").await;
+}
+
+async fn compacted_context_is_reused_on_the_next_turn_case(engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "compaction-checkpoint@example.com").await;
     let owner = owner_id(&state, "compaction-checkpoint@example.com").await;
@@ -1408,6 +1422,7 @@ async fn compacted_context_is_reused_on_the_next_turn() {
         .await;
     }
 
+    set_group_engine(&state, &group, engine).await;
     for content in ["first new turn", "second new turn"] {
         let events = stream_events(
             &app,
@@ -3377,6 +3392,15 @@ async fn stream_replay_live_stream_sets_sse_ids() {
 
 #[tokio::test]
 async fn group_stream_executes_native_tool_and_continues_model() {
+    group_stream_executes_native_tool_and_continues_model_case("native").await;
+}
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn rig_group_stream_executes_native_tool_and_continues_model() {
+    group_stream_executes_native_tool_and_continues_model_case("rig").await;
+}
+
+async fn group_stream_executes_native_tool_and_continues_model_case(engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "native-tool-loop@example.com").await;
     let owner = owner_id(&state, "native-tool-loop@example.com").await;
@@ -3405,6 +3429,7 @@ async fn group_stream_executes_native_tool_and_continues_model() {
     )
     .await;
 
+    set_group_engine(&state, &group, engine).await;
     let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -3871,6 +3896,15 @@ async fn assert_deepseek_tools(search_enabled: bool) {
 
 #[tokio::test]
 async fn provider_retry_preserves_completed_tool_context() {
+    provider_retry_preserves_completed_tool_context_case("native").await;
+}
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn rig_provider_retry_preserves_completed_tool_context() {
+    provider_retry_preserves_completed_tool_context_case("rig").await;
+}
+
+async fn provider_retry_preserves_completed_tool_context_case(engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "provider-retry@example.com").await;
     let owner = owner_id(&state, "provider-retry@example.com").await;
@@ -3905,6 +3939,7 @@ async fn provider_retry_preserves_completed_tool_context() {
     )
     .await;
 
+    set_group_engine(&state, &group, engine).await;
     let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -3937,6 +3972,15 @@ async fn provider_retry_preserves_completed_tool_context() {
 
 #[tokio::test]
 async fn provider_failure_persists_completed_tool_context_for_resume() {
+    provider_failure_persists_completed_tool_context_for_resume_case("native").await;
+}
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn rig_provider_failure_persists_completed_tool_context_for_resume() {
+    provider_failure_persists_completed_tool_context_for_resume_case("rig").await;
+}
+
+async fn provider_failure_persists_completed_tool_context_for_resume_case(engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "provider-resume@example.com").await;
     let owner = owner_id(&state, "provider-resume@example.com").await;
@@ -3987,6 +4031,7 @@ async fn provider_failure_persists_completed_tool_context_for_resume() {
     )
     .await;
 
+    set_group_engine(&state, &group, engine).await;
     let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -4319,6 +4364,15 @@ async fn new_message_supersedes_paused_thread_after_provider_failure() {
 
 #[tokio::test]
 async fn group_stream_continues_past_24_tool_rounds() {
+    group_stream_continues_past_24_tool_rounds_case("native").await;
+}
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn rig_group_stream_continues_past_24_tool_rounds() {
+    group_stream_continues_past_24_tool_rounds_case("rig").await;
+}
+
+async fn group_stream_continues_past_24_tool_rounds_case(engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "unbounded-tool-loop@example.com").await;
     let owner = owner_id(&state, "unbounded-tool-loop@example.com").await;
@@ -4349,6 +4403,7 @@ async fn group_stream_continues_past_24_tool_rounds() {
     )
     .await;
 
+    set_group_engine(&state, &group, engine).await;
     let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -7102,6 +7157,17 @@ async fn assert_public_nested_handoff_state(
 
 #[tokio::test]
 async fn bounded_nested_call_handoff_success_preserves_private_terminal_metadata() {
+    bounded_nested_call_handoff_success_preserves_private_terminal_metadata_case("native").await;
+}
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn rig_bounded_nested_call_handoff_success_preserves_private_terminal_metadata() {
+    bounded_nested_call_handoff_success_preserves_private_terminal_metadata_case("rig").await;
+}
+
+async fn bounded_nested_call_handoff_success_preserves_private_terminal_metadata_case(
+    engine: &str,
+) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "nested-call-handoff@example.com").await;
     let owner = owner_id(&state, "nested-call-handoff@example.com").await;
@@ -7129,6 +7195,7 @@ async fn bounded_nested_call_handoff_success_preserves_private_terminal_metadata
     .await;
     let (caller, _, _) = seed_nested_call_handoff_agents(&state, &owner, &group, &provider).await;
 
+    set_group_engine(&state, &group, engine).await;
     let _ = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -7250,6 +7317,17 @@ async fn bounded_nested_call_handoff_failure_stays_private_and_leaves_no_active_
 
 #[tokio::test]
 async fn bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_once() {
+    bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_once_case("native").await;
+}
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn rig_bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_once() {
+    bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_once_case("rig").await;
+}
+
+async fn bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_once_case(
+    engine: &str,
+) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "nested-call-cancel@example.com").await;
     let owner = owner_id(&state, "nested-call-cancel@example.com").await;
@@ -7259,6 +7337,7 @@ async fn bounded_nested_call_handoff_cancellation_terminalizes_each_dispatch_onc
     let provider = seed_provider(&state, &owner, &provider_url).await;
     seed_nested_call_handoff_agents(&state, &owner, &group, &provider).await;
     let cancellation = Arc::new(AtomicBool::new(false));
+    set_group_engine(&state, &group, engine).await;
     let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
         .with_cancellation_flag(Arc::clone(&cancellation));
     let request = TurnRequest {
@@ -9164,7 +9243,7 @@ async fn group_and_self_mode_mounts_the_agents_own_workspace_and_documents_it() 
 // Communication topologies
 // ---------------------------------------------------------------------------
 
-const OK_SSE: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\ndata: [DONE]\n";
+const OK_SSE: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
 const MENTION_SSE: &str =
     "data: {\"choices\":[{\"delta\":{\"content\":\"over to @Bravo\"}}]}\ndata: [DONE]\n";
 
@@ -10277,6 +10356,15 @@ async fn a_classic_chat_model_does_not_receive_the_agents_stale_thinking_level()
 
 #[tokio::test]
 async fn a_reasoning_passback_rejection_is_healed_with_one_retry() {
+    a_reasoning_passback_rejection_is_healed_with_one_retry_case("native").await;
+}
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn rig_a_reasoning_passback_rejection_is_healed_with_one_retry() {
+    a_reasoning_passback_rejection_is_healed_with_one_retry_case("rig").await;
+}
+
+async fn a_reasoning_passback_rejection_is_healed_with_one_retry_case(engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "agent-passback-heal@example.com").await;
     let owner = owner_id(&state, "agent-passback-heal@example.com").await;
@@ -10332,6 +10420,7 @@ async fn a_reasoning_passback_rejection_is_healed_with_one_retry() {
     )
     .await;
 
+    set_group_engine(&state, &group, engine).await;
     let events = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -10373,15 +10462,26 @@ async fn a_reasoning_passback_rejection_is_healed_with_one_retry() {
 
 #[tokio::test]
 async fn native_checkpoint_restores_signed_anthropic_blocks_and_remaining_calls() {
-    approval_checkpoint_roundtrip("anthropic").await;
+    approval_checkpoint_roundtrip("anthropic", "native").await;
 }
 
 #[tokio::test]
 async fn native_checkpoint_restores_exact_deepseek_reasoning_after_restart() {
-    approval_checkpoint_roundtrip("openai-compatible").await;
+    approval_checkpoint_roundtrip("openai-compatible", "native").await;
 }
 
-async fn approval_checkpoint_roundtrip(kind: &str) {
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn rig_approval_restart_keeps_anthropic_signed_batch() {
+    approval_checkpoint_roundtrip("anthropic", "rig").await;
+}
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn rig_approval_restart_keeps_deepseek_reasoning_batch() {
+    approval_checkpoint_roundtrip("openai-compatible", "rig").await;
+}
+
+async fn approval_checkpoint_roundtrip(kind: &str, engine: &str) {
     let (app, state) = router_with_state_for_tests().await;
     let email = format!("checkpoint-{kind}@example.test");
     let token = register_and_login(&app, &email).await;
@@ -10429,12 +10529,13 @@ async fn approval_checkpoint_roundtrip(kind: &str) {
             }
             events.push(json!({"type":"content_block_stop","index":index}));
         }
+        events.push(json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}));
         events.push(json!({"type":"message_stop"}));
         let first = events
             .iter()
             .map(|event| format!("data: {event}\n\n"))
             .collect();
-        let next = "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Done.\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n".into();
+        let next = "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Done.\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n".into();
         (first, next)
     } else {
         let first = format!(
@@ -10470,7 +10571,12 @@ async fn approval_checkpoint_roundtrip(kind: &str) {
         json!({"tools":{"bash":{"enabled":true},"write":{"enabled":true}}}),
     )
     .await;
-    set_agent_model_config(&state, &agent, json!({"reasoning_effort":"high"})).await;
+    set_agent_model_config(
+        &state,
+        &agent,
+        json!({"reasoning_effort":"high", "engine":engine}),
+    )
+    .await;
     let paused = stream_events(
         &app,
         &format!("/api/v2/groups/{group}/messages/stream"),
@@ -10491,9 +10597,16 @@ async fn approval_checkpoint_roundtrip(kind: &str) {
     .await
     .unwrap();
     let checkpoint: Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(checkpoint["schema_version"], 2);
+    assert_eq!(
+        checkpoint["schema_version"],
+        if engine == "rig" { 3 } else { 2 }
+    );
+    if engine == "rig" {
+        assert_eq!(checkpoint["driver_checkpoint"]["attempts"], 1);
+        assert_eq!(checkpoint["driver_checkpoint"]["completion_calls"], 1);
+    }
     assert_eq!(checkpoint["tool_calls"][1]["status"], "pending");
-    if kind == "anthropic" {
+    if kind == "anthropic" && engine == "native" {
         assert_eq!(
             checkpoint["assistant_turns"][0]["native_content"]["anthropic"],
             expected_blocks
@@ -10525,6 +10638,20 @@ async fn approval_checkpoint_roundtrip(kind: &str) {
         std::fs::read_to_string(root.path().join("after.txt")).unwrap(),
         "original batch"
     );
+    if engine == "rig" {
+        let raw: String = sqlx::query_scalar(
+            "SELECT content_json FROM messages WHERE group_id=? AND sender_id=?",
+        )
+        .bind(&group)
+        .bind(&agent)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+        let completed: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(completed["driver_checkpoint"]["attempts"], 2);
+        assert_eq!(completed["driver_checkpoint"]["completion_calls"], 2);
+        assert_eq!(completed["driver_checkpoint"]["phase"], "done");
+    }
     let requests = requests.lock().await;
     assert_eq!(
         requests.len(),
@@ -10558,6 +10685,17 @@ async fn approval_checkpoint_roundtrip(kind: &str) {
 
 #[tokio::test]
 async fn native_checkpoint_does_not_repeat_shell_after_crash_before_result_commit() {
+    native_checkpoint_does_not_repeat_shell_after_crash_before_result_commit_case("native").await;
+}
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn rig_native_checkpoint_does_not_repeat_shell_after_crash_before_result_commit() {
+    native_checkpoint_does_not_repeat_shell_after_crash_before_result_commit_case("rig").await;
+}
+
+async fn native_checkpoint_does_not_repeat_shell_after_crash_before_result_commit_case(
+    engine: &str,
+) {
     struct CrashWindow(Arc<Notify>);
     #[async_trait::async_trait]
     impl qunica_backend::runtime::RuntimeHook for CrashWindow {
@@ -10601,6 +10739,7 @@ async fn native_checkpoint_does_not_repeat_shell_after_crash_before_result_commi
     )
     .await;
     let reached = Arc::new(Notify::new());
+    set_group_engine(&state, &group, engine).await;
     let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
         .with_hooks(
             qunica_backend::runtime::HookChain::new().with(Arc::new(CrashWindow(reached.clone()))),
@@ -10668,6 +10807,15 @@ async fn native_checkpoint_does_not_repeat_shell_after_crash_before_result_commi
 
 #[tokio::test]
 async fn native_checkpoint_saves_fast_read_before_a_slow_sibling_finishes() {
+    native_checkpoint_saves_fast_read_before_a_slow_sibling_finishes_case("native").await;
+}
+#[cfg(feature = "rig-engine")]
+#[tokio::test]
+async fn rig_native_checkpoint_saves_fast_read_before_a_slow_sibling_finishes() {
+    native_checkpoint_saves_fast_read_before_a_slow_sibling_finishes_case("rig").await;
+}
+
+async fn native_checkpoint_saves_fast_read_before_a_slow_sibling_finishes_case(engine: &str) {
     struct ParallelReads;
     #[async_trait::async_trait]
     impl qunica_backend::runtime::RuntimeHook for ParallelReads {
@@ -10709,6 +10857,7 @@ async fn native_checkpoint_saves_fast_read_before_a_slow_sibling_finishes() {
         json!({"tools":{"read":{"enabled":true}}}),
     )
     .await;
+    set_group_engine(&state, &group, engine).await;
     let services = RuntimeServices::new(state.db.pool().clone(), state.write_lock.clone())
         .with_hooks(qunica_backend::runtime::HookChain::new().with(Arc::new(ParallelReads)));
     let (tx, _rx) = mpsc::channel(128);
@@ -11330,4 +11479,105 @@ async fn a_resume_that_stops_at_a_second_gate_asks_again_instead_of_failing() {
     assert_eq!(pending["status"], "approval_required");
     assert!(pending["result"].is_null());
     assert_eq!(pending["approval_request"]["rule"], "delete-files");
+}
+
+#[cfg(feature = "rig-engine")]
+#[path = "group_stream/rig_scenarios.rs"]
+mod rig_scenarios;
+
+#[tokio::test]
+async fn context_checkpoint_invalidation_respects_each_agents_cursor() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "cursor-boundary@example.test").await;
+    let owner = owner_id(&state, "cursor-boundary@example.test").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let provider = seed_provider(&state, &owner, &fake_provider(OK_SSE).await).await;
+    let first = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "A",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let second = seed_agent(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "B",
+        "2024-01-01T00:00:01Z",
+    )
+    .await;
+    let thread = seed_thread(&state, &group, "active").await;
+    for seq in 1..=3 {
+        seed_message(
+            &state,
+            &group,
+            &thread,
+            seq,
+            "visible",
+            "user",
+            Some(&owner),
+            "original",
+            None,
+        )
+        .await;
+    }
+    for (agent, cursor) in [(&first, 1), (&second, 2)] {
+        sqlx::query("INSERT INTO context_checkpoints(thread_id,agent_id,through_seq,messages_json,created_at,updated_at) VALUES(?,?,?,'[]','now','now')")
+            .bind(&thread).bind(agent).bind(cursor).execute(state.db.pool()).await.unwrap();
+    }
+    sqlx::query("UPDATE messages SET content_json='{}' WHERE thread_id=? AND seq=3")
+        .bind(&thread)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM messages WHERE thread_id=? AND seq=3")
+        .bind(&thread)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM context_checkpoints WHERE thread_id=?")
+            .bind(&thread)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        count, 2,
+        "updates and deletes beyond both cursors preserve summaries"
+    );
+    sqlx::query("UPDATE messages SET content='changed' WHERE thread_id=? AND seq=2")
+        .bind(&thread)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let remaining: String =
+        sqlx::query_scalar("SELECT agent_id FROM context_checkpoints WHERE thread_id=?")
+            .bind(&thread)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        remaining, first,
+        "only the summary covering seq 2 is invalidated"
+    );
+    sqlx::query("UPDATE messages SET context_admitted=0 WHERE thread_id=? AND seq=1")
+        .bind(&thread)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM context_checkpoints WHERE thread_id=?")
+            .bind(&thread)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        count, 0,
+        "covered context admission changes invalidate the summary"
+    );
 }

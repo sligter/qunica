@@ -8,6 +8,7 @@ mod adapter;
 
 pub use adapter::RigMessageAdapter;
 
+use anyhow::Context;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use rig_core::completion::{AssistantContent, CompletionRequest, CompletionResponse, FinishReason};
@@ -22,7 +23,10 @@ use rig_core::streaming::{Item, StreamEvent};
 use rig_core::wasm_compat::WasmBoxedFuture;
 use rig_core::{DynModel, ProviderError};
 use serde_json::{json, Value};
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::{
+    mpsc::{self, Receiver, Sender},
+    oneshot,
+};
 
 use super::{
     ChatDelta, ChatRequest, ContextUsage, LlmProvider, ProviderConfig, ProviderHttpError,
@@ -33,6 +37,17 @@ use super::{
 pub struct RigProvider {
     client: Client,
     http: DynHttpClient,
+}
+
+/// Private host-driver metadata; never serialized into an SSE event or history.
+pub(crate) enum CompletionReport {
+    Response(Box<CompletionResponse>),
+    Rejected(Value),
+}
+
+pub(crate) struct CompletionStream {
+    pub deltas: Receiver<ChatDelta>,
+    pub completion: oneshot::Receiver<CompletionReport>,
 }
 
 enum Client {
@@ -175,29 +190,29 @@ impl RigProvider {
 
 /// The Rig provider for `cfg`, for the kinds Rig serves so far.
 pub fn build_rig_provider(cfg: &ProviderConfig) -> anyhow::Result<Box<dyn LlmProvider>> {
-    let http = transport(&cfg.headers, cfg.user_agent.as_deref())?;
-    let base_url = cfg.base_url.clone().unwrap_or_default();
-    match cfg.kind.as_str() {
-        "openai-responses" => Ok(Box::new(RigProvider::responses_with_http(
-            base_url,
-            cfg.api_key.clone(),
-            http,
-        )?)),
-        "openai-compatible" | "openai_compatible" | "openai" | "deepseek" | "vllm"
-        | "openrouter" => Ok(Box::new(RigProvider::with_http(
-            base_url,
-            cfg.api_key.clone(),
-            http,
-        )?)),
-        "anthropic" | "anthropic-compatible" | "anthropic_compatible" => Ok(Box::new(
-            RigProvider::anthropic_with_http(base_url, cfg.api_key.clone(), http),
-        )),
-        "gemini" | "google" => Ok(Box::new(RigProvider::gemini_with_http(
-            base_url,
-            cfg.api_key.clone(),
-            http,
-        ))),
-        other => anyhow::bail!("the Rig engine does not serve provider kind {other} yet"),
+    Ok(Box::new(RigProvider::from_config(cfg)?))
+}
+
+impl RigProvider {
+    pub fn from_config(cfg: &ProviderConfig) -> anyhow::Result<Self> {
+        let http = transport(&cfg.headers, cfg.user_agent.as_deref())?;
+        let base_url = cfg.base_url.clone().unwrap_or_default();
+        match cfg.kind.as_str() {
+            "openai-responses" => {
+                RigProvider::responses_with_http(base_url, cfg.api_key.clone(), http)
+            }
+            "openai-compatible" | "openai_compatible" | "openai" | "deepseek" | "vllm"
+            | "openrouter" => RigProvider::with_http(base_url, cfg.api_key.clone(), http),
+            "anthropic" | "anthropic-compatible" | "anthropic_compatible" => Ok(
+                RigProvider::anthropic_with_http(base_url, cfg.api_key.clone(), http),
+            ),
+            "gemini" | "google" => Ok(RigProvider::gemini_with_http(
+                base_url,
+                cfg.api_key.clone(),
+                http,
+            )),
+            other => anyhow::bail!("the Rig engine does not serve provider kind {other} yet"),
+        }
     }
 }
 
@@ -509,9 +524,18 @@ fn completion_request(
 #[async_trait]
 impl LlmProvider for RigProvider {
     async fn stream(&self, request: ChatRequest) -> anyhow::Result<Receiver<ChatDelta>> {
+        Ok(self.stream_completion(request).await?.deltas)
+    }
+}
+
+impl RigProvider {
+    pub(crate) async fn stream_completion(
+        &self,
+        request: ChatRequest,
+    ) -> anyhow::Result<CompletionStream> {
         let rig_request = completion_request(&request, self.protocol())?;
         let guard = SignedReplay::new(&rig_request, self.protocol());
-        let mut stream = self
+        let stream = self
             .model(
                 &request.model,
                 request.include_empty_tools && request.tools.is_empty(),
@@ -522,7 +546,8 @@ impl LlmProvider for RigProvider {
         // Note: Rig sends nothing until polled. Reading the first item here
         // makes an HTTP failure an `Err` from `stream`, where the runtime
         // classifies it (context overflow, passback retry, transient).
-        let first = match stream.next().await {
+        let (stream, first) = open_stream(stream).await?;
+        let first = match first {
             Some(Err(error))
                 if matches!(self.protocol(), Protocol::Responses)
                     && error.provider_response().is_some()
@@ -534,22 +559,48 @@ impl LlmProvider for RigProvider {
             first => first,
         };
         let (tx, rx) = mpsc::channel(64);
+        let (report_tx, report_rx) = oneshot::channel();
         let protocol = self.protocol();
         tokio::spawn(async move {
-            relay(stream, first, tx, protocol).await;
+            relay(stream, first, tx, protocol, report_tx).await;
         });
-        Ok(rx)
+        Ok(CompletionStream {
+            deltas: rx,
+            completion: report_rx,
+        })
     }
 }
 
 type RigStream = rig_core::streaming::Streamed<Completion>;
 type RigItem = Option<Result<Item<StreamEvent>, ProviderError>>;
 
+struct AbortOpening(tokio::task::AbortHandle);
+impl Drop for AbortOpening {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+async fn open_stream(mut stream: RigStream) -> anyhow::Result<(RigStream, RigItem)> {
+    // Note: reqwest 0.13's connector poll uses a large Windows debug stack.
+    // A separate awaited task prevents nested AgentAsTool poll frames from
+    // accumulating beneath it. Dropping a cancelled opener aborts the task.
+    let opening = tokio::spawn(async move {
+        let first = stream.next().await;
+        (stream, first)
+    });
+    let abort = AbortOpening(opening.abort_handle());
+    let result = opening.await.context("Rig HTTP opening task failed")?;
+    drop(abort);
+    Ok(result)
+}
+
 async fn relay(
     mut stream: RigStream,
     mut item: RigItem,
     tx: Sender<ChatDelta>,
     protocol: Protocol,
+    report: oneshot::Sender<CompletionReport>,
 ) {
     loop {
         let delta = match item {
@@ -562,6 +613,7 @@ async fn relay(
             }
             Some(Ok(_)) => None,
             Some(Err(error)) => {
+                report_rejection(report, &error);
                 relay_failure(&tx, &error, protocol).await;
                 return;
             }
@@ -571,19 +623,41 @@ async fn relay(
                 return;
             }
         }
-        item = stream.next().await;
+        item = tokio::select! {
+            () = tx.closed() => return,
+            item = stream.next() => item,
+        };
     }
-    let response = match stream.finish().await {
+    let finished = tokio::select! {
+        () = tx.closed() => return,
+        response = stream.finish() => response,
+    };
+    let response = match finished {
         Ok(response) => response,
         Err(error) => {
+            report_rejection(report, &error);
             relay_failure(&tx, &error, protocol).await;
             return;
         }
     };
-    for delta in closing_deltas(&response, protocol) {
+    let deltas = closing_deltas(&response, protocol);
+    // Note: the host accepts the AgentRun turn before executing any tool.
+    // Hand it the terminal metadata before sending the neutral Done event.
+    let _ = report.send(CompletionReport::Response(Box::new(response)));
+    for delta in deltas {
         if tx.send(delta).await.is_err() {
             return;
         }
+    }
+}
+
+fn report_rejection(report: oneshot::Sender<CompletionReport>, error: &ProviderError) {
+    if let Some(raw) = error
+        .provider_response()
+        .filter(|_| http_failure(error).is_none())
+        .and_then(|response| serde_json::from_str::<Value>(&response.body).ok())
+    {
+        let _ = report.send(CompletionReport::Rejected(raw));
     }
 }
 
@@ -620,9 +694,45 @@ fn closing_deltas(response: &CompletionResponse, protocol: Protocol) -> Vec<Chat
         Some(rig_core::completion::Message::Assistant(turn)) => Some(turn),
         _ => None,
     };
-    let invalid_calls = turn.as_ref().is_some_and(|turn| turn.content.iter().any(|block|
-        matches!(block, AssistantContent::ToolCall(call) if call.function.invalid_arguments.is_some())))
-        || (matches!(protocol, Protocol::Responses) && !responses_calls_valid(response));
+    let invalid_calls = turn.as_ref().is_some_and(|turn| {
+        turn.content.iter().any(|block| {
+            let AssistantContent::ToolCall(call) = block else {
+                return false;
+            };
+            if call.function.invalid_arguments.is_some() {
+                return true;
+            }
+            if matches!(protocol, Protocol::OpenAi | Protocol::Anthropic)
+                && !block.native_item().is_some_and(|item| {
+                    item["id"]
+                        .as_str()
+                        .is_some_and(|id| !id.is_empty() && call.id.wire() == id)
+                        && match protocol {
+                            Protocol::OpenAi => item.pointer("/function/name"),
+                            _ => item.get("name"),
+                        }
+                        .and_then(Value::as_str)
+                        .is_some_and(|name| name == call.function.name.as_str())
+                })
+            {
+                return true;
+            }
+            // Note: Rig accepts JSON null as empty arguments. The original object
+            // must survive unchanged; never dispatch a normalized replacement.
+            let original = block.native_item().and_then(|item| match protocol {
+                Protocol::OpenAi => item.pointer("/function/arguments").map(|args| match args {
+                    Value::String(raw) => serde_json::from_str(raw).unwrap_or(Value::Null),
+                    other => other.clone(),
+                }),
+                Protocol::Anthropic => item.get("input").cloned(),
+                Protocol::Gemini => item.pointer("/functionCall/args").cloned(),
+                Protocol::Responses => Some(call.function.arguments_value()),
+            });
+            !original
+                .is_some_and(|args| args.is_object() && args == call.function.arguments_value())
+        })
+    }) || (matches!(protocol, Protocol::Responses)
+        && !responses_calls_valid(response));
     let successful = matches!(
         response.finish_reason(),
         Some(FinishReason::Stop | FinishReason::ToolCalls)

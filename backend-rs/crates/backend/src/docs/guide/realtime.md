@@ -156,7 +156,13 @@ worker and its external effects stopped.
 ### Native tool execution checkpoints
 
 Native `llm_chat` messages use `content_json` schema 2. Legacy schema 1 remains
-readable; signatures absent from old records cannot be reconstructed. Invalid
+readable. Opt-in Rig executions use schema 3, adding a Qunica-owned
+`driver_checkpoint` with attempt id, phase and cumulative call/failure/token
+budgets. Approval recovery and compaction do not reset these counters. This is
+not a serialized Rig run; the original tool batch is settled before constructing
+another run. Native execution continues to write schema 2. See the
+[Rig migration contract](../../../../../../RIG_MIGRATION.md#p3-host-driven-agentrun).
+Signatures absent from old records cannot be reconstructed. Invalid
 or newer checkpoint schemas stop continuation instead of discarding execution
 state and asking the model again.
 
@@ -166,6 +172,11 @@ retain the provider-facing output separately from display summaries. Replay
 preserves model-round boundaries and exposes private blocks only to their owning
 agent. Compaction treats a tool exchange as a unit and includes opaque blocks in
 its token estimate.
+
+Summary invalidation is scoped to each agent's saved `through_seq`: changes to
+covered rows invalidate the summary, including context-admission changes. Updates
+or deletion of later execution-checkpoint rows preserve the summary; the later
+history is loaded separately.
 
 The complete batch is committed before dispatch, including calls after an
 approval gate. A checkpoint revision is atomically claimed before execution;

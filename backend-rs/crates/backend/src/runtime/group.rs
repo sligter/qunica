@@ -22,6 +22,7 @@
 //! runtime keeps running to a replayable terminal state so reconnect can
 //! converge from the client's last event id.
 
+use super::rig_driver::{DriverBudgetExhausted, DriverCheckpoint, TurnEngine};
 #[cfg(test)]
 use std::collections::BTreeMap;
 use std::sync::{
@@ -54,10 +55,9 @@ use crate::acp::{
 };
 use crate::decision::{self, DecisionGate, DecisionScenario};
 use crate::llm::{
-    build_provider, effort_from_config, model_from_config, provider_headers_from_json,
-    temperature_from_config, top_p_from_config, vision_enabled, ChatDelta, ChatMessage,
-    ChatRequest, LlmProvider, ProviderConfig, ProviderHttpError, ReasoningEffort, ToolCall,
-    ToolDefinition,
+    effort_from_config, model_from_config, provider_headers_from_json, temperature_from_config,
+    top_p_from_config, vision_enabled, ChatDelta, ChatMessage, ChatRequest, LlmProvider,
+    ProviderConfig, ProviderHttpError, ReasoningEffort, ToolCall, ToolDefinition,
 };
 use crate::mcp::{McpManager, McpServerConfig, McpToolBinding};
 use crate::runtime::agent_as_tool::{
@@ -109,7 +109,7 @@ use crate::runtime::sequence::{NewMessage, SequenceAllocator};
 
 /// Schema version for the structured `content_json` payload persisted on agent
 /// messages. Bump when the shape changes so readers can migrate old rows.
-const CONTENT_JSON_SCHEMA_VERSION: i64 = 2;
+const CONTENT_JSON_SCHEMA_VERSION: i64 = 3;
 
 /// A proactive agent replies with exactly this marker to stay silent.
 pub const SILENT_MARKER: &str = "<SILENT>";
@@ -2901,15 +2901,55 @@ async fn await_with_cancellation<T>(
     Ok(future.await)
 }
 
+async fn sync_engine_checkpoint(
+    engine: &TurnEngine,
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    content: &str,
+    turn: &mut TurnData,
+) -> Result<(), StepErr> {
+    if let Some(checkpoint) = engine.checkpoint() {
+        turn.driver_checkpoint = Some(checkpoint);
+        if cancellation_requested(ctx) {
+            return Ok(());
+        }
+        persist_native_checkpoint(ctx, agent, content, turn).await?;
+    }
+    Ok(())
+}
+
+async fn abort_engine_attempt(
+    engine: &mut TurnEngine,
+    ctx: &mut StreamCtx,
+    agent: &Candidate,
+    content: &str,
+    turn: &mut TurnData,
+) -> Result<(), StepErr> {
+    engine.abort();
+    sync_engine_checkpoint(engine, ctx, agent, content, turn).await
+}
+
 async fn start_provider_stream(
-    ctx: &StreamCtx,
+    ctx: &mut StreamCtx,
     provider: &dyn LlmProvider,
     mut request: ChatRequest,
+    engine: &mut TurnEngine,
+    agent: &Candidate,
+    content: &str,
+    turn: &mut TurnData,
 ) -> Result<(tokio::sync::mpsc::Receiver<ChatDelta>, bool), StepErr> {
     let mut retry = 0;
     let mut passback_retried = false;
     loop {
-        match await_with_cancellation(ctx, provider.stream(request.clone())).await? {
+        engine.prepare(&request).map_err(StepErr::Db)?;
+        sync_engine_checkpoint(engine, ctx, agent, content, turn).await?;
+        let result =
+            await_with_cancellation(ctx, Box::pin(engine.stream(provider, request.clone()))).await;
+        if !matches!(&result, Ok(Ok(_))) {
+            engine.abort();
+        }
+        sync_engine_checkpoint(engine, ctx, agent, content, turn).await?;
+        match result? {
             // The flag tells the caller to remember the heal for the rest of
             // this turn's tool loop, rather than take the 400 once per round.
             Ok(stream) => return Ok((stream, passback_retried)),
@@ -3526,6 +3566,8 @@ struct TurnData {
     #[serde(default)]
     execution_id: Option<String>,
     #[serde(default)]
+    driver_checkpoint: Option<DriverCheckpoint>,
+    #[serde(default)]
     checkpoint_version: u64,
     #[serde(default)]
     phase: Option<String>,
@@ -3814,12 +3856,13 @@ impl TurnData {
             && self.tool_calls.is_empty()
             && self.todos.is_empty()
             && self.context_usage.is_none()
+            && self.driver_checkpoint.is_none()
     }
 
     /// Serialize to the versioned `content_json` schema, or `None` when empty so
     /// plain-text messages keep a `NULL` column.
     fn to_content_json(&self) -> Option<String> {
-        if self.is_empty() && self.effort_override.is_none() {
+        if self.is_empty() && self.effort_override.is_none() && self.driver_checkpoint.is_none() {
             return None;
         }
         let reasoning: Vec<&String> = self
@@ -3851,7 +3894,7 @@ impl TurnData {
             })
             .collect();
         let mut payload = json!({
-            "schema_version": CONTENT_JSON_SCHEMA_VERSION,
+            "schema_version": if self.driver_checkpoint.is_some() { CONTENT_JSON_SCHEMA_VERSION } else { 2 },
             "response_segments": response_segments,
             "reasoning": reasoning,
             "tool_calls": tool_calls,
@@ -3863,6 +3906,9 @@ impl TurnData {
             "history_cursor": self.history_cursor,
             "assistant_turns": self.assistant_turns,
         });
+        if let Some(checkpoint) = &self.driver_checkpoint {
+            payload["driver_checkpoint"] = json!(checkpoint);
+        }
         if let Some(effort) = self.effort_override {
             payload["effort_override"] = json!(effort);
         }
@@ -4014,8 +4060,9 @@ async fn run_agent_turn_inner(
         resolve_provider(&services.pool, agent, ctx.model_override.as_deref())
             .await
             .map_err(StepErr::Db)?;
-    let provider: Arc<dyn LlmProvider> =
-        Arc::from(build_provider(&provider_cfg).map_err(StepErr::Db)?);
+    let (mut engine, provider) =
+        TurnEngine::build(agent.model_config_json.as_deref(), &provider_cfg)
+            .map_err(StepErr::Db)?;
     // A per-message override wins over the agent's configured model. The API
     // layer already checked it against the bound provider's catalog.
     let model = ctx.model_override.clone().unwrap_or_else(|| {
@@ -4088,6 +4135,7 @@ async fn run_agent_turn_inner(
         .as_ref()
         .map(|resume| resume.turn.clone())
         .unwrap_or_default();
+    engine.restore(turn.driver_checkpoint.as_ref());
     turn.effort_override = ctx.effort_override;
     turn.execution_id = Some(
         ctx.resume
@@ -4334,6 +4382,7 @@ async fn run_agent_turn_inner(
     let mut reasoning_passback = provider_cfg.reasoning_passback;
 
     loop {
+        engine.settle(&messages).map_err(StepErr::Db)?;
         // `pre_step` is where compaction runs: the message list is reduced
         // before a request is derived from it, not after the provider rejects
         // it. Notices are surfaced so a shrinking context is visible rather than
@@ -4384,7 +4433,17 @@ async fn run_agent_turn_inner(
                 })
                 .flatten(),
         };
-        let mut deltas = match start_provider_stream(ctx, provider.as_ref(), request).await {
+        let mut deltas = match start_provider_stream(
+            ctx,
+            provider.as_ref(),
+            request,
+            &mut engine,
+            agent,
+            &content,
+            &mut turn,
+        )
+        .await
+        {
             Ok((deltas, healed)) => {
                 if healed {
                     reasoning_passback = true;
@@ -4392,6 +4451,18 @@ async fn run_agent_turn_inner(
                 deltas
             }
             Err(StepErr::Db(error)) => {
+                if error.downcast_ref::<DriverBudgetExhausted>().is_some() {
+                    abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn).await?;
+                    maybe_persist_interrupted_agent(
+                        ctx,
+                        agent,
+                        &content,
+                        &turn,
+                        checkpoint_interrupted,
+                    )
+                    .await?;
+                    return Err(StepErr::Db(error));
+                }
                 // A rejected request may still be recoverable — a context
                 // overflow shrinks and retries rather than ending the turn.
                 // A hook only asks for a retry when it actually changed
@@ -4430,6 +4501,7 @@ async fn run_agent_turn_inner(
                         continue;
                     }
                     RequestRecovery::Propagate => {
+                        abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn).await?;
                         maybe_persist_interrupted_agent(
                             ctx,
                             agent,
@@ -4443,6 +4515,7 @@ async fn run_agent_turn_inner(
                 }
             }
             Err(error) => {
+                abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn).await?;
                 maybe_persist_interrupted_agent(
                     ctx,
                     agent,
@@ -4454,6 +4527,11 @@ async fn run_agent_turn_inner(
                 return Err(error);
             }
         };
+        let usage_record_id = engine
+            .checkpoint()
+            .and_then(|state| state.attempt_id)
+            .unwrap_or(usage_record_id);
+        let mut received_done = false;
         let mut round_content = String::new();
         let mut tool_calls = Vec::new();
         // This round's thinking, kept apart from `turn.reasoning` (which spans
@@ -4476,6 +4554,7 @@ async fn run_agent_turn_inner(
                 Ok(Some(delta)) => delta,
                 Ok(None) => break,
                 Err(error) => {
+                    abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn).await?;
                     maybe_persist_interrupted_agent(
                         ctx,
                         agent,
@@ -4504,6 +4583,8 @@ async fn run_agent_turn_inner(
                             round_content.push_str(&text);
                         }
                         Err(StepErr::Cancelled) => {
+                            abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn)
+                                .await?;
                             maybe_persist_interrupted_agent(
                                 ctx,
                                 agent,
@@ -4533,6 +4614,8 @@ async fn run_agent_turn_inner(
                         .await
                     {
                         if matches!(err, StepErr::Cancelled) {
+                            abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn)
+                                .await?;
                             maybe_persist_interrupted_agent(
                                 ctx,
                                 agent,
@@ -4558,6 +4641,8 @@ async fn run_agent_turn_inner(
                 }
                 ChatDelta::Usage(usage) => {
                     last_was_reasoning = false;
+                    engine.observe_usage(&usage);
+                    sync_engine_checkpoint(&engine, ctx, agent, &content, &mut turn).await?;
                     let usage = augment_context_usage(usage, &provider_cfg);
                     persist_token_usage(
                         &services.pool,
@@ -4580,6 +4665,8 @@ async fn run_agent_turn_inner(
                     });
                     if let Err(err) = ctx.emit(StreamEventKind::ContextUsage, payload).await {
                         if matches!(err, StepErr::Cancelled) {
+                            abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn)
+                                .await?;
                             maybe_persist_interrupted_agent(
                                 ctx,
                                 agent,
@@ -4598,6 +4685,7 @@ async fn run_agent_turn_inner(
                     // round: reporting a cut connection as a finished turn is how
                     // a ten-minute tool chain ends up filed as "completed
                     // silently" with nothing to show for it.
+                    abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn).await?;
                     maybe_persist_interrupted_agent(
                         ctx,
                         agent,
@@ -4619,11 +4707,33 @@ async fn run_agent_turn_inner(
                         "provider stream ended early: {reason}"
                     )));
                 }
-                ChatDelta::Done => break,
+                ChatDelta::Done => {
+                    received_done = true;
+                    break;
+                }
             }
         }
 
+        let mut assistant = ChatMessage::assistant_tool_calls(round_content, tool_calls.clone())
+            .with_reasoning(round_reasoning)
+            .with_reasoning_signature(round_signature);
+        assistant.native_content = native_content;
+        if let Err(error) = Box::pin(engine.accept(&assistant, received_done)).await {
+            tracing::warn!(agent_id = %agent.agent_id, %error, "model turn was not accepted by the driver");
+            abort_engine_attempt(&mut engine, ctx, agent, &content, &mut turn).await?;
+            maybe_persist_interrupted_agent(ctx, agent, &content, &turn, checkpoint_interrupted)
+                .await?;
+            return Err(StepErr::Db(error));
+        }
+        // Commit acceptance with its original assistant/batch, rather than
+        // persisting a tools-pending phase without the calls it refers to.
+        if let Some(checkpoint) = engine.checkpoint() {
+            turn.driver_checkpoint = Some(checkpoint);
+        }
         if tool_calls.is_empty() {
+            if engine.checkpoint().is_some() {
+                turn.assistant_turns.push(assistant);
+            }
             turn.phase = Some("done".into());
             return finish_agent_content(
                 ctx,
@@ -4638,10 +4748,6 @@ async fn run_agent_turn_inner(
 
         checkpoint_safe = false;
 
-        let mut assistant = ChatMessage::assistant_tool_calls(round_content, tool_calls.clone())
-            .with_reasoning(round_reasoning)
-            .with_reasoning_signature(round_signature);
-        assistant.native_content = native_content;
         turn.prepare_tool_round(assistant.clone())
             .map_err(StepErr::Db)?;
         persist_native_checkpoint(ctx, agent, &content, &mut turn).await?;
