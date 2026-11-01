@@ -16,7 +16,6 @@ import {
 import { AssistantApprovalCard } from '@/components/assistant/AssistantApprovalCard'
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
-import { TodoChecklist } from '@/components/chat/TodoChecklist'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import {
   humanInputRequestFromText,
@@ -33,12 +32,11 @@ import type {
   StreamResponseDraftEvent,
   StreamRun,
   StreamTimelineEvent,
-  StreamTodoEvent,
   StreamToolEvent,
 } from '@/stores/messageStore'
 import { ToolApprovalPrompt } from '@/components/chat/ToolApprovalPrompt'
 import type { ConversationScope } from '@/hooks/useGroupMessages'
-import type { ContextUsage, GroupAgentRead, TodoItem } from '@/types/api'
+import type { ContextUsage, GroupAgentRead } from '@/types/api'
 
 interface StreamTimelineProps {
   run: StreamRun
@@ -340,18 +338,6 @@ function isActivityEvent(
   return event.type === 'reasoning' || event.type === 'tool' || event.type === 'external_run'
 }
 
-/**
- * The checklist as of the end of this block.
- *
- * A block can hold several `todo` events once an agent speaks between
- * `TodoWrite` calls; only the last one is current, and rendering the earlier
- * ones would show the same list at three different stages of the same work.
- */
-function latestTodos(block: AgentBlock): TodoItem[] {
-  const todos = block.events.filter((event): event is StreamTodoEvent => event.type === 'todo')
-  return todos.length > 0 ? todos[todos.length - 1].todos : []
-}
-
 function toolDefaultOpen(status: StreamToolEvent['status']): boolean {
   return (
     status === 'started' ||
@@ -418,6 +404,10 @@ function AgentBlockView({
       ? [{ id: event.id, action: event.pending_action }]
       : [],
   )
+  // Questions render below the reply like approval cards, never inside the
+  // collapsed activity disclosure: a form the user has to expand a tool row to
+  // find is a question nobody answers.
+  const toolInputRequests: ReactNode[] = []
   const tools: ActivityToolItem[] = block.events.flatMap(
     (event): ActivityToolItem[] => {
       if (event.type === 'tool') {
@@ -428,17 +418,21 @@ function AgentBlockView({
         )
         const keepInputRequestVisible =
           inputRequest && visibleInputRequestKeys.has(inputRequestKey(inputRequest))
-        // Approval cards render below the reply, never inside collapsed activity.
-        const details = !event.pending_action && inputRequest &&
+        if (
+          !event.pending_action && inputRequest &&
           !keepInputRequestVisible &&
-          shouldRenderInputRequest(inputRequest, renderedInputRequests) ? (
-          <HumanInputRequestForm
-            compact
-            request={inputRequest}
-            targetDisplayName={event.display_name}
-            onSubmitResponse={onSubmitHumanInput}
-          />
-        ) : undefined
+          shouldRenderInputRequest(inputRequest, renderedInputRequests)
+        ) {
+          toolInputRequests.push(
+            <HumanInputRequestForm
+              key={`input-${event.id}`}
+              compact
+              request={inputRequest}
+              targetDisplayName={event.display_name}
+              onSubmitResponse={onSubmitHumanInput}
+            />,
+          )
+        }
         return [
           {
             id: event.id,
@@ -446,7 +440,6 @@ function AgentBlockView({
             status: event.status,
             argsSummary: event.args_summary,
             resultSummary: event.result_summary,
-            details,
             defaultOpen: toolDefaultOpen(event.status),
           },
         ]
@@ -480,9 +473,8 @@ function AgentBlockView({
         (event.type === 'tool' && event.status === 'started') ||
         (event.type === 'external_run' && externalRunIsLive(event)),
     )
-  // The checklist renders as its own block below the activity bubble, so it
-  // must not also fall through to the generic notice renderer.
-  const todos = latestTodos(block)
+  // The checklist renders above the composer (`ConversationPlan`), so it must
+  // not fall through to the generic notice renderer here.
   const visibleEvents = block.events.filter(
     (event) => !isActivityEvent(event) && event.type !== 'todo',
   )
@@ -549,8 +541,8 @@ function AgentBlockView({
         </div>
         <div className="flex min-w-0 max-w-full flex-col items-start gap-1.5">
           <AgentActivityBubble reasoning={reasoning} tools={tools} active={activityActive} />
-          <TodoChecklist todos={todos} />
           {visibleEvents.map(renderEvent)}
+          {toolInputRequests}
           {preparing ? <StreamSkeleton /> : null}
           {pendingActions.map(({ id, action }) => (
             <AssistantApprovalCard key={id} action={action} />

@@ -78,6 +78,10 @@ vi.mock('@/components/chat/GroupWorkspacePanel', () => ({
     return <div>workspace panel</div>
   },
 }))
+vi.mock('@/components/chat/ConversationPlan', () => ({
+  ConversationPlan: () => null,
+}))
+
 vi.mock('@/components/chat/MessageList', () => ({
   MessageList: (props: { agentIsSystem?: boolean; isInitialLoading?: boolean; stateId?: string }) => {
     messageListMocks.render(props)

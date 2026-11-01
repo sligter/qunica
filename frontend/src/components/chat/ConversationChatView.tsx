@@ -4,6 +4,7 @@ import { Files, PanelRightClose, SquareTerminal } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Composer } from '@/components/chat/Composer'
+import { ConversationPlan } from '@/components/chat/ConversationPlan'
 import { MobileActionContext } from '@/components/chat/MobileAction'
 import { DirectChatHeaderActions } from '@/components/direct-chats/DirectChatHeaderActions'
 import { GroupWorkspacePanel } from '@/components/chat/GroupWorkspacePanel'
@@ -515,6 +516,7 @@ export function ConversationChatView({
                 </div>
               ) : null}
 
+              <ConversationPlan stateId={stateId} />
               <div ref={setMobileActionTarget} className="max-h-[40dvh] shrink-0 space-y-2 overflow-y-auto overscroll-contain px-3 empty:hidden" />
               <Composer
                 supportsReasoningEffort={supportsReasoningEffort}

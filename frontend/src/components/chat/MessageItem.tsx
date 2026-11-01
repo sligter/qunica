@@ -14,6 +14,7 @@ import { useGroupAgents } from '@/hooks/useGroupAgents'
 import { humanInputRequestFromText } from '@/lib/humanInput'
 import { formatTime } from '@/lib/format'
 import { messageCopyText } from '@/lib/messageCopy'
+import { replySegments } from '@/lib/replySegments'
 import { normalizeLanguage } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
@@ -110,14 +111,11 @@ export function MessageItemView({
   const isInterrupted = message.status === 'interrupted'
   const showStreamingDot = isStreaming || isResuming
   const time = formatTime(message.created_at, language)
-  const persistedSegments = message.response_segments?.filter((segment) => segment.length > 0) ?? []
   const content = message.content ?? ''
   // The shared copy-menu source, so right-clicking a message with uploads
   // yields the same text the copy button writes.
   const copyText = messageCopyText(content, message.attachments, t('messages.copyAttachments'))
-  const contentSegments = !isUser && persistedSegments.length > 0 && persistedSegments.join('') === content
-    ? persistedSegments
-    : [content]
+  const contentSegments = isUser ? [content] : replySegments(content, message.response_segments)
 
   return (
     <div
@@ -200,7 +198,6 @@ export function MessageItemView({
           <PersistedTurnDetails
             reasoning={message.reasoning}
             toolCalls={message.tool_calls}
-            todos={message.todos}
           />
         )}
         {inputRequest ? (

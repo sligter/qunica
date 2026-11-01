@@ -3,14 +3,12 @@ import {
   type ActivityReasoningSegment,
   type ActivityToolItem,
 } from '@/components/chat/AgentActivityBubble'
-import { TodoChecklist } from '@/components/chat/TodoChecklist'
-import type { MessageToolCall, TodoItem } from '@/types/api'
+import type { MessageToolCall } from '@/types/api'
 import { useTranslation } from 'react-i18next'
 
 interface PersistedTurnDetailsProps {
   reasoning?: string[] | null
   toolCalls?: MessageToolCall[] | null
-  todos?: TodoItem[] | null
 }
 
 function persistedReasoning(reasoning: string[] | null | undefined): ActivityReasoningSegment[] {
@@ -33,19 +31,15 @@ function persistedTools(toolCalls: MessageToolCall[] | null | undefined, unknown
 /**
  * Render persisted agent process metadata through one collapsed disclosure.
  *
- * The checklist sits outside that disclosure: where the turn got to is the part
- * of a finished turn a reader still wants at a glance, unlike the tool calls
- * they only open when something looks wrong.
+ * The checklist is not part of it: the conversation's current plan renders
+ * above the composer (`ConversationPlan`), not inside a reply.
  */
-export function PersistedTurnDetails({ reasoning, toolCalls, todos }: PersistedTurnDetailsProps) {
+export function PersistedTurnDetails({ reasoning, toolCalls }: PersistedTurnDetailsProps) {
   const { t } = useTranslation('chat')
   return (
-    <>
-      <AgentActivityBubble
-        reasoning={persistedReasoning(reasoning)}
-        tools={persistedTools(toolCalls, t('messages.unknownTool'))}
-      />
-      <TodoChecklist todos={todos ?? []} />
-    </>
+    <AgentActivityBubble
+      reasoning={persistedReasoning(reasoning)}
+      tools={persistedTools(toolCalls, t('messages.unknownTool'))}
+    />
   )
 }

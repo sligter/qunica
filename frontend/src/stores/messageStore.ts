@@ -12,6 +12,7 @@
 
 import { create } from 'zustand'
 
+import { replySegments } from '@/lib/replySegments'
 import type { PendingAppAction } from '@/lib/appActions'
 import type { HumanInputRequest } from '@/lib/humanInput'
 import type {
@@ -1933,9 +1934,17 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   appendToMessage: (groupId, messageId, delta) =>
     set((s) => {
       const list = s.byGroup[groupId] ?? []
-      const next = list.map((m) =>
-        m.id === messageId ? { ...m, content: (m.content ?? '') + delta } : m,
-      )
+      const next = list.map((m) => {
+        if (m.id !== messageId) return m
+        const segments = m.response_segments
+        return {
+          ...m,
+          content: (m.content ?? '') + delta,
+          response_segments: segments?.length
+            ? [...segments.slice(0, -1), segments[segments.length - 1] + delta]
+            : segments,
+        }
+      })
       return { byGroup: { ...s.byGroup, [groupId]: next } }
     }),
 
@@ -1965,7 +1974,22 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     set((s) => {
       const next = new Set(s.resumingMessageIds)
       next.add(messageId)
+      // The continuation opens a bubble of its own, the way the runtime records
+      // it: streamed tokens land in this trailing segment instead of being
+      // glued onto the reply that was interrupted.
+      const list = s.byGroup[groupId]
+      const byGroup = list
+        ? {
+            ...s.byGroup,
+            [groupId]: list.map((m) =>
+              m.id === messageId
+                ? { ...m, response_segments: [...replySegments(m.content ?? '', m.response_segments), ''] }
+                : m,
+            ),
+          }
+        : s.byGroup
       return {
+        byGroup,
         resumingMessageIds: next,
         activeResumesByMessageId: {
           ...s.activeResumesByMessageId,

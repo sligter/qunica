@@ -201,8 +201,10 @@ describe('StreamTimeline activity rendering', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 
-  it('shows only the newest checklist an agent wrote', () => {
-    const first = event({
+  it('keeps the checklist out of the reply', () => {
+    // The plan renders above the composer; inside the reply it would scroll
+    // away while later TodoWrite calls keep changing it.
+    const todo = event({
       id: 'todo:stream-1:agent-1',
       stream_id: 'stream-1',
       type: 'todo',
@@ -211,19 +213,10 @@ describe('StreamTimeline activity rendering', () => {
       todos: [{ content: 'read the code', status: 'in_progress' as const }],
       created_at: '2026-07-16T10:00:01Z',
     })
-    // A later block for the same agent, as a reply between two TodoWrite calls
-    // would produce. Rendering both would show the same work at two stages.
-    const superseded = event({
-      ...first,
-      id: 'todo:stream-1:agent-1-earlier',
-      todos: [{ content: 'read the code', status: 'pending' as const }],
-    })
-    render(<StreamTimeline run={run([superseded, first])} />)
+    render(<StreamTimeline run={run([todo])} />)
 
-    expect(screen.getByText('read the code')).toBeVisible()
-    expect(screen.getByText('0/1 done')).toBeVisible()
-    expect(screen.getByLabelText('In progress')).toBeVisible()
-    expect(screen.queryByLabelText('To do')).toBeNull()
+    expect(screen.queryByText('read the code')).toBeNull()
+    expect(screen.queryByText('0/1 done')).toBeNull()
   })
 
   it('localizes an empty active stream state', async () => {
@@ -670,5 +663,39 @@ describe('StreamTimeline activity rendering', () => {
     expect(activity.open).toBe(false)
     expect(screen.getByText(inputRequest.question)).toBeVisible()
     expect(screen.getByRole('button', { name: 'Staging' })).toBeVisible()
+  })
+
+  it('shows an optional question outside the activity bubble when no wait notice follows', () => {
+    // An optional AskUser never pauses the turn, so the tool event is the only
+    // carrier of the question; it used to render inside the collapsed bubble.
+    render(
+      <StreamTimeline
+        onSubmitHumanInput={vi.fn()}
+        run={run(
+          [
+            event({
+              id: 'tool-1',
+              stream_id: 'stream-1',
+              type: 'tool',
+              agent_id: 'agent-1',
+              display_name: 'Researcher',
+              tool_call_id: 'call-1',
+              tool_name: 'AskUser',
+              status: 'input_required',
+              input_request: { question: 'Any naming preference?', required: false },
+              created_at: '2026-07-16T10:00:02Z',
+            }),
+          ],
+          'active',
+        )}
+      />,
+    )
+
+    const activity = screen.getByRole('group', { name: 'Activity: 1 tool' })
+    const question = screen.getByText('Any naming preference?')
+    expect((activity as HTMLDetailsElement).open).toBe(false)
+    expect(activity).not.toContainElement(question)
+    expect(question).toBeVisible()
+    expect(screen.getByRole('textbox')).toBeVisible()
   })
 })

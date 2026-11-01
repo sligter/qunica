@@ -1,4 +1,5 @@
-import { Circle, CircleCheck, CircleDot, ListTodo } from 'lucide-react'
+import { ChevronDown, Circle, CircleCheck, CircleDot, ListTodo } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/lib/utils'
@@ -7,6 +8,8 @@ import type { TodoItem, TodoStatus } from '@/types/api'
 interface TodoChecklistProps {
   todos: TodoItem[]
   className?: string
+  /** Let the reader fold the items away and keep only the progress line. */
+  collapsible?: boolean
 }
 
 const statusIcons = {
@@ -33,13 +36,21 @@ const statusIconClasses = {
  * Rendered from the whole list every time rather than as a running log:
  * `TodoWrite` replaces its list on each call, and the reason to show a checklist
  * at all is to answer "where is it up to", which a history of revisions buries.
- * It stays outside the collapsed activity disclosure because it is progress the
- * user is meant to read at a glance, not a tool call they may want to inspect.
+ * It sits above the composer rather than in a reply, because it is progress the
+ * user is meant to read at a glance while the turn runs, not part of the answer.
  */
-export function TodoChecklist({ todos, className }: TodoChecklistProps) {
+export function TodoChecklist({ todos, className, collapsible = false }: TodoChecklistProps) {
   const { t } = useTranslation('chat')
+  const [collapsed, setCollapsed] = useState(false)
   if (todos.length === 0) return null
   const done = todos.filter((todo) => todo.status === 'completed').length
+  const header = (
+    <>
+      <ListTodo className="h-3.5 w-3.5 shrink-0" />
+      <span className="font-medium text-foreground">{t('todos.title')}</span>
+      <span>{t('todos.progress', { done, total: todos.length })}</span>
+    </>
+  )
 
   return (
     <section
@@ -49,12 +60,31 @@ export function TodoChecklist({ todos, className }: TodoChecklistProps) {
         className,
       )}
     >
-      <div className="mb-1.5 flex items-center gap-1.5 text-2xs text-muted-foreground">
-        <ListTodo className="h-3.5 w-3.5 shrink-0" />
-        <span className="font-medium text-foreground">{t('todos.title')}</span>
-        <span>{t('todos.progress', { done, total: todos.length })}</span>
-      </div>
-      <ul className="min-w-0 space-y-1">
+      {collapsible ? (
+        <button
+          type="button"
+          aria-expanded={!collapsed}
+          onClick={() => setCollapsed((value) => !value)}
+          className="flex w-full items-center gap-1.5 text-2xs text-muted-foreground hover:text-foreground"
+        >
+          {header}
+          <span
+            aria-hidden="true"
+            className="ml-1 h-1 min-w-8 flex-1 overflow-hidden rounded-full bg-muted"
+          >
+            <span
+              className="block h-full rounded-full bg-primary transition-[width]"
+              style={{ width: `${(done / todos.length) * 100}%` }}
+            />
+          </span>
+          <ChevronDown
+            className={cn('h-3.5 w-3.5 shrink-0 transition-transform', collapsed && '-rotate-90')}
+          />
+        </button>
+      ) : (
+        <div className="flex items-center gap-1.5 text-2xs text-muted-foreground">{header}</div>
+      )}
+      <ul className={cn('mt-1.5 min-w-0 space-y-1', collapsible && collapsed && 'hidden')}>
         {todos.map((todo, index) => {
           const Icon = statusIcons[todo.status]
           return (

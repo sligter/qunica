@@ -651,4 +651,17 @@ describe('messageStore scheduler state', () => {
     expect(messages[3].content).toBe('replayed')
   })
 
+
+  it('streams a resumed reply into a bubble of its own', () => {
+    const interrupted = { ...message('reply'), sender_type: 'agent' as const, content: 'Hello', response_segments: ['Hello'] }
+    useMessageStore.setState({ byGroup: { 'group-1': [interrupted] } })
+    const store = useMessageStore.getState()
+
+    store.startResume('group-1', 'reply', async () => {})
+    store.appendToMessage('group-1', 'reply', ' continued')
+
+    const [row] = useMessageStore.getState().byGroup['group-1']
+    expect(row.content).toBe('Hello continued')
+    expect(row.response_segments).toEqual(['Hello', ' continued'])
+  })
 })

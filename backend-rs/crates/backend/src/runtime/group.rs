@@ -5065,12 +5065,30 @@ async fn run_agent_turn_body(
             );
             turn.phase = Some("waiting_for_user".into());
             persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
-            if ctx.private_execution || ctx.resume.is_some() {
+            if ctx.private_execution {
                 return Ok(AgentRunResult::Private(AgentExecution {
                     final_content: "Helper requested additional input.".to_string(),
                     turn_data: Box::new(turn),
                     outcome: AgentExecutionOutcome::WaitingForUser,
                 }));
+            }
+            // Note: a resumed turn that asks again stays paused on the message
+            // it continues, like a second approval gate. Completing it with a
+            // placeholder would overwrite the reply and drop the question, so
+            // the user would never see a form to answer.
+            if ctx.resume.is_some() {
+                persist_interrupted_agent(ctx, agent, &content, &turn).await?;
+                ctx.emit_durable_event(
+                    StreamEventKind::WaitingForUser,
+                    json!({
+                        "agent_id": agent.agent_id,
+                        "display_name": agent.display_name,
+                        "message": "Waiting for your input",
+                        "input_request": input_request,
+                    }),
+                )
+                .await?;
+                return Ok(AgentRunResult::WaitingForUser);
             }
             let visible = interrupted_visible_content(&content)
                 .unwrap_or_else(|| "Waiting for your input".to_string());

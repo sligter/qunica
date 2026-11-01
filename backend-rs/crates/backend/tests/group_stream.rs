@@ -8827,6 +8827,87 @@ async fn resume_thread_success_appends_to_existing_interrupted_message() {
 }
 
 #[tokio::test]
+async fn resume_thread_ask_user_keeps_reply_and_sends_the_question() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "resume-ask@example.com").await;
+    let owner = owner_id(&state, "resume-ask@example.com").await;
+    let workspace = create_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({})).await;
+    let provider = seed_provider(
+        &state,
+        &owner,
+        &fake_provider_sequence(vec![tool_body(vec![(
+            "ask",
+            "AskUser",
+            json!({"question": "Which branch?", "required": true}),
+        )])])
+        .await,
+    )
+    .await;
+    let agent = seed_agent_with_tool_config(
+        &state,
+        &owner,
+        &group,
+        &provider,
+        "Alice",
+        "2024-01-01T00:00:00Z",
+        json!({"tools": {"ask_user": {"enabled": true}}}),
+    )
+    .await;
+    let thread = seed_thread(&state, &group, "paused").await;
+    seed_message(
+        &state,
+        &group,
+        &thread,
+        1,
+        "visible",
+        "user",
+        Some(&owner),
+        "question",
+        None,
+    )
+    .await;
+    let interrupted = seed_message(
+        &state,
+        &group,
+        &thread,
+        2,
+        "interrupted",
+        "agent",
+        Some(&agent),
+        "Hello",
+        None,
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &token,
+        json!({}),
+    )
+    .await;
+    let waiting = events
+        .iter()
+        .find(|event| event["kind"] == "waiting_for_user")
+        .expect("a resumed question must reach the client");
+    assert_eq!(
+        waiting["payload"]["input_request"]["question"],
+        "Which branch?"
+    );
+    assert_eq!(waiting["payload"]["agent_id"], agent);
+
+    let (content, status): (Option<String>, String) =
+        sqlx::query_as("SELECT content, status FROM messages WHERE id = ?")
+            .bind(&interrupted)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(content.as_deref(), Some("Hello"));
+    assert_eq!(status, "interrupted");
+}
+
+#[tokio::test]
 async fn resume_thread_replay_after_token_event_returns_durable_tail_without_reclaiming() {
     let (app, state) = router_with_state_for_tests().await;
     let token = register_and_login(&app, "resume-replay@example.com").await;
