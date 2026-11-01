@@ -459,10 +459,12 @@ pub async fn acp_runtime_versions(
     headers: HeaderMap,
 ) -> Result<Json<AcpRuntimeVersionListResponse>, ApiError> {
     let _owner_id = current_user_id(&headers, &state).await?;
-    let mut presets = Vec::new();
-    for preset in ACP_RUNTIME_VERSION_PRESETS {
-        presets.push(runtime_version_status(preset).await);
-    }
+    let presets = futures_util::future::join_all(
+        ACP_RUNTIME_VERSION_PRESETS
+            .into_iter()
+            .map(runtime_version_status),
+    )
+    .await;
     Ok(Json(AcpRuntimeVersionListResponse { presets }))
 }
 
@@ -476,6 +478,11 @@ pub async fn install_acp_runtime_version(
     let preset = acp_runtime_version_preset(&preset_id)
         .ok_or_else(|| ApiError::not_found("ACP runtime preset not found"))?;
     let package_spec = resolve_install_package_spec(preset, body.package_spec.as_deref())?;
+    let _codex_operation = if preset.id == "codex-cli" {
+        Some(codex_auth::operation_guard()?)
+    } else {
+        None
+    };
 
     let npm_installed = local_npm_package_version(preset.package_name)
         .await
@@ -505,7 +512,11 @@ pub async fn install_acp_runtime_version(
     args.extend(preset.install_specs.iter().skip(1).copied());
     // Windows cannot replace a runtime executable while a reusable ACP session
     // still has it open. Sessions resume from their persisted IDs on next use.
-    shutdown_reusable_acp_sessions().await;
+    // Note: the account CLI is separate from the ACP adapter. Installing it
+    // must not interrupt unrelated agent sessions; its own processes are guarded.
+    if preset.id != "codex-cli" {
+        shutdown_reusable_acp_sessions().await;
+    }
     let output = run_command(&npm, &args, ACP_INSTALL_TIMEOUT)
         .await
         .map_err(|message| {
@@ -515,6 +526,27 @@ pub async fn install_acp_runtime_version(
                 message,
             )
         })?;
+
+    if preset.id == "codex-cli" {
+        let command = codex_auth::codex_command().await.ok_or_else(|| ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "codex_cli_missing",
+            "npm completed but the Codex CLI command is unavailable. Check the backend npm installation.",
+        ))?;
+        run_command(
+            &command.to_string_lossy(),
+            &["--version"],
+            ACP_VERSION_TIMEOUT,
+        )
+        .await
+        .map_err(|message| {
+            ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "codex_cli_install_failed",
+                format!("Codex CLI startup check failed after installation: {message}"),
+            )
+        })?;
+    }
 
     Ok(Json(AcpRuntimeInstallResponse {
         preset: runtime_version_status(preset).await,
@@ -1662,11 +1694,18 @@ struct AcpRuntimeVersionPreset {
     install_specs: &'static [&'static str],
 }
 
-const ACP_RUNTIME_VERSION_PRESETS: [AcpRuntimeVersionPreset; 5] = [
+const ACP_RUNTIME_VERSION_PRESETS: [AcpRuntimeVersionPreset; 6] = [
     AcpRuntimeVersionPreset {
         id: "codex",
         package_name: "@agentclientprotocol/codex-acp",
         external_command: None,
+        dist_tag: "latest",
+        install_specs: &[],
+    },
+    AcpRuntimeVersionPreset {
+        id: "codex-cli",
+        package_name: "@openai/codex",
+        external_command: Some("codex"),
         dist_tag: "latest",
         install_specs: &[],
     },
@@ -1730,7 +1769,16 @@ fn package_name_of_spec(spec: &'static str) -> &'static str {
 async fn runtime_version_status(preset: AcpRuntimeVersionPreset) -> AcpRuntimeVersionResponse {
     let local_version = local_npm_package_version(preset.package_name).await;
     let latest_version = npm_latest_package_version(preset.package_name, preset.dist_tag).await;
-    let externally_managed = externally_managed_command(preset, local_version.is_some()).is_some();
+    let codex_command = if preset.id == "codex-cli" {
+        codex_auth::codex_command().await
+    } else {
+        None
+    };
+    let externally_managed = if preset.id == "codex-cli" {
+        codex_command.is_some() && local_version.is_none()
+    } else {
+        externally_managed_command(preset, local_version.is_some()).is_some()
+    };
 
     // A multi-package runtime is only usable once every package is present:
     // dsh boots into a config that names its plugins by package, and a missing
@@ -1749,8 +1797,14 @@ async fn runtime_version_status(preset: AcpRuntimeVersionPreset) -> AcpRuntimeVe
         }
     }
 
-    let installed = externally_managed || local_version.is_some() && missing_companion.is_none();
-    let status = if externally_managed {
+    let installed = if preset.id == "codex-cli" {
+        codex_command.is_some()
+    } else {
+        externally_managed || local_version.is_some() && missing_companion.is_none()
+    };
+    let status = if !installed {
+        "not_installed"
+    } else if externally_managed {
         "local_only"
     } else {
         match (&local_version, missing_companion, &latest_version) {
@@ -2189,36 +2243,48 @@ mod tests {
             resolve_install_package_spec(codex, Some("@agentclientprotocol/codex-acp @next"))
                 .is_err()
         );
+        let cli = acp_runtime_version_preset("codex-cli").unwrap();
+        assert_eq!(
+            resolve_install_package_spec(cli, None).unwrap(),
+            "@openai/codex@latest"
+        );
+        assert!(
+            resolve_install_package_spec(cli, Some("@agentclientprotocol/codex-acp@latest"))
+                .is_err()
+        );
+        assert!(resolve_install_package_spec(codex, Some("@openai/codex@latest")).is_err());
     }
 
     #[test]
-    fn opencode_owned_by_another_installer_is_not_reinstalled_with_npm() {
-        let dir = tempfile::tempdir().unwrap();
-        let executable = command_candidates("opencode", Some(OsString::from(".CMD")))
-            .into_iter()
-            .next()
-            .unwrap();
-        let command = dir.path().join(executable);
-        File::create(&command).unwrap();
-        let path_env = env::join_paths([dir.path()]).unwrap();
-        let preset = acp_runtime_version_preset("opencode").unwrap();
+    fn externally_owned_commands_are_not_reinstalled_with_npm() {
+        for (preset_id, name) in [("opencode", "opencode"), ("codex-cli", "codex")] {
+            let dir = tempfile::tempdir().unwrap();
+            let executable = command_candidates(name, Some(OsString::from(".CMD")))
+                .into_iter()
+                .next()
+                .unwrap();
+            let command = dir.path().join(executable);
+            File::create(&command).unwrap();
+            let path_env = env::join_paths([dir.path()]).unwrap();
+            let preset = acp_runtime_version_preset(preset_id).unwrap();
 
-        assert_eq!(
-            externally_managed_command_with_env(
+            assert_eq!(
+                externally_managed_command_with_env(
+                    preset,
+                    false,
+                    Some(path_env.clone()),
+                    Some(OsString::from(".CMD")),
+                ),
+                Some(command)
+            );
+            assert!(externally_managed_command_with_env(
                 preset,
-                false,
-                Some(path_env.clone()),
+                true,
+                Some(path_env),
                 Some(OsString::from(".CMD")),
-            ),
-            Some(command)
-        );
-        assert!(externally_managed_command_with_env(
-            preset,
-            true,
-            Some(path_env),
-            Some(OsString::from(".CMD")),
-        )
-        .is_none());
+            )
+            .is_none());
+        }
     }
 
     #[test]

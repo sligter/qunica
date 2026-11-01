@@ -729,12 +729,13 @@ export function useSendMessageStream(
             clearRetry(id)
             const streamId = event.stream_id
             streamIdsRef.current.set(id, streamId)
-            if (!acceptsStreamEvent(storeId, streamId)) return
+            // Note: scheduler `done` must reach its own state machine after a
+            // terminal turn event has already fenced ordinary output.
             const schedulerUpdate = parseSchedulerStreamEvent(event)
             if (schedulerUpdate) {
+              if (!applySchedulerEvent(storeId, streamId, schedulerUpdate)) return
               schedulerTurnByRequestRef.current.set(id, schedulerUpdate.payload.turn_id)
               void completePendingCancellation()
-              if (!applySchedulerEvent(storeId, streamId, schedulerUpdate)) return
               invalidateTurn(schedulerUpdate.payload.turn_id)
               if (schedulerUpdate.kind === 'done') {
                 if (!erroredStreamIdsRef.current.has(streamId)) {
@@ -757,7 +758,7 @@ export function useSendMessageStream(
                 new Error(messageFromPayload(event.payload, 'Stream failed')),
               )
             }
-            if (!acceptsStreamEvent(storeId, streamId)) return
+            if (event.kind !== 'done' && !acceptsStreamEvent(storeId, streamId)) return
             const agentDisplayName = (agentId: string | undefined, fallback?: string) => {
               if (fallback) return fallback
               if (agentId) {

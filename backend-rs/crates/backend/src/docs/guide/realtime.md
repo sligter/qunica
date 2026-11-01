@@ -38,6 +38,13 @@ Clients fetch the affected resource and upsert formal messages by id; account
 events do not replace message bodies. Never revive a deleted or terminal message
 from a late run token.
 
+Terminal scheduler events also end the corresponding client run immediately;
+the later `done` event still performs transport cleanup and cannot replace a
+failure or cancellation with success. Ordinary late output cannot reopen an
+ended run. Activity retained in a finished run or message shows missing tool
+results as unknown outcomes rather than ongoing execution or inferred success.
+This display rule does not prove that an external side effect or process stopped.
+
 Account history retains seven days and approximately 100,000 events per account,
 with a minute cleanup cycle. Indexed discovery selects up to 256 old events
 outside the write transaction; deletion and replay-floor advancement commit

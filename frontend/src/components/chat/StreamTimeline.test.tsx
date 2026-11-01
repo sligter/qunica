@@ -574,9 +574,12 @@ describe('StreamTimeline activity rendering', () => {
     }) as HTMLDetailsElement
     expect(activity.open).toBe(false)
     expect(screen.getByText('No visible reply')).toBeVisible()
+    expect(screen.getByText('No result received')).toBeInTheDocument()
+    expect(screen.queryByText('started')).not.toBeInTheDocument()
 
     await i18n.changeLanguage('zh-CN')
     expect(await screen.findByText('没有可见回复')).toBeVisible()
+    expect(screen.getByText('未收到结果')).toBeInTheDocument()
     expect(screen.queryByText('生成中')).not.toBeInTheDocument()
   })
 

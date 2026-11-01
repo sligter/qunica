@@ -1674,6 +1674,9 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const nextRun: StreamRun = {
       ...run,
       turn_id: turnId,
+      // Note: terminal scheduler events precede `done`; stop activity now even
+      // when an adapter never sends the last tool result or the stream closes.
+      status: terminal.status === null ? run.status : streamStatusFromSchedulerStatus(terminal.status),
       scheduler_status: terminal.status ?? run.scheduler_status,
       moderator_active: update.kind === 'moderator_started',
       terminal_reason: terminal.status === null ? run.terminal_reason : terminal.reason,
@@ -1761,7 +1764,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   acceptsStreamEvent: (groupId, streamId) => {
     if (get().retiredStreamIds[groupId]?.has(streamId)) return false
     const run = get().streamRunsByGroup[groupId]?.[streamId]
-    return !run || schedulerStatusAcceptsEvents(run.scheduler_status)
+    return !run || (run.status === 'active' && schedulerStatusAcceptsEvents(run.scheduler_status))
   },
 
   markStreamRunWaitingForUser: (groupId, streamId) => {
@@ -1823,7 +1826,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       }
       const nextRun: StreamRun = {
         ...run,
-        status: 'completed',
+        // Transport completion must not overwrite an authoritative failure or cancellation.
+        status: run.status === 'active' ? 'completed' : run.status,
         updated_at: timestamp,
         events: doneExists ? run.events : [...run.events, doneEvent],
       }

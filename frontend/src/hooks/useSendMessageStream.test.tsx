@@ -189,6 +189,78 @@ describe('useSendMessageStream scheduler events', () => {
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
   })
 
+  it.each(['completed', 'failed', 'cancelled'] as const)(
+    'closes a %s turn with an unfinished tool and still consumes done', (status) => {
+      const queryClient = new QueryClient()
+      const hook = renderHook(() => useSendMessageStream('group-1'), { wrapper: wrapper(queryClient) })
+      act(() => ignoreSend(hook.result.current.send('hello')))
+      const { handlers } = mocks.streams[0]!
+      emitActiveSchedulerStream(handlers, 'stream-1', 'message-1', 'agent-1')
+      emit(handlers, {
+        stream_id: 'stream-1', seq: 6, event_id: 'terminal',
+        kind: status === 'cancelled' ? 'turn_cancelled' : 'turn_completed',
+        payload: {
+          turn_id: 'stream-1-turn', status,
+          reason: status === 'cancelled' ? 'user_cancelled' : status === 'failed' ? 'persistence_failed' : null,
+          budget: { agent_steps: 1, moderator_calls: 0, consecutive_failures: 0, total_failures: 0, total_tokens: 10 },
+        },
+      })
+      const run = useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']
+      expect(run.status).toBe(status === 'failed' ? 'error' : status)
+      // A missing result stays unknown; ending the turn must not invent success.
+      expect(run.events.find(event => event.type === 'tool')?.status).toBe('started')
+      emit(handlers, {
+        stream_id: 'stream-1', seq: 7, event_id: 'late-token', kind: 'token',
+        payload: { agent_id: 'agent-1', delta: 'late output' },
+      })
+      expect(useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']).toEqual(run)
+      emit(handlers, {
+        stream_id: 'stream-1', seq: 8, event_id: 'done', kind: 'done',
+        payload: { turn_id: 'stream-1-turn' },
+      })
+      expect(hook.result.current.activeStreamCount).toBe(0)
+      expect(useMessageStore.getState().activeSendsByGroup['group-1']).toBeUndefined()
+      expect(useMessageStore.getState().activeAgentsByGroup['group-1']).toEqual({})
+      expect(useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'].status).toBe(run.status)
+      const ended = useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']
+      emit(handlers, {
+        stream_id: 'stream-1', seq: 9, event_id: 'late-tool', kind: 'tool_call_start',
+        payload: { agent_id: 'agent-1', tool_call_id: 'late', tool_name: 'late tool', status: 'started' },
+      })
+      expect(useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']).toEqual(ended)
+    },
+  )
+
+  it('finishes one stream while preserving another stream and its tool activity', () => {
+    const queryClient = new QueryClient()
+    const hook = renderHook(() => useSendMessageStream('group-1'), { wrapper: wrapper(queryClient) })
+    act(() => ignoreSend(hook.result.current.send('first')))
+    const first = mocks.streams[0]!
+    emitActiveSchedulerStream(first.handlers, 'stream-1', 'message-1', 'agent-1')
+    act(() => ignoreSend(hook.result.current.send('second')))
+    const second = mocks.streams[1]!
+    emitActiveSchedulerStream(second.handlers, 'stream-2', 'message-2', 'agent-2')
+    const otherRun = useMessageStore.getState().streamRunsByGroup['group-1']['stream-2']
+    emit(first.handlers, {
+      stream_id: 'stream-1', seq: 6, event_id: 'terminal', kind: 'turn_completed',
+      payload: {
+        turn_id: 'stream-1-turn', status: 'completed', reason: null,
+        budget: { agent_steps: 1, moderator_calls: 0, consecutive_failures: 0, total_failures: 0, total_tokens: 10 },
+      },
+    })
+    emit(first.handlers, {
+      stream_id: 'stream-1', seq: 7, event_id: 'done', kind: 'done', payload: { turn_id: 'stream-1-turn' },
+    })
+    const state = useMessageStore.getState()
+    expect(hook.result.current.activeStreamCount).toBe(1)
+    expect(hook.result.current.isStreaming).toBe(true)
+    expect(state.streamRunsByGroup['group-1']['stream-2']).toEqual(otherRun)
+    expect(Object.values(state.activeAgentsByGroup['group-1'])).toEqual([
+      expect.objectContaining({ stream_id: 'stream-2', agent_id: 'agent-2' }),
+    ])
+    expect(second.abort).not.toHaveBeenCalled()
+  })
+
   it('ignores a completed recovery snapshot after its subscription was cancelled', async () => {
     const queryClient = new QueryClient()
     const hook = renderHook(() => useSendMessageStream('group-1'), { wrapper: wrapper(queryClient) })

@@ -142,6 +142,38 @@ describe('useResumeStream scheduler events', () => {
     useAuthStore.setState({ token: 'token-1', user: null, hydrated: true })
   })
 
+  it.each(['completed', 'failed', 'cancelled'] as const)(
+    'keeps a resumed %s outcome when done arrives', status => {
+      const queryClient = new QueryClient()
+      const hook = renderHook(() => useResumeStream('group-1', 'thread-1', 'message-1'), {
+        wrapper: wrapper(queryClient),
+      })
+      act(() => hook.result.current.resume())
+      const { handlers } = mocks.streams[0]!
+      emit(handlers, {
+        stream_id: 'stream-1', seq: 1, event_id: 'start', kind: 'turn_started',
+        payload: { turn_id: 'turn-1', budget },
+      })
+      emit(handlers, {
+        stream_id: 'stream-1', seq: 2, event_id: 'terminal',
+        kind: status === 'cancelled' ? 'turn_cancelled' : 'turn_completed',
+        payload: {
+          turn_id: 'turn-1', status,
+          reason: status === 'cancelled' ? 'user_cancelled' : status === 'failed' ? 'persistence_failed' : null,
+          budget: { agent_steps: 1, moderator_calls: 0, consecutive_failures: 0, total_failures: 0, total_tokens: 10 },
+        },
+      })
+      const expected = status === 'failed' ? 'error' : status
+      expect(useMessageStore.getState().streamRunsByGroup['thread-1']['stream-1'].status).toBe(expected)
+      emit(handlers, {
+        stream_id: 'stream-1', seq: 3, event_id: 'done', kind: 'done', payload: { turn_id: 'turn-1' },
+      })
+      expect(hook.result.current.isStreaming).toBe(false)
+      expect(useMessageStore.getState().activeResumesByMessageId['message-1']).toBeUndefined()
+      expect(useMessageStore.getState().streamRunsByGroup['thread-1']['stream-1'].status).toBe(expected)
+    },
+  )
+
   it('ignores a completed recovery snapshot after the approval subscription was cancelled', async () => {
     const queryClient = new QueryClient()
     const hook = renderHook(() => useResumeStream('group-1', 'thread-1', 'message-1'), {

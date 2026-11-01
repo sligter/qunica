@@ -153,6 +153,41 @@ describe('messageStore scheduler state', () => {
     expect(state.acceptsStreamEvent('group-1', 'stream-2')).toBe(true)
   })
 
+  it.each([
+    { kind: 'turn_completed', payload: { status: 'completed', reason: null } },
+    { kind: 'turn_completed', payload: { status: 'silence', reason: 'silence' } },
+    { kind: 'turn_budget_exhausted', payload: { status: 'budget_exhausted', reason: 'budget_exhausted' } },
+    { kind: 'turn_budget_exhausted', payload: { status: 'failure_budget_exhausted', reason: 'failure_budget_exhausted' } },
+    { kind: 'turn_completed', payload: { status: 'failed', reason: 'persistence_failed' } },
+    { kind: 'turn_cancelled', payload: { status: 'cancelled', reason: 'user_cancelled' } },
+    { kind: 'turn_superseded', payload: { status: 'superseded', reason: 'superseded' } },
+  ] as const)(
+    'ends only the matching run on $payload.status before done', ({ kind, payload }) => {
+      const store = useMessageStore.getState()
+      store.startStreamRun('group-1', 'stream-1', message('message-1'))
+      store.startStreamRun('group-1', 'stream-2', message('message-2'))
+      store.applySchedulerEvent('group-1', 'stream-1', update(kind, {
+        ...payload, turn_id: 'turn-1',
+        budget: { agent_steps: 1, moderator_calls: 0, consecutive_failures: 0, total_failures: 0, total_tokens: 10 },
+      }, 1))
+      const state = useMessageStore.getState()
+      const expected = payload.status === 'cancelled' ? 'cancelled' : payload.status === 'failed' ? 'error' : 'completed'
+      expect(state.streamRunsByGroup['group-1']['stream-1'].status).toBe(expected)
+      expect(state.streamRunsByGroup['group-1']['stream-2'].status).toBe('active')
+      expect(store.acceptsStreamEvent('group-1', 'stream-1')).toBe(false)
+      expect(store.acceptsStreamEvent('group-1', 'stream-2')).toBe(true)
+      store.markStreamRunDone('group-1', 'stream-1')
+      expect(useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'].status).toBe(expected)
+    },
+  )
+
+  it('rejects output after a stream ends without scheduler metadata', () => {
+    const store = useMessageStore.getState()
+    store.startStreamRun('group-1', 'stream-1', message('message-1'))
+    store.markStreamRunDone('group-1', 'stream-1')
+    expect(store.acceptsStreamEvent('group-1', 'stream-1')).toBe(false)
+  })
+
   it('tracks moderator activity only between its start and routing result', () => {
     const store = useMessageStore.getState()
     store.startStreamRun('group-1', 'stream-1', message('message-1'))

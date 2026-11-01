@@ -146,6 +146,19 @@ describe('MessageItem', () => {
     expect(screen.getByText('Final answer')).toBeVisible()
   })
 
+  it('restores an unfinished persisted tool as a missing outcome instead of running', () => {
+    render(<MessageItem groupId="group-1" message={message({
+      tool_calls: [{
+        tool_call_id: 'unfinished', tool_name: 'take_screenshot', status: 'started',
+        args_summary: '{}', result_summary: null,
+      }],
+    })} />)
+    expect(screen.getByText('No result received')).toBeInTheDocument()
+    expect(screen.queryByText('started')).not.toBeInTheDocument()
+    expect(screen.queryByText('completed')).not.toBeInTheDocument()
+    expect(screen.getByText('Final answer')).toBeVisible()
+  })
+
   it('restores persisted response segments as separate bubbles', () => {
     render(
       <MessageItem
