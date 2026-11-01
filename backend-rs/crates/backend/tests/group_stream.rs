@@ -11485,6 +11485,9 @@ async fn a_resume_that_stops_at_a_second_gate_asks_again_instead_of_failing() {
 #[path = "group_stream/rig_scenarios.rs"]
 mod rig_scenarios;
 
+#[path = "group_stream/engine_rollout.rs"]
+mod engine_rollout;
+
 #[tokio::test]
 async fn context_checkpoint_invalidation_respects_each_agents_cursor() {
     let (app, state) = router_with_state_for_tests().await;

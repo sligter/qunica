@@ -16,6 +16,7 @@ pub mod chat_title;
 pub mod compaction;
 pub mod compaction_hook;
 pub mod conversation_context;
+pub(crate) mod engine_observation;
 pub mod group;
 pub mod group_scheduler;
 pub mod hooks;

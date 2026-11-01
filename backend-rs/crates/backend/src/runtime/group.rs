@@ -1628,6 +1628,8 @@ async fn run_scheduled_turn(
                         };
                         let usage_thread_id = ctx.thread_id.clone();
                         let dimensions = TokenUsageDimensions {
+                            execution_id: None,
+                            engine: Some("moderator"),
                             owner_id: &group.owner_id,
                             group_id: &group.id,
                             group_name: &group.name,
@@ -2698,6 +2700,8 @@ async fn flush_decision_usage(
             .clone()
             .unwrap_or_else(|| gate.model().to_string());
         let dimensions = TokenUsageDimensions {
+            execution_id: None,
+            engine: Some("moderator"),
             owner_id: &group.owner_id,
             group_id: &group.id,
             group_name: &group.name,
@@ -3301,6 +3305,7 @@ async fn run_resume_inner(
         };
         object.insert("engine".into(), json!("rig"));
         agent.model_config_json = Some(config.to_string());
+        agent.runtime_kind = "llm_chat".into();
     }
     let group = match load_group_runtime_config(&services.pool, &req.group_id).await {
         Ok(group) => group,
@@ -3961,6 +3966,8 @@ fn context_usage_to_json(
 }
 
 struct TokenUsageDimensions<'a> {
+    execution_id: Option<&'a str>,
+    engine: Option<&'a str>,
     owner_id: &'a str,
     group_id: &'a str,
     group_name: &'a str,
@@ -3992,8 +3999,8 @@ async fn persist_token_usage(
     sqlx::query(
         "INSERT INTO token_usage_records (id, owner_id, group_id, group_name, conversation_kind, \
             thread_id, agent_id, agent_name, provider_id, provider_name, model, input_tokens, \
-            cached_input_tokens, output_tokens, total_tokens, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            cached_input_tokens, output_tokens, total_tokens, created_at, updated_at, execution_id, engine) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(id) DO UPDATE SET input_tokens = excluded.input_tokens, \
             cached_input_tokens = excluded.cached_input_tokens, \
             output_tokens = excluded.output_tokens, total_tokens = excluded.total_tokens, \
@@ -4016,6 +4023,8 @@ async fn persist_token_usage(
     .bind(total_tokens)
     .bind(&now)
     .bind(&now)
+    .bind(dimensions.execution_id)
+    .bind(dimensions.engine)
     .execute(pool)
     .await?;
     Ok(())
@@ -4032,7 +4041,97 @@ fn run_agent_turn<'a>(
     delegated_input: Option<&'a str>,
     scheduler: Option<&'a mut ScheduledTurnRuntime>,
 ) -> Pin<Box<dyn Future<Output = Result<AgentRunResult, StepErr>> + Send + 'a>> {
-    Box::pin(run_agent_turn_inner(
+    Box::pin(async move {
+        let execution_id = ctx
+            .resume
+            .as_ref()
+            .map(|resume| resume.message_id.clone())
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let observation = if agent.runtime_kind == "llm_chat" {
+            let engine = super::rig_driver::configured_engine(agent.model_config_json.as_deref())
+                .map_err(StepErr::Db)?;
+            Some(
+                Box::pin(super::engine_observation::Observation::begin(
+                    &services.pool,
+                    &services.write_lock,
+                    super::engine_observation::Start {
+                        id: &execution_id,
+                        owner: &agent.owner_id,
+                        group: &group.id,
+                        thread: &ctx.thread_id,
+                        agent: &agent.agent_id,
+                        provider: agent.provider_id.as_deref(),
+                        engine,
+                        resumed: ctx.resume.is_some(),
+                    },
+                ))
+                .await
+                .map_err(StepErr::Db)?,
+            )
+        } else {
+            None
+        };
+        if observation
+            .as_ref()
+            .is_some_and(|observation| observation.paused)
+        {
+            ctx.emit(StreamEventKind::Warning,json!({"message":"New Rig executions are paused. Existing approvals may still resume; use a fresh native thread for rollback.","agent_id":agent.agent_id})).await?;
+            return Err(StepErr::Db(anyhow::anyhow!("Rig canary intake is paused")));
+        }
+        let result = run_agent_turn_inner(
+            services,
+            ctx,
+            agent,
+            group,
+            handoff_depth,
+            delegated_input,
+            scheduler,
+            &execution_id,
+        )
+        .await;
+        if let Some(observation) = observation {
+            let (status, snapshot) = match &result {
+                Ok(AgentRunResult::WaitingForUser) => ("waiting_for_user", None),
+                Ok(AgentRunResult::Private(execution)) => (
+                    match execution.outcome {
+                        AgentExecutionOutcome::WaitingForUser => "waiting_for_user",
+                        AgentExecutionOutcome::Failed => "failed",
+                        _ => "completed",
+                    },
+                    execution
+                        .turn_data
+                        .to_content_json()
+                        .and_then(|raw| serde_json::from_str(&raw).ok()),
+                ),
+                Ok(_) => ("completed", None),
+                Err(StepErr::Cancelled) => ("cancelled", None),
+                Err(_) => ("failed", None),
+            };
+            // Measurement failure cannot reinterpret an already committed tool
+            // or public reply. An unfinished measurement is excluded from rates.
+            if let Err(error) = Box::pin(observation.finish(&services.pool, status, snapshot)).await
+            {
+                tracing::error!(%error,execution_id=observation.id,"failed to finalize engine measurement");
+            }
+        }
+        result
+    })
+}
+
+#[allow(clippy::too_many_arguments)] // The same id binds telemetry, billing and the original checkpoint.
+fn run_agent_turn_inner<'a>(
+    services: &'a RuntimeServices,
+    ctx: &'a mut StreamCtx,
+    agent: &'a Candidate,
+    group: &'a GroupRuntimeConfig,
+    handoff_depth: usize,
+    delegated_input: Option<&'a str>,
+    scheduler: Option<&'a mut ScheduledTurnRuntime>,
+    execution_id: &'a str,
+) -> Pin<Box<dyn Future<Output = Result<AgentRunResult, StepErr>> + Send + 'a>> {
+    // Note: constructing the large driver inside the observation poll reserves
+    // its temporary on every nested poll stack, even when immediately boxed.
+    Box::pin(run_agent_turn_body(
         services,
         ctx,
         agent,
@@ -4040,10 +4139,12 @@ fn run_agent_turn<'a>(
         handoff_depth,
         delegated_input,
         scheduler,
+        execution_id,
     ))
 }
 
-async fn run_agent_turn_inner(
+#[allow(clippy::too_many_arguments)]
+async fn run_agent_turn_body(
     services: &RuntimeServices,
     ctx: &mut StreamCtx,
     agent: &Candidate,
@@ -4051,6 +4152,7 @@ async fn run_agent_turn_inner(
     handoff_depth: usize,
     delegated_input: Option<&str>,
     mut scheduler: Option<&mut ScheduledTurnRuntime>,
+    execution_id: &str,
 ) -> Result<AgentRunResult, StepErr> {
     ctx.emit(
         StreamEventKind::AgentStart,
@@ -4091,6 +4193,14 @@ async fn run_agent_turn_inner(
     let model = ctx.model_override.clone().unwrap_or_else(|| {
         model_from_config(&agent.model_config_json, &provider_cfg.default_model)
     });
+    Box::pin(super::engine_observation::Observation::model(
+        &services.pool,
+        execution_id,
+        &provider_cfg.kind,
+        &model,
+    ))
+    .await
+    .map_err(StepErr::Db)?;
     let invocation = Box::pin(build_invocation_context(
         services,
         ctx,
@@ -4162,13 +4272,7 @@ async fn run_agent_turn_inner(
         .restore(turn.driver_checkpoint.as_ref())
         .map_err(StepErr::Db)?;
     turn.effort_override = ctx.effort_override;
-    turn.execution_id = Some(
-        ctx.resume
-            .as_ref()
-            .map(|resume| resume.message_id.clone())
-            .or_else(|| turn.execution_id.clone())
-            .unwrap_or_else(|| Uuid::new_v4().to_string()),
-    );
+    turn.execution_id = Some(execution_id.to_owned());
     turn.history_cursor = loaded_through_seq;
     let pending_round = turn
         .assistant_turns
@@ -4369,6 +4473,8 @@ async fn run_agent_turn_inner(
 
     let usage_thread_id = ctx.thread_id.clone();
     let usage_dimensions = TokenUsageDimensions {
+        execution_id: Some(execution_id),
+        engine: Some(engine.name()),
         owner_id: &agent.owner_id,
         group_id: &group.id,
         group_name: &group.name,
@@ -5298,6 +5404,8 @@ async fn run_acp_agent_turn(
     let usage_record_id = Uuid::new_v4().to_string();
     let usage_thread_id = ctx.thread_id.clone();
     let usage_dimensions = TokenUsageDimensions {
+        execution_id: None,
+        engine: Some("acp"),
         owner_id: &agent.owner_id,
         group_id: &group.id,
         group_name: &group.name,

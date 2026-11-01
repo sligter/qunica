@@ -77,6 +77,7 @@ pub(crate) fn validate_config(config: Option<&serde_json::Value>) -> anyhow::Res
 }
 
 pub(crate) fn validate_resume_engine(
+    runtime_kind: &str,
     config: Option<&str>,
     content: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -92,8 +93,8 @@ pub(crate) fn validate_resume_engine(
             .map(serde_json::from_str)
             .transpose()?
             .unwrap_or_default();
-        anyhow::ensure!(config.get("engine").and_then(|value| value.as_str()) == Some("rig"),
-            "This execution belongs to Rig; restore engine=rig before resuming. Native rollback requires a new thread.");
+        anyhow::ensure!(runtime_kind == "llm_chat" && config.get("engine").and_then(|value| value.as_str()) == Some("rig"),
+            "This execution belongs to Rig; restore llm_chat with engine=rig before resuming. Native rollback requires a new thread.");
         validate_config(Some(&config))?;
     }
     Ok(())
@@ -105,7 +106,29 @@ pub(crate) enum TurnEngine {
     Rig(Box<agent_run::RigDriver>),
 }
 
+pub(crate) fn configured_engine(config: Option<&str>) -> anyhow::Result<&'static str> {
+    let config: serde_json::Value = config
+        .map(serde_json::from_str)
+        .transpose()?
+        .unwrap_or_default();
+    validate_config(Some(&config))?;
+    Ok(
+        if config.get("engine").and_then(|value| value.as_str()) == Some("rig") {
+            "rig"
+        } else {
+            "native"
+        },
+    )
+}
+
 impl TurnEngine {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            #[cfg(feature = "rig-engine")]
+            Self::Rig(_) => "rig",
+        }
+    }
     pub fn build(
         config: Option<&str>,
         provider: &ProviderConfig,

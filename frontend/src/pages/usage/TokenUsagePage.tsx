@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { EngineCanaryPanel } from './EngineCanaryPanel'
 import { useTokenUsage, type TokenUsageFilters } from '@/hooks/useTokenUsage'
 import { useCompactLayout } from '@/hooks/useMediaQuery'
 import { normalizeLanguage } from '@/i18n'
@@ -390,6 +391,7 @@ export function TokenUsagePage() {
       }
     >
       <div className="space-y-6">
+        <EngineCanaryPanel />
         <details open={!compact || undefined} className="usage-filters group overflow-hidden rounded-xl border border-border bg-card shadow-sm">
           <summary tabIndex={compact ? 0 : -1} onClick={event => { if (!compact) event.preventDefault() }} className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 bg-muted/30 px-4 py-3 lg:cursor-default [&::-webkit-details-marker]:hidden">
             <div className="flex items-center gap-2 text-sm font-medium">

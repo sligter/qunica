@@ -760,13 +760,14 @@ async fn accept_resume(
     }
     // Note: reject an engine switch before consuming an approval. The runtime
     // binds the accepted continuation to its recorded engine after this commit.
-    let model_config: Option<String> =
-        sqlx::query_scalar("SELECT model_config_json FROM agents WHERE id=?")
+    let (runtime_kind, model_config): (String, Option<String>) =
+        sqlx::query_as("SELECT runtime_kind,model_config_json FROM agents WHERE id=?")
             .bind(&prepared.agent_id)
             .fetch_one(&mut *tx)
             .await
             .map_err(db_error)?;
     crate::runtime::rig_driver::validate_resume_engine(
+        &runtime_kind,
         model_config.as_deref(),
         prepared.content_json.as_deref(),
     )
@@ -1137,6 +1138,12 @@ async fn finish_job(state: &AppState, job: &Job, outcome: TurnOutcome) -> Result
 
 pub async fn recover(state: &AppState) -> Result<(), sqlx::Error> {
     let mut tx = state.db.begin_write().await?;
+    sqlx::query(
+        "UPDATE engine_executions SET status='interrupted',coverage_complete=0,updated_at=? WHERE status='running'",
+    )
+    .bind(now())
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("UPDATE computer_operations SET status='uncertain' WHERE status='running'")
         .execute(&mut *tx)
         .await?;

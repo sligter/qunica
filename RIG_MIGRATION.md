@@ -373,11 +373,104 @@ missing Shell artifact). Both group cases passed in the final unfiltered Rig run
 their underlying intermittent causes are not claimed fixed. Do not concurrently
 rebuild an executable while its tests are still running on Windows.
 
-P3 head `e8fa38b` passed all eight jobs in [CI run 41262158633](https://github.com/sligter/qunica/actions/runs/41262158633),
-including unfiltered workspace tests: native 1,065 and Rig 1,103 passed, seven
-existing ignored each. The approval-engine binding follow-up requires its own
-head's CI; the older green run is baseline evidence. Live-vendor replay and P4/P5
-remain separate gates.
+P3 head `de982a8` passed all eight jobs in [CI run 41264985892](https://github.com/sligter/qunica/actions/runs/41264985892),
+including unfiltered workspace tests: native 1,065 and Rig 1,106 passed, seven
+existing ignored each. This includes the approval-engine binding follow-up.
+Live-vendor replay and P4/P5 remain separate gates.
+
+## P4 canary controls and measurements
+
+The rollout tooling keeps native as the default. The Agent create/edit forms
+offer an explicit engine choice only for `llm_chat`; Rig requires a server built
+with `rig-engine`. Editing visible model settings preserves `rig_limits` and
+other model metadata. An unavailable Rig build does not silently convert an
+existing Rig agent to native.
+
+The Token usage page includes owner-scoped engine measurements and a **Pause
+new Rig executions** control. The authenticated API is:
+
+| Endpoint | Contract |
+| --- | --- |
+| `GET /api/v2/runtime/engines` | Build availability, native default, versions and this owner's intake setting |
+| `PATCH /api/v2/runtime/engines/rig` | `{ "paused": true }` pauses new Rig executions for this owner; `false` reopens intake |
+| `GET /api/v2/runtime/engine-metrics?days=7` | Rolling UTC window, 1–90 days; optional `agent_id`, `provider_id`, `model` filters |
+
+Intake is admitted atomically with the execution snapshot. A pause leaves
+already admitted execution and pending approval work on its recorded engine;
+it does not cancel running work or edit agents. A newly dispatched nested Rig
+agent is a new execution and must pass intake too. Paused attempts record
+`blocked` before provider or tool I/O. To stop an already running task, use the
+existing cancellation control. After a pause, accepted continuations can still
+incur model usage while settling their original batch.
+
+### Measurement contract
+
+Migration 0051 adds owner-scoped execution snapshots and nullable engine /
+execution links to the existing token ledger. Snapshot identity is the original
+checkpoint message id; approval resumes update that execution instead of adding
+a second successful sample. The snapshot freezes engine, app and SDK versions,
+provider id/kind and model. Changes to today's Agent settings cannot relabel
+history. Active time excludes waiting between invocations. Tool totals come from
+the cumulative durable snapshot; model usage is pre-aggregated per execution
+before joining, so multiple model calls and resumes do not multiply costs.
+Each delegated execution has its own measurement. Parent tools and child tools
+remain separate executions; moderator / ACP calls are separately tagged and
+do not enter llm_chat engine comparisons.
+
+- Failure rate is `failed / (completed + failed)` for fully observed executions.
+  Waiting, cancellation, blocked intake, interrupted runs and unknown external
+  outcomes are reported separately. A tool can fail while the agent completes;
+  tool error rate is failed tools / settled tools, reported independently.
+- Startup marks unfinished observations `interrupted` with incomplete coverage.
+  Resuming a pre-P4 checkpoint, changing model/provider/version during a resume,
+  or recovering a crashed measurement marks it partial. Its counters and tokens
+  are excluded from complete comparison samples; the billing ledger is retained.
+- Old ledger rows remain unassigned. Their count is account-wide even when the
+  metrics query filters one agent/model. There is no inference from current
+  settings and no reconstruction of old token ownership.
+- A missing usage record is not zero cost: the API reports measured call count
+  and completed executions with no usage, and the UI shows `—` / `*`. These do
+  not detect every missing usage frame in a multi-call execution. Compare only
+  cohorts with verified provider usage coverage, on matched providers, models,
+  task/tool workloads and versions. Observed token counts alone do not establish
+  cost improvement. Zero denominators are `null`, not a claimed 0% failure rate.
+- Failure to finalize measurement does not reinterpret an already committed
+  side effect or response; the unfinished row remains outside terminal rates.
+  Intake/snapshot failures stop before provider I/O. Measurement data contains
+  identifiers and counts, not prompts, tool arguments, signatures or credentials.
+
+### Rollout and rollback procedure
+
+1. Record the authorized instance, owner and internal Agent IDs, provider/model,
+   app/SDK versions, cohort start and matching native baseline. Use an isolated
+   workspace/branch for coding tasks. Do not duplicate side-effecting work by
+   shadow-running native and Rig.
+2. Complete live-provider replay for each enrolled provider: signed Anthropic
+   thinking through a tool call and process-restarted approval; DeepSeek
+   reasoning passback through the real alias/gateway; Gemini thought signatures;
+   Responses encrypted reasoning; custom headers and usage/error propagation.
+   Local fake-provider fixtures do not establish vendor acceptance.
+3. Explicitly set only those Agents to Rig. Start fresh threads. Observe the
+   engine panel and export the filtered metrics API result with each release's
+   revision/window/cohort. Check provider usage coverage before cost comparison.
+4. On duplicate side effects, lost signed metadata, incorrect approvals,
+   cross-account leakage, unknown outcomes or failure/tool-error regression,
+   pause intake immediately. Preserve checkpoints and audit events; cancel
+   running work explicitly if needed. Never replay an unknown Shell outcome.
+5. Roll back new work by selecting native and starting a fresh thread. Retain a
+   Rig-enabled server for pending original Rig checkpoints. Restore llm_chat /
+   Rig configuration before accepting their approvals; accepted jobs retain
+   that execution path despite later Agent runtime edits. Downgrading the server
+   to a native-only build cannot resume Rig checkpoints. Do not downgrade a
+   migrated SQLite database to an older application as a rollback shortcut.
+6. Require two distinct release windows with recorded cohorts, matching native
+   evidence and no unresolved regressions before separately approving a default
+   switch. Retain native for another release. P5 deletion has its own gate.
+
+The P4 tooling and isolated tests are implementation work, not live enrollment.
+No real instance/Agent cohort has been selected or enabled here. Live-vendor
+replay, production observation and the two-release promotion gate remain open;
+no default switch or P5 deletion is included.
 
 ## Validation
 

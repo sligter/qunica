@@ -675,6 +675,28 @@ async fn rig_approval_cannot_resume_under_a_different_engine() {
         "a rejected engine change must not consume approval"
     );
     set_agent_model_config(&scenario.state, &scenario.agent, json!({"engine":"rig"})).await;
+    sqlx::query("UPDATE agents SET runtime_kind='acp' WHERE id=?")
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let (status, rejected) = send(
+        &scenario.app,
+        authed_json(
+            "POST",
+            &format!("/api/v2/threads/{thread}/resume"),
+            &scenario.token,
+            json!({"approval":{"tool_call_id":"remove","approved":true}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{rejected}");
+    assert_eq!(scenario.requests.lock().await.len(), 1);
+    sqlx::query("UPDATE agents SET runtime_kind='llm_chat' WHERE id=?")
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
     let recovered = stream_events(
         &scenario.app,
         &format!("/api/v2/threads/{thread}/resume"),
@@ -791,6 +813,11 @@ async fn rig_accepted_resume_keeps_its_engine_after_a_later_config_edit() {
         scenario.state.db.pool().clone(),
         scenario.state.write_lock.clone(),
     );
+    sqlx::query("UPDATE agents SET runtime_kind='acp' WHERE id=?")
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
     let (tx, mut rx) = mpsc::channel(256);
     let worker = tokio::spawn(run_thread_resume(
         services,
@@ -812,4 +839,235 @@ async fn rig_accepted_resume_keeps_its_engine_after_a_later_config_edit() {
     let saved = scenario.checkpoint().await;
     assert_eq!(saved["driver_checkpoint"]["attempts"], 2);
     assert_eq!(saved["driver_checkpoint"]["phase"], "done");
+}
+
+#[tokio::test]
+async fn rig_canary_pause_blocks_new_io_but_settles_existing_approval_once() {
+    let scenario = Scenario::new(
+        "canary-pause",
+        vec![
+            ok(tool_body_with_usage(
+                vec![("remove", "Bash", json!({"command":"rm source.txt"}))],
+                15,
+            )),
+            ok(billed_text("approved execution finished", 25)),
+            ok(billed_text("after reopening intake", 10)),
+        ],
+    )
+    .await;
+    std::fs::write(scenario.root.path().join("source.txt"), "approved original").unwrap();
+    let events = scenario.run().await;
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::ApprovalRequired).len(),
+        1,
+        "{events:?}"
+    );
+    let (thread, execution): (String, String) =
+        sqlx::query_as("SELECT thread_id,id FROM messages WHERE group_id=? AND sender_id=?")
+            .bind(&scenario.group)
+            .bind(&scenario.agent)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    let (status, _) = send(
+        &scenario.app,
+        authed_json(
+            "PATCH",
+            "/api/v2/runtime/engines/rig",
+            &scenario.token,
+            json!({"paused":true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let fresh = seed_thread(&scenario.state, &scenario.group, "active").await;
+    let blocked = stream_events(
+        &scenario.app,
+        &format!("/api/v2/groups/{}/messages/stream", scenario.group),
+        &scenario.token,
+        json!({"content":"new canary task","thread_id":fresh}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&blocked, StreamEventKind::DispatchFailed).len(),
+        1,
+        "{blocked:?}"
+    );
+    assert!(payloads_of_kind(&blocked, StreamEventKind::ToolCallStart).is_empty());
+    assert_eq!(
+        scenario.requests.lock().await.len(),
+        1,
+        "pause blocks provider I/O"
+    );
+    let resumed = stream_events(
+        &scenario.app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &scenario.token,
+        json!({"approval":{"tool_call_id":"remove","approved":true}}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&resumed, StreamEventKind::AgentMessage).len(),
+        1,
+        "{resumed:?}"
+    );
+    assert!(!scenario.root.path().join("source.txt").exists());
+    assert_eq!(scenario.requests.lock().await.len(), 2);
+    let (status, metrics) = send(
+        &scenario.app,
+        authed_empty(
+            "GET",
+            "/api/v2/runtime/engine-metrics?days=7",
+            &scenario.token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{metrics}");
+    let rows = metrics["rows"].as_array().unwrap();
+    let row = rows
+        .iter()
+        .find(|row| row["model"] == "test-model")
+        .unwrap();
+    assert_eq!(row["engine"], "rig");
+    assert_eq!(row["completed"], 1);
+    assert_eq!(row["partial_executions"], 0);
+    assert_eq!(row["failed"], 0);
+    assert_eq!(
+        row["total_tokens"], 40,
+        "resume must not multiply original billed calls"
+    );
+    assert_eq!(row["tool_calls"], 1);
+    assert_eq!(row["settled_tool_calls"], 1);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row["blocked"].as_i64().unwrap())
+            .sum::<i64>(),
+        1
+    );
+    let invocations: i64 =
+        sqlx::query_scalar("SELECT invocations FROM engine_executions WHERE id=?")
+            .bind(&execution)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(invocations, 2);
+    let config: String = sqlx::query_scalar("SELECT model_config_json FROM agents WHERE id=?")
+        .bind(&scenario.agent)
+        .fetch_one(scenario.state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&config).unwrap()["engine"],
+        "rig"
+    );
+    let (status, _) = send(
+        &scenario.app,
+        authed_json(
+            "PATCH",
+            "/api/v2/runtime/engines/rig",
+            &scenario.token,
+            json!({"paused":false}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let fresh = seed_thread(&scenario.state, &scenario.group, "active").await;
+    let reopened = stream_events(
+        &scenario.app,
+        &format!("/api/v2/groups/{}/messages/stream", scenario.group),
+        &scenario.token,
+        json!({"content":"new task after reopening","thread_id":fresh}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&reopened, StreamEventKind::AgentMessage).len(),
+        1,
+        "{reopened:?}"
+    );
+    assert_eq!(scenario.requests.lock().await.len(), 3);
+}
+
+#[tokio::test]
+async fn rig_canary_resumes_without_full_coverage_never_become_comparison_samples() {
+    for change_model in [false, true] {
+        let scenario = Scenario::new(
+            &format!("canary-partial-{change_model}"),
+            vec![
+                ok(tool_body_with_usage(
+                    vec![("remove", "Bash", json!({"command":"rm source.txt"}))],
+                    7,
+                )),
+                ok(billed_text("finished", 11)),
+            ],
+        )
+        .await;
+        std::fs::write(scenario.root.path().join("source.txt"), "original").unwrap();
+        let events = scenario.run().await;
+        assert_eq!(
+            payloads_of_kind(&events, StreamEventKind::ApprovalRequired).len(),
+            1,
+            "{events:?}"
+        );
+        let (thread, execution): (String, String) =
+            sqlx::query_as("SELECT thread_id,id FROM messages WHERE group_id=? AND sender_id=?")
+                .bind(&scenario.group)
+                .bind(&scenario.agent)
+                .fetch_one(scenario.state.db.pool())
+                .await
+                .unwrap();
+        if change_model {
+            set_agent_model_config(
+                &scenario.state,
+                &scenario.agent,
+                json!({"engine":"rig","model":"changed-model"}),
+            )
+            .await;
+        } else {
+            // An approval that predates P4 has no execution measurement.
+            sqlx::query("DELETE FROM engine_executions WHERE id=?")
+                .bind(&execution)
+                .execute(scenario.state.db.pool())
+                .await
+                .unwrap();
+        }
+        let resumed = stream_events(
+            &scenario.app,
+            &format!("/api/v2/threads/{thread}/resume"),
+            &scenario.token,
+            json!({"approval":{"tool_call_id":"remove","approved":true}}),
+        )
+        .await;
+        assert_eq!(
+            payloads_of_kind(&resumed, StreamEventKind::AgentMessage).len(),
+            1,
+            "{resumed:?}"
+        );
+        let (_, metrics) = send(
+            &scenario.app,
+            authed_empty(
+                "GET",
+                "/api/v2/runtime/engine-metrics?days=7",
+                &scenario.token,
+            ),
+        )
+        .await;
+        let row = &metrics["rows"][0];
+        assert_eq!(row["partial_executions"], 1, "{metrics}");
+        assert_eq!(row["completed"], 0);
+        assert_eq!(row["failure_rate"], Value::Null);
+        assert_eq!(row["total_tokens"], 0);
+        assert_eq!(row["model"], "test-model");
+        let ledger: i64 = sqlx::query_scalar(
+            "SELECT SUM(total_tokens) FROM token_usage_records WHERE group_id=?",
+        )
+        .bind(&scenario.group)
+        .fetch_one(scenario.state.db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            ledger, 18,
+            "billing remains intact even when comparison coverage is incomplete"
+        );
+        assert_eq!(scenario.requests.lock().await.len(), 2);
+    }
 }

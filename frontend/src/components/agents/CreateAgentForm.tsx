@@ -13,6 +13,8 @@ import {
   parseAcpEnv,
 } from '@/components/agents/acpRuntimeConfig'
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
+import { EngineChoiceField } from '@/components/agents/EngineChoiceField'
+import { mergeModelConfig } from '@/components/agents/modelConfig'
 import { AgentAvatarPicker } from '@/components/agents/AgentAvatarPicker'
 import { AgentSystemPromptActions } from '@/components/agents/AgentSystemPromptActions'
 import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
@@ -75,6 +77,7 @@ function createSchema(nameRequired: string, promptRequired: string, workspaceReq
   acp_thinking_effort: z.string().optional(),
   llm_provider_id: z.string().optional(),
   model: z.string().optional(),
+  engine: z.enum(['native', 'rig']),
   vision: z.boolean(),
   workspace_id: z.string().min(1, workspaceRequired),
   workspace_ids: z.array(z.string()),
@@ -143,6 +146,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       description: '',
       system_prompt: DEFAULT_AGENT_SYSTEM_PROMPT,
       runtime_kind: 'llm_chat',
+      engine: 'native',
       acp_profile: 'custom',
       acp_command: '',
       acp_args: '',
@@ -272,7 +276,7 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
       const llm_config: Record<string, unknown> = {}
       const model = values.model?.trim()
       if (model) llm_config.model = model
-      if (values.vision) llm_config.vision = true
+      llm_config.vision = values.vision
       if (values.temperature !== undefined) llm_config.temperature = values.temperature
       if (values.top_p !== undefined && values.top_p !== 1) llm_config.top_p = values.top_p
       if (values.reasoning_effort !== 'default') {
@@ -308,8 +312,8 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
               }
             : null,
         llm_config:
-          values.runtime_kind === 'llm_chat' && Object.keys(llm_config).length > 0
-            ? llm_config
+          values.runtime_kind === 'llm_chat' && (Object.keys(llm_config).length > 0 || values.engine === 'rig')
+            ? mergeModelConfig(null, llm_config, values.engine)
             : null,
         tool_config: values.runtime_kind === 'llm_chat' ? currentToolConfig : null,
         workspace_id: values.workspace_id,
@@ -540,6 +544,8 @@ export function CreateAgentForm({ onCreated }: CreateAgentFormProps = {}) {
                 : null
             }
           />
+
+          <EngineChoiceField id="agent-engine" value={form.watch('engine')} onChange={value => form.setValue('engine', value, { shouldDirty: true })} />
 
           <div className="space-y-1.5">
             <button

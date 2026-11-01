@@ -13,6 +13,8 @@ import {
   parseAcpEnv,
 } from '@/components/agents/acpRuntimeConfig'
 import { ExternalRuntimeFields } from '@/components/agents/ExternalRuntimeFields'
+import { EngineChoiceField } from '@/components/agents/EngineChoiceField'
+import { mergeModelConfig } from '@/components/agents/modelConfig'
 import { AgentAvatarPicker } from '@/components/agents/AgentAvatarPicker'
 import { AgentSystemPromptActions } from '@/components/agents/AgentSystemPromptActions'
 import { RuntimeCapabilityField } from '@/components/agents/RuntimeCapabilityField'
@@ -74,6 +76,7 @@ function createSchema(nameRequired: string, promptRequired: string, workspaceReq
   acp_thinking_effort: z.string().optional(),
   llm_provider_id: z.string().optional(),
   model: z.string().optional(),
+  engine: z.enum(['native', 'rig']),
   vision: z.boolean(),
   workspace_id: z.string().min(1, workspaceRequired),
   workspace_ids: z.array(z.string()),
@@ -147,6 +150,7 @@ export function EditAgentForm({
       description: agent.description ?? '',
       system_prompt: agent.system_prompt,
       runtime_kind: agent.runtime_kind ?? 'llm_chat',
+      engine: agent.llm_config?.engine === 'rig' ? 'rig' : 'native',
       acp_profile: agent.acp_runtime?.profile ?? 'custom',
       acp_command: agent.acp_runtime?.command ?? '',
       acp_args: formatAcpArgs(agent.acp_runtime?.args),
@@ -285,7 +289,7 @@ export function EditAgentForm({
       const llm_config: Record<string, unknown> = {}
       const model = values.model?.trim()
       if (model) llm_config.model = model
-      if (values.vision) llm_config.vision = true
+      llm_config.vision = values.vision
       if (values.temperature !== undefined) llm_config.temperature = values.temperature
       if (values.top_p !== undefined && values.top_p !== 1) llm_config.top_p = values.top_p
       if (values.reasoning_effort !== 'default') {
@@ -298,6 +302,7 @@ export function EditAgentForm({
         llm_config.context_output_reserve_ratio =
           values.context_output_reserve_percent / 100
       }
+      const modelConfig = mergeModelConfig(agent.llm_config, llm_config, values.engine)
 
       await update.mutateAsync({
         name: values.name,
@@ -321,8 +326,8 @@ export function EditAgentForm({
               }
             : null,
         llm_config:
-          values.runtime_kind === 'llm_chat' && Object.keys(llm_config).length > 0
-            ? llm_config
+          values.runtime_kind === 'llm_chat' && Object.keys(modelConfig).length > 0
+            ? modelConfig
             : null,
         tool_config: values.runtime_kind === 'llm_chat' ? currentToolConfig : null,
         workspace_id: values.workspace_id,
@@ -543,6 +548,8 @@ export function EditAgentForm({
                 : null
             }
           />
+
+          <EngineChoiceField id="ea-engine" value={form.watch('engine')} onChange={value => form.setValue('engine', value, { shouldDirty: true })} />
 
           <div className="space-y-1.5">
             <button
