@@ -198,8 +198,9 @@ pnpm --filter @qunica/frontend test
 cargo test --manifest-path backend-rs/Cargo.toml --workspace
 ```
 
-The optional Rig PoC build and its acceptance boundaries are documented in
-[RIG_MIGRATION.md](RIG_MIGRATION.md). Native execution remains the default.
+Model execution uses Rig by default, with recovery compatibility for recorded
+native checkpoints. Build, migration and release acceptance boundaries are in
+[RIG_MIGRATION.md](RIG_MIGRATION.md).
 
 ## Community
 

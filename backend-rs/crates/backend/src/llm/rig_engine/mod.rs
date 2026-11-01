@@ -1,9 +1,8 @@
-//! [`LlmProvider`] backed by Rig (feature `rig-engine`).
+//! [`LlmProvider`] backed by Rig.
 //!
 //! Rig sends the request and decodes the stream; Qunica keeps the request
 //! settings, the message history, the transport and the error classification.
-//! The runtime selects it for Agents explicitly configured for Rig; native
-//! remains the default. See RIG_MIGRATION.md.
+//! All model requests use this provider. See RIG_MIGRATION.md.
 
 mod adapter;
 
@@ -90,8 +89,7 @@ impl RigProvider {
             http,
         })
     }
-    /// An OpenAI-compatible `/chat/completions` endpoint at `base_url`, the
-    /// counterpart of [`super::OpenAiCompatibleProvider::new`].
+    /// An OpenAI-compatible `/chat/completions` endpoint at `base_url`.
     pub fn openai_compatible(
         base_url: impl Into<String>,
         api_key: impl Into<String>,
@@ -163,7 +161,12 @@ impl RigProvider {
             http = http.with_middleware(guard);
         }
         match &self.client {
-            Client::OpenAi(config) => config.as_ref().clone().connect(http).chat(name).into(),
+            Client::OpenAi(config) => config
+                .as_ref()
+                .clone()
+                .connect(http.with_middleware(ChatRequestShape))
+                .chat(name)
+                .into(),
             Client::Responses(config) => {
                 config.as_ref().clone().connect(http).responses(name).into()
             }
@@ -236,17 +239,16 @@ fn transport(
     if let Some(user_agent) = user_agent {
         builder = builder.user_agent(user_agent);
     }
-    Ok(
-        DynHttpClient::new(rig_reqwest::ReqwestClient::from(builder.build()?))
-            .with_middleware(OmitBlankReasoning),
-    )
+    Ok(DynHttpClient::new(rig_reqwest::ReqwestClient::from(
+        builder.build()?,
+    )))
 }
 
 /// Note: once a dialect names a reasoning field, Rig's chat encoder writes it
 /// on every assistant message, empty when there is none. Strict gateways
-/// reject the empty field and the native path never sends one, so it is
-/// removed on the way out.
-struct OmitBlankReasoning;
+/// reject the empty field and the established wire omits it, so it is removed
+/// on the way out. Plain input text also keeps its established string shape.
+struct ChatRequestShape;
 
 /// Note: Rig consumes additional_params.tools and drops an empty list.
 /// Apply this only to requests that explicitly ask for tools: [].
@@ -370,18 +372,18 @@ impl HttpMiddleware for ExplicitEmptyTools {
     }
 }
 
-impl HttpMiddleware for OmitBlankReasoning {
+impl HttpMiddleware for ChatRequestShape {
     fn before_request_body<'a>(
         &'a self,
         _exchange: Exchange<'a>,
         _headers: &'a HeaderMap,
         body: Bytes,
     ) -> WasmBoxedFuture<'a, rig_core::http_client::Result<Bytes>> {
-        Box::pin(async move { Ok(omit_blank_reasoning(body)) })
+        Box::pin(async move { Ok(chat_request_shape(body)) })
     }
 }
 
-fn omit_blank_reasoning(body: Bytes) -> Bytes {
+fn chat_request_shape(body: Bytes) -> Bytes {
     let Ok(mut value) = serde_json::from_slice::<Value>(&body) else {
         return body;
     };
@@ -390,6 +392,27 @@ fn omit_blank_reasoning(body: Bytes) -> Bytes {
     };
     let mut changed = false;
     for message in messages.iter_mut().filter_map(Value::as_object_mut) {
+        // Note: keep the established text wire for gateways that accept strings
+        // only. Never flatten images, multiple blocks or signed Assistant data.
+        if matches!(
+            message.get("role").and_then(Value::as_str),
+            Some("system" | "developer" | "user")
+        ) {
+            if let Some(text) = message
+                .get("content")
+                .and_then(Value::as_array)
+                .filter(|parts| {
+                    parts.len() == 1
+                        && parts[0]["type"] == "text"
+                        && parts[0].as_object().is_some_and(|part| part.len() == 2)
+                })
+                .and_then(|parts| parts[0]["text"].as_str())
+                .map(str::to_string)
+            {
+                message.insert("content".into(), json!(text));
+                changed = true;
+            }
+        }
         let blank = message
             .get("reasoning_content")
             .and_then(Value::as_str)

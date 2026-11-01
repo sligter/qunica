@@ -172,6 +172,11 @@ impl RigDriver {
         );
         let mut executable: std::collections::BTreeSet<_> =
             request.tools.iter().map(|tool| tool.name.clone()).collect();
+        // Note: delegation is a host control request. Qunica revalidates the
+        // caller's bindings and active group membership before dispatch, and
+        // returns structured unavailable feedback even if no helper is offered.
+        // This does not admit unadvertised file, shell or MCP tools.
+        executable.insert(crate::runtime::agent_as_tool::AGENT_AS_TOOL_NAME.to_string());
         // Note: ToolExecutor accepts these names for the same authorized shell.
         // Preserve its compatibility aliases without granting a missing tool.
         if ["Bash", "Pwsh", "Cmd", "Shell"]
@@ -294,18 +299,15 @@ impl RigDriver {
             ),
             "Rig completion did not terminate successfully"
         );
-        let projected = RigMessageAdapter::assistant_from_rig(
-            &response
-                .message()
-                .and_then(|message| {
-                    if let Message::Assistant(turn) = message {
-                        Some(turn)
-                    } else {
-                        None
-                    }
-                })
-                .context("Rig response has no assistant turn")?,
-        );
+        let projected = match response.message() {
+            Some(Message::Assistant(turn)) => RigMessageAdapter::assistant_from_rig(&turn),
+            // Note: an explicitly stopped completion may have no content. Rig
+            // still decides the next step; do not invent text or mark it failed.
+            None if response.finish_reason() == Some(FinishReason::Stop) => {
+                ChatMessage::assistant_tool_calls("", Vec::new())
+            }
+            _ => bail!("Rig response has no assistant turn"),
+        };
         ensure!(
             projected.content == message.content
                 && projected.reasoning_content == message.reasoning_content

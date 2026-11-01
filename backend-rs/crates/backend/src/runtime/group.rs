@@ -2917,7 +2917,7 @@ async fn sync_engine_checkpoint(
         if cancellation_requested(ctx) {
             return Ok(());
         }
-        persist_native_checkpoint(ctx, agent, content, turn).await?;
+        persist_turn_checkpoint(ctx, agent, content, turn).await?;
     }
     Ok(())
 }
@@ -3284,11 +3284,9 @@ async fn run_resume_inner(
         Ok(agent) => agent,
         Err(err) => return fail_resume(ctx, &err.to_string()).await,
     };
-    if ctx
-        .resume
-        .as_ref()
-        .is_some_and(|resume| resume.turn.driver_checkpoint.is_some())
-    {
+    if ctx.resume.as_ref().is_some_and(|resume| {
+        resume.turn.driver_checkpoint.is_some() || !resume.turn.assistant_turns.is_empty()
+    }) {
         // Note: approval acceptance checked the live configuration atomically.
         // A later config edit applies to new executions, not this accepted job.
         let mut config = match agent
@@ -4030,7 +4028,28 @@ async fn persist_token_usage(
     Ok(())
 }
 
-// Note: nested AgentAsTool calls must not embed the entire native driver future
+async fn legacy_native_resume(
+    services: &RuntimeServices,
+    ctx: &StreamCtx,
+) -> Result<bool, StepErr> {
+    let Some(resume) = ctx.resume.as_ref() else {
+        return Ok(false);
+    };
+    if resume.turn.driver_checkpoint.is_some() {
+        return Ok(false);
+    }
+    // A Rig execution can fail before its first driver checkpoint. Its frozen
+    // observation disambiguates that case from pre-migration native history.
+    let recorded: Option<String> =
+        sqlx::query_scalar("SELECT engine FROM engine_executions WHERE id=?")
+            .bind(&resume.message_id)
+            .fetch_optional(&services.pool)
+            .await
+            .map_err(|error| StepErr::Db(error.into()))?;
+    Ok(recorded.as_deref() != Some("rig"))
+}
+
+// Note: nested AgentAsTool calls must not embed the entire driver future
 // in every parent frame; Windows worker threads have a small default stack.
 fn run_agent_turn<'a>(
     services: &'a RuntimeServices,
@@ -4048,8 +4067,12 @@ fn run_agent_turn<'a>(
             .map(|resume| resume.message_id.clone())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         let observation = if agent.runtime_kind == "llm_chat" {
-            let engine = super::rig_driver::configured_engine(agent.model_config_json.as_deref())
-                .map_err(StepErr::Db)?;
+            let engine = if legacy_native_resume(services, ctx).await? {
+                "native"
+            } else {
+                super::rig_driver::configured_engine(agent.model_config_json.as_deref())
+                    .map_err(StepErr::Db)?
+            };
             Some(
                 Box::pin(super::engine_observation::Observation::begin(
                     &services.pool,
@@ -4075,7 +4098,7 @@ fn run_agent_turn<'a>(
             .as_ref()
             .is_some_and(|observation| observation.paused)
         {
-            ctx.emit(StreamEventKind::Warning,json!({"message":"New Rig executions are paused. Existing approvals may still resume; use a fresh native thread for rollback.","agent_id":agent.agent_id})).await?;
+            ctx.emit(StreamEventKind::Warning,json!({"message":"New Rig executions are paused. Existing approvals may still resume.","agent_id":agent.agent_id})).await?;
             return Err(StepErr::Db(anyhow::anyhow!("Rig canary intake is paused")));
         }
         let result = run_agent_turn_inner(
@@ -4168,7 +4191,7 @@ async fn run_agent_turn_body(
             .as_ref()
             .is_some_and(|dispatch| dispatch.action_kind == ActionKind::Speak);
     if agent.runtime_kind == "acp" {
-        // Note: an unused ACP branch still sets the native driver's future size.
+        // Note: an unused ACP branch still sets the host driver's future size.
         // Keep its state off each nested AgentAsTool poll frame.
         return Box::pin(run_acp_agent_turn(
             services,
@@ -4185,9 +4208,12 @@ async fn run_agent_turn_body(
         resolve_provider(&services.pool, agent, ctx.model_override.as_deref())
             .await
             .map_err(StepErr::Db)?;
-    let (mut engine, provider) =
-        TurnEngine::build(agent.model_config_json.as_deref(), &provider_cfg)
-            .map_err(StepErr::Db)?;
+    let (mut engine, provider) = TurnEngine::build(
+        agent.model_config_json.as_deref(),
+        &provider_cfg,
+        legacy_native_resume(services, ctx).await?,
+    )
+    .map_err(StepErr::Db)?;
     // A per-message override wins over the agent's configured model. The API
     // layer already checked it against the bound provider's catalog.
     let model = ctx.model_override.clone().unwrap_or_else(|| {
@@ -4295,7 +4321,7 @@ async fn run_agent_turn_body(
             }
         }
         turn.phase = Some("outcome_unknown".into());
-        persist_native_checkpoint(ctx, agent, &content, &mut turn).await?;
+        persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
         return Err(StepErr::Db(anyhow::anyhow!(
             "A previous tool execution has an unknown outcome; it cannot be automatically replayed. Inspect its effects before starting new work.")));
     }
@@ -4331,8 +4357,8 @@ async fn run_agent_turn_body(
                     "Approval was skipped by the user's continuation; this tool was not executed."
                         .into(),
             };
-            settle_native_tool(&mut turn, &call, &result);
-            persist_native_checkpoint(ctx, agent, &content, &mut turn).await?;
+            settle_tool_result(&mut turn, &call, &result);
+            persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
             ctx.emit(
                 StreamEventKind::ToolCallResult,
                 json!({"agent_id":agent.agent_id,
@@ -4441,7 +4467,7 @@ async fn run_agent_turn_body(
                         "Not executed: the original batch is waiting for user input.",
                     );
                     turn.phase = Some("waiting_for_user".into());
-                    persist_native_checkpoint(ctx, agent, &content, &mut turn).await?;
+                    persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
                     persist_interrupted_agent(ctx, agent, &content, &turn).await?;
                     ctx.emit(
                         StreamEventKind::WaitingForUser,
@@ -4862,9 +4888,9 @@ async fn run_agent_turn_body(
             turn.driver_checkpoint = Some(checkpoint);
         }
         if tool_calls.is_empty() {
-            if engine.checkpoint().is_some() {
-                turn.assistant_turns.push(assistant);
-            }
+            // The legacy recovery host also uses Rig's transport. Its final
+            // signed/opaque response must survive subsequent conversation turns.
+            turn.assistant_turns.push(assistant);
             turn.phase = Some("done".into());
             return finish_agent_content(
                 ctx,
@@ -4881,7 +4907,7 @@ async fn run_agent_turn_body(
 
         turn.prepare_tool_round(assistant.clone())
             .map_err(StepErr::Db)?;
-        persist_native_checkpoint(ctx, agent, &content, &mut turn).await?;
+        persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
 
         if let Some(call) = agent_as_tool_call(&tool_calls) {
             turn.record_tool_start(
@@ -4891,7 +4917,7 @@ async fn run_agent_turn_body(
                 None,
             );
             turn.phase = Some("executing_tools".into());
-            persist_native_checkpoint(ctx, agent, &content, &mut turn).await?;
+            persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
             let outcome = Box::pin(handle_agent_as_tool(
                 services,
                 ctx,
@@ -4933,14 +4959,14 @@ async fn run_agent_turn_body(
                             status: ToolStatus::Failed,
                             output: "Not executed: AgentAsTool handled this tool batch.".into(),
                         };
-                        settle_native_tool(&mut turn, sibling, &skipped);
-                        persist_native_checkpoint(ctx, agent, &content, &mut turn).await?;
+                        settle_tool_result(&mut turn, sibling, &skipped);
+                        persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
                         ctx.emit(StreamEventKind::ToolCallResult, json!({"agent_id":agent.agent_id,
                             "display_name":agent.display_name,"tool_call_id":sibling.id,"tool_name":sibling.name,
                             "status":"failed","output":skipped.output,"result_summary":skipped.output})).await?;
                     }
                     turn.phase = Some("model_pending".into());
-                    persist_native_checkpoint(ctx, agent, &content, &mut turn).await?;
+                    persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
                     messages.push(assistant.clone());
                     for original in &assistant.tool_calls {
                         let output = turn
@@ -5038,7 +5064,7 @@ async fn run_agent_turn_body(
                 "Not executed: the tool batch is waiting for user input.",
             );
             turn.phase = Some("waiting_for_user".into());
-            persist_native_checkpoint(ctx, agent, &content, &mut turn).await?;
+            persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
             if ctx.private_execution || ctx.resume.is_some() {
                 return Ok(AgentRunResult::Private(AgentExecution {
                     final_content: "Helper requested additional input.".to_string(),
@@ -5201,7 +5227,7 @@ async fn replay_approved_call(
             .as_ref()
             .map(|resume| resume.existing_content.clone())
             .unwrap_or_default();
-        persist_native_checkpoint(ctx, agent, &content, turn).await?;
+        persist_turn_checkpoint(ctx, agent, &content, turn).await?;
         // The executor was built with this rule granted, so the policy that
         // paused the call now lets it through.
         await_with_cancellation(ctx, executor.execute(&call.name, call.args.clone())).await?
@@ -5226,7 +5252,7 @@ async fn replay_approved_call(
         .as_ref()
         .map(|resume| resume.existing_content.clone())
         .unwrap_or_default();
-    persist_native_checkpoint(ctx, agent, &content, turn).await?;
+    persist_turn_checkpoint(ctx, agent, &content, turn).await?;
     ctx.emit(
         StreamEventKind::ToolCallResult,
         json!({
@@ -5863,7 +5889,7 @@ async fn execute_tool_batch(
         }
     }
     turn.phase = Some("executing_tools".into());
-    persist_native_checkpoint(ctx, agent, content, turn).await?;
+    persist_turn_checkpoint(ctx, agent, content, turn).await?;
 
     let mut pending: FuturesUnordered<_> = calls
         .iter()
@@ -5893,10 +5919,10 @@ async fn execute_tool_batch(
         };
         let call = &calls[index];
         hooks.post_tool(step, call, &mut result).await;
-        settle_native_tool(turn, call, &result);
+        settle_tool_result(turn, call, &result);
         // Note: persist each completed call before waiting on slower siblings.
         // Stream events retain model order; crash recovery uses these facts.
-        persist_native_checkpoint(ctx, agent, content, turn).await?;
+        persist_turn_checkpoint(ctx, agent, content, turn).await?;
         results.push((index, result));
     }
     results.sort_by_key(|(index, _)| *index);
@@ -5976,7 +6002,7 @@ fn close_unstarted_tool_calls(turn: &mut TurnData, reason: &str) {
         })
         .collect();
     for call in pending {
-        settle_native_tool(
+        settle_tool_result(
             turn,
             &call,
             &ToolResult {
@@ -5987,7 +6013,7 @@ fn close_unstarted_tool_calls(turn: &mut TurnData, reason: &str) {
     }
 }
 
-fn settle_native_tool(turn: &mut TurnData, call: &ToolCall, result: &ToolResult) {
+fn settle_tool_result(turn: &mut TurnData, call: &ToolCall, result: &ToolResult) {
     let awaiting_approval = matches!(result.status, ToolStatus::ApprovalRequired);
     let output = computer_public_output(&call.name, &result.output);
     turn.record_tool_result(
@@ -6008,7 +6034,7 @@ fn settle_native_tool(turn: &mut TurnData, call: &ToolCall, result: &ToolResult)
     }
 }
 
-async fn persist_native_checkpoint(
+async fn persist_turn_checkpoint(
     ctx: &StreamCtx,
     agent: &Candidate,
     content: &str,

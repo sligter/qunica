@@ -202,7 +202,7 @@ pnpm --filter @qunica/frontend test
 cargo test --manifest-path backend-rs/Cargo.toml --workspace
 ```
 
-可选 Rig PoC 构建与验收边界见 [RIG_MIGRATION.md](RIG_MIGRATION.md)。默认执行引擎仍为 native。
+模型执行默认使用 Rig；旧 native 检查点保留恢复兼容。构建、迁移和发布验收边界见 [RIG_MIGRATION.md](RIG_MIGRATION.md)。
 
 ## 社区
 

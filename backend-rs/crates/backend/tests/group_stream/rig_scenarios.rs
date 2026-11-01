@@ -56,6 +56,210 @@ impl Scenario {
 fn ok(body: String) -> (StatusCode, String) {
     (StatusCode::OK, body)
 }
+
+#[tokio::test]
+async fn rig_explicit_empty_completion_is_silent_and_committed_once() {
+    let scenario = Scenario::new("empty-completion", vec![ok(text_body(""))]).await;
+    let events = scenario.run().await;
+    assert!(payloads_of_kind(&events, StreamEventKind::AgentMessage).is_empty());
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::AgentSilent).len(),
+        1,
+        "{events:?}"
+    );
+    assert_eq!(scenario.requests.lock().await.len(), 1);
+    let checkpoint = scenario.checkpoint().await;
+    assert_eq!(checkpoint["driver_checkpoint"]["phase"], "done");
+    assert_eq!(checkpoint["driver_checkpoint"]["completion_calls"], 1);
+    assert_eq!(checkpoint["driver_checkpoint"]["failed_attempts"], 0);
+}
+
+/// A pre-P5 SQLite snapshot has original messages/tool ownership, but no
+/// AgentRun counters. Seed that format rather than exercising a retired engine.
+async fn legacy_snapshot(scenario: &Scenario) -> (String, String) {
+    let (id, thread, raw): (String, String, String) = sqlx::query_as(
+        "SELECT id,thread_id,content_json FROM messages WHERE group_id=? AND sender_id=? ORDER BY seq DESC LIMIT 1",
+    ).bind(&scenario.group).bind(&scenario.agent).fetch_one(scenario.state.db.pool()).await.unwrap();
+    let mut checkpoint: Value = serde_json::from_str(&raw).unwrap();
+    checkpoint
+        .as_object_mut()
+        .unwrap()
+        .remove("driver_checkpoint");
+    checkpoint["schema_version"] = json!(2);
+    for assistant in checkpoint["assistant_turns"].as_array_mut().unwrap() {
+        assistant.as_object_mut().unwrap().remove("native_content");
+        for call in assistant["tool_calls"].as_array_mut().unwrap() {
+            call.as_object_mut().unwrap().remove("provider_metadata");
+        }
+    }
+    sqlx::query("UPDATE messages SET content_json=? WHERE id=?")
+        .bind(checkpoint.to_string())
+        .bind(&id)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE engine_executions SET engine='native',engine_version='0.1.7' WHERE id=?")
+        .bind(&id)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE token_usage_records SET engine='native' WHERE execution_id=?")
+        .bind(&id)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    set_agent_model_config(&scenario.state, &scenario.agent, json!({"engine":"native"})).await;
+    (id, thread)
+}
+
+#[tokio::test]
+async fn legacy_native_approval_settles_once_with_original_attribution_and_new_rig_work() {
+    let scenario = Scenario::new(
+        "legacy-recovery",
+        vec![
+            ok(tool_body_with_usage(
+                vec![("remove", "Bash", json!({"command":"rm source.txt"}))],
+                10,
+            )),
+            ok(billed_text("legacy batch settled", 20)),
+            ok(text_body("new Rig execution")),
+        ],
+    )
+    .await;
+    std::fs::write(scenario.root.path().join("source.txt"), "approved bytes").unwrap();
+    assert_eq!(
+        payloads_of_kind(&scenario.run().await, StreamEventKind::ApprovalRequired).len(),
+        1
+    );
+    let (id, thread) = legacy_snapshot(&scenario).await;
+    // Legacy approvals retain the same runtime validation as Rig approvals.
+    sqlx::query("UPDATE agents SET runtime_kind='acp' WHERE id=?")
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let approval = json!({"approval":{"tool_call_id":"remove","approved":true}});
+    let uri = format!("/api/v2/threads/{thread}/resume");
+    let (status, body) = send(
+        &scenario.app,
+        authed_json("POST", &uri, &scenario.token, approval.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body:?}");
+    assert!(scenario.root.path().join("source.txt").exists());
+    sqlx::query("UPDATE agents SET runtime_kind='llm_chat' WHERE id=?")
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let resumed = stream_events(&scenario.app, &uri, &scenario.token, approval.clone()).await;
+    assert_eq!(
+        payloads_of_kind(&resumed, StreamEventKind::AgentMessage)
+            .first()
+            .map(|p| &p["content"]),
+        Some(&json!("legacy batch settled")),
+        "{resumed:?}"
+    );
+    assert!(!scenario.root.path().join("source.txt").exists());
+    assert_eq!(scenario.requests.lock().await.len(), 2);
+    let checkpoint = scenario.checkpoint().await;
+    assert!(checkpoint.get("driver_checkpoint").is_none());
+    assert!(checkpoint["assistant_turns"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["native_content"]["rig"]
+        .is_object());
+    let (engine, complete): (String, bool) =
+        sqlx::query_as("SELECT engine,coverage_complete FROM engine_executions WHERE id=?")
+            .bind(&id)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(engine, "native");
+    assert!(
+        !complete,
+        "a transport cutover cannot remain a complete native comparison sample"
+    );
+    let (status, _) = send(
+        &scenario.app,
+        authed_json("POST", &uri, &scenario.token, approval),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let fresh = seed_thread(&scenario.state, &scenario.group, "active").await;
+    let events = stream_events(
+        &scenario.app,
+        &format!("/api/v2/groups/{}/messages/stream", scenario.group),
+        &scenario.token,
+        json!({"content":"new work","thread_id":fresh}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::AgentMessage).len(),
+        1,
+        "{events:?}"
+    );
+    let raw:String=sqlx::query_scalar("SELECT content_json FROM messages WHERE thread_id=? AND sender_id=? ORDER BY seq DESC LIMIT 1").bind(&fresh).bind(&scenario.agent).fetch_one(scenario.state.db.pool()).await.unwrap();
+    assert!(serde_json::from_str::<Value>(&raw).unwrap()["driver_checkpoint"].is_object());
+    assert_eq!(scenario.requests.lock().await.len(), 3);
+    let native: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM engine_executions WHERE agent_id=? AND engine='native'",
+    )
+    .bind(&scenario.agent)
+    .fetch_one(scenario.state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        native, 1,
+        "only the recorded legacy continuation uses the old host"
+    );
+}
+
+#[tokio::test]
+async fn legacy_native_started_tool_with_no_result_is_never_replayed() {
+    let scenario = Scenario::new(
+        "legacy-unknown",
+        vec![ok(tool_body(vec![(
+            "remove",
+            "Bash",
+            json!({"command":"rm source.txt"}),
+        )]))],
+    )
+    .await;
+    std::fs::write(scenario.root.path().join("source.txt"), "original").unwrap();
+    assert_eq!(
+        payloads_of_kind(&scenario.run().await, StreamEventKind::ApprovalRequired).len(),
+        1
+    );
+    let (id, thread) = legacy_snapshot(&scenario).await;
+    let mut checkpoint = scenario.checkpoint().await;
+    checkpoint["tool_calls"][0]["status"] = json!("started");
+    // Simulate the external effect completing just before the result commit.
+    std::fs::remove_file(scenario.root.path().join("source.txt")).unwrap();
+    sqlx::query("UPDATE messages SET content_json=? WHERE id=?")
+        .bind(checkpoint.to_string())
+        .bind(id)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let resumed = stream_events(
+        &scenario.app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &scenario.token,
+        json!({"approval":{"tool_call_id":"remove","approved":true}}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&resumed, StreamEventKind::Error).len(),
+        1,
+        "{resumed:?}"
+    );
+    assert!(payloads_of_kind(&resumed, StreamEventKind::ToolCallStart).is_empty());
+    assert_eq!(scenario.requests.lock().await.len(), 1);
+    assert_eq!(scenario.checkpoint().await["phase"], "outcome_unknown");
+}
+
 fn billed_text(text: &str, tokens: u64) -> String {
     text_body(text).replace("data: [DONE]", &format!("data: {}\n\ndata: [DONE]",
         json!({"choices":[],"usage":{"prompt_tokens":tokens,"completion_tokens":0,"total_tokens":tokens}})))
@@ -319,6 +523,34 @@ async fn rig_invalid_or_cut_stream_never_dispatches_or_retries_visible_output() 
             2
         );
     }
+}
+
+#[tokio::test]
+async fn rig_disabled_shell_is_rejected_before_host_dispatch() {
+    let scenario = Scenario::new(
+        "disabled-shell",
+        vec![ok(tool_body(vec![(
+            "disabled",
+            "Bash",
+            json!({"command":"echo must-not-run"}),
+        )]))],
+    )
+    .await;
+    sqlx::query("UPDATE agents SET tool_config_json='{}' WHERE id=?")
+        .bind(&scenario.agent)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let events = scenario.run().await;
+    assert!(payloads_of_kind(&events, StreamEventKind::ToolCallStart).is_empty());
+    assert_eq!(
+        payloads_of_kind(&events, StreamEventKind::DispatchFailed).len(),
+        1
+    );
+    assert_eq!(scenario.requests.lock().await.len(), 1);
+    let checkpoint = scenario.checkpoint().await;
+    assert_eq!(checkpoint["driver_checkpoint"]["phase"], "aborted");
+    assert_eq!(checkpoint["driver_checkpoint"]["failed_attempts"], 1);
 }
 
 #[tokio::test]
@@ -615,7 +847,7 @@ async fn rig_resume_keeps_accepted_tools_and_excludes_the_aborted_tail() {
 }
 
 #[tokio::test]
-async fn rig_approval_cannot_resume_under_a_different_engine() {
+async fn rig_approval_rejects_invalid_config_and_runtime_before_consuming_decisions() {
     let scenario = Scenario::new(
         "engine-binding",
         vec![
@@ -646,7 +878,12 @@ async fn rig_approval_cannot_resume_under_a_different_engine() {
             .fetch_one(scenario.state.db.pool())
             .await
             .unwrap();
-    set_agent_model_config(&scenario.state, &scenario.agent, json!({"engine":"native"})).await;
+    set_agent_model_config(
+        &scenario.state,
+        &scenario.agent,
+        json!({"engine":"invalid"}),
+    )
+    .await;
     let (status, rejected) = send(
         &scenario.app,
         authed_json(
@@ -718,12 +955,12 @@ async fn rig_approval_cannot_resume_under_a_different_engine() {
 }
 
 #[tokio::test]
-async fn rig_history_requires_rig_until_native_starts_a_fresh_thread() {
+async fn saved_native_alias_runs_new_agentrun_turns_without_losing_rig_history() {
     let scenario = Scenario::new(
-        "history-engine",
+        "native-alias",
         vec![
-            ok(text_body("rig answer")),
-            ok(text_body("native fresh answer")),
+            ok(text_body("first answer")),
+            ok(text_body("continued answer")),
         ],
     )
     .await;
@@ -740,7 +977,7 @@ async fn rig_history_requires_rig_until_native_starts_a_fresh_thread() {
             .await
             .unwrap();
     set_agent_model_config(&scenario.state, &scenario.agent, json!({"engine":"native"})).await;
-    let rejected = stream_events(
+    let accepted = stream_events(
         &scenario.app,
         &format!("/api/v2/groups/{}/messages/stream", scenario.group),
         &scenario.token,
@@ -748,31 +985,21 @@ async fn rig_history_requires_rig_until_native_starts_a_fresh_thread() {
     )
     .await;
     assert_eq!(
-        payloads_of_kind(&rejected, StreamEventKind::DispatchFailed).len(),
-        1,
-        "{rejected:?}"
-    );
-    assert_eq!(
-        scenario.requests.lock().await.len(),
-        1,
-        "reject before provider I/O"
-    );
-    let fresh = seed_thread(&scenario.state, &scenario.group, "active").await;
-    let accepted = stream_events(
-        &scenario.app,
-        &format!("/api/v2/groups/{}/messages/stream", scenario.group),
-        &scenario.token,
-        json!({"content":"new native task","thread_id":fresh}),
-    )
-    .await;
-    assert_eq!(
         payloads_of_kind(&accepted, StreamEventKind::AgentMessage)
             .first()
             .map(|p| &p["content"]),
-        Some(&json!("native fresh answer")),
+        Some(&json!("continued answer")),
         "{accepted:?}"
     );
-    assert_eq!(scenario.requests.lock().await.len(), 2);
+    let checkpoint = scenario.checkpoint().await;
+    assert_eq!(checkpoint["driver_checkpoint"]["phase"], "done");
+    let requests = scenario.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["role"] == "assistant" && m["content"] == "first answer"));
 }
 
 #[tokio::test]

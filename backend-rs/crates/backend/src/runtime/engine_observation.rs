@@ -41,9 +41,11 @@ impl Observation {
         let paused = paused && start.engine == "rig" && !start.resumed;
         let now = crate::api::commands::now();
         let version = if start.engine == "rig" {
-            RIG_VERSION
+            RIG_VERSION.to_string()
         } else {
-            env!("CARGO_PKG_VERSION")
+            // Legacy host checkpoints retain native attribution. A changed
+            // transport must make their original observations partial.
+            format!("legacy-host/rig-{RIG_VERSION}")
         };
         let changed = sqlx::query("INSERT INTO engine_executions(id,owner_id,group_id,thread_id,agent_id,provider_id,engine,app_version,engine_version,status,coverage_complete,started_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,invocations=engine_executions.invocations+1,coverage_complete=CASE WHEN engine_executions.app_version<>excluded.app_version OR engine_executions.engine_version<>excluded.engine_version OR engine_executions.provider_id IS NOT excluded.provider_id THEN 0 ELSE engine_executions.coverage_complete END,updated_at=excluded.updated_at WHERE engine_executions.owner_id=excluded.owner_id AND engine_executions.agent_id=excluded.agent_id AND engine_executions.thread_id=excluded.thread_id AND engine_executions.engine=excluded.engine")
             .bind(start.id).bind(start.owner).bind(start.group).bind(start.thread).bind(start.agent).bind(start.provider)

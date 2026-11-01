@@ -28,8 +28,8 @@ pub async fn get(
     .await
     .map_err(|_| ApiError::internal("failed to load engine rollout"))?;
     Ok(Json(Capabilities {
-        rig_available: cfg!(feature = "rig-engine"),
-        default_engine: "native",
+        rig_available: true,
+        default_engine: "rig",
         rig_paused: paused,
         app_version: env!("CARGO_PKG_VERSION"),
         rig_version: crate::runtime::engine_observation::RIG_VERSION,

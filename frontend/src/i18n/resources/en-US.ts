@@ -532,14 +532,6 @@ export const enUS = {
     gitOrcaActions: { commit: 'Commit', publishBranch: 'Publish branch', sync: 'Sync', createPr: 'Create PR', search: 'Search Git changes', searchPlaceholder: 'Search files, commits, or authors', moreActions: 'More Git actions', actionMenu: 'Git actions', commitHint: 'Stage changes and enter a commit message first', commitAndPush: 'Commit & Push', commitAndSync: 'Commit & Sync', pushCount: 'Push ({{count}})', forcePushCount: 'Force Push ({{count}})', forcePush: 'Force Push', prUnavailable: 'Requires a GitHub, GitLab, or Bitbucket remote', fastForwardHint: 'Fast-forward only', syncCounts: 'Sync (↓{{behind}} ↑{{ahead}})', rebaseFrom: 'Rebase from {{upstream}}', stagedChanges: 'Staged changes', workingChanges: 'Changes', committedChanges: 'Committed changes', commits: 'Commits', noMatches: 'No matching Git changes or commits.', forcePushTitle: 'Force push the current branch?', forcePushDescription: 'This uses --force-with-lease to rewrite the remote branch and refuses to overwrite unexpected remote commits.' },
   },
   agents: {
-    engine: {
-      "label": "Execution engine",
-      "native": "Native (default)",
-      "rig": "Rig (canary)",
-      "description": "Choose Rig only for selected test agents. Returning to native requires a fresh thread.",
-      "unavailable": "This server has not enabled Rig. Existing Rig approvals require a Rig-enabled server.",
-      "paused": "New Rig executions are paused. Existing approvals can still resume."
-    },
     title: 'Agents',
     new: 'New agent',
     search: 'Search agents',
@@ -875,7 +867,7 @@ export const enUS = {
   usage: {
     canary: {
       "title": "Engine canary",
-      "description": "Compare selected agents on the same provider and model. The default stays native; promotion requires live validation and evidence from two releases.",
+      "description": "Rig handles new model executions. Compare matching providers, models and versions; historical native recovery remains separately attributed.",
       "window": "Canary observation window",
       "days": "Past {{count}} days",
       "pause": "Pause new Rig executions",

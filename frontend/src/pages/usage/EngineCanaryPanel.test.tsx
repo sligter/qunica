@@ -10,7 +10,7 @@ import i18n from '@/i18n'
 const api = vi.hoisted(() => ({ fetchJson: vi.fn() }))
 vi.mock('@/lib/api-v2/client', () => ({ fetchJson: api.fetchJson }))
 const capability: EngineCapabilities = {
-  rig_available: true, rig_paused: false, default_engine: 'native', app_version: '0.1.7', rig_version: '0.45.0',
+  rig_available: true, rig_paused: false, default_engine: 'rig', app_version: '0.1.7', rig_version: '0.45.0',
 }
 const row: EngineMetricsRow = {
   engine: 'rig', app_version: '0.1.7', engine_version: '0.45.0', provider_id: 'p', provider_kind: 'anthropic', model: 'canary-model',

@@ -30,8 +30,8 @@ async fn canary_controls_are_authenticated_owner_scoped_and_never_change_agents(
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, before) = send(&app, authed_empty("GET", "/api/v2/runtime/engines", &one)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(before["default_engine"], "native");
-    assert_eq!(before["rig_available"], cfg!(feature = "rig-engine"));
+    assert_eq!(before["default_engine"], "rig");
+    assert_eq!(before["rig_available"], true);
     assert_eq!(before["rig_paused"], false);
     let (status, after) = send(
         &app,
@@ -68,7 +68,7 @@ async fn canary_controls_are_authenticated_owner_scoped_and_never_change_agents(
 }
 
 #[tokio::test]
-async fn canary_native_metrics_use_execution_snapshots_and_do_not_multiply_usage() {
+async fn canary_rig_metrics_use_execution_snapshots_and_do_not_multiply_usage() {
     let (app, state) = router_with_state_for_tests().await;
     let email = "canary-native@example.test";
     let token = register_and_login(&app, email).await;
@@ -109,8 +109,13 @@ async fn canary_native_metrics_use_execution_snapshots_and_do_not_multiply_usage
         "{events:?}"
     );
     assert_eq!(requests.lock().await.len(), 2);
-    // Current settings must never relabel historical native runs as Rig.
-    set_agent_model_config(&state, &agent, json!({"engine":"rig","model":"different"})).await;
+    // Saved native aliases must not relabel completed Rig runs.
+    set_agent_model_config(
+        &state,
+        &agent,
+        json!({"engine":"native","model":"different"}),
+    )
+    .await;
     let metrics = get_metrics(
         &app,
         &token,
@@ -118,7 +123,7 @@ async fn canary_native_metrics_use_execution_snapshots_and_do_not_multiply_usage
     )
     .await;
     let row = &metrics["rows"][0];
-    assert_eq!(row["engine"], "native");
+    assert_eq!(row["engine"], "rig");
     assert_eq!(row["completed"], 1);
     assert_eq!(row["partial_executions"], 0);
     assert_eq!(row["failed"], 0);
@@ -130,7 +135,7 @@ async fn canary_native_metrics_use_execution_snapshots_and_do_not_multiply_usage
     assert_eq!(row["usage_calls"], 2);
     assert_eq!(row["total_tokens"], 30);
     assert_eq!(row["executions_without_usage"], 0);
-    let linked:i64=sqlx::query_scalar("SELECT COUNT(*) FROM token_usage_records t JOIN engine_executions e ON e.id=t.execution_id WHERE e.agent_id=? AND t.engine='native'").bind(&agent).fetch_one(state.db.pool()).await.unwrap();
+    let linked:i64=sqlx::query_scalar("SELECT COUNT(*) FROM token_usage_records t JOIN engine_executions e ON e.id=t.execution_id WHERE e.agent_id=? AND t.engine='rig'").bind(&agent).fetch_one(state.db.pool()).await.unwrap();
     assert_eq!(linked, 2);
     assert_eq!(
         get_metrics(&app, &token, "&model=unmatched").await["rows"],

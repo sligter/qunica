@@ -168,8 +168,8 @@ async fn unreachable_local_url() -> String {
 
 fn text_body(text: &str) -> String {
     format!(
-        "data: {}\ndata: [DONE]\n",
-        json!({"choices": [{"delta": {"content": text}}]})
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]})
     )
 }
 

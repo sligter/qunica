@@ -7,7 +7,6 @@ use crate::llm::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[cfg(feature = "rig-engine")]
 mod agent_run;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -46,34 +45,28 @@ pub(crate) struct DriverCheckpoint {
 pub(crate) struct DriverBudgetExhausted(pub &'static str);
 
 pub(crate) fn validate_config(config: Option<&serde_json::Value>) -> anyhow::Result<()> {
-    let Some(engine) = config.and_then(|value| value.get("engine")) else {
-        return Ok(());
-    };
-    match engine.as_str() {
-        Some("native") => Ok(()),
-        Some("rig") => {
-            anyhow::ensure!(
-                cfg!(feature = "rig-engine"),
-                "the rig engine requires a build with the rig-engine feature"
-            );
-            if let Some(limits) = config.and_then(|value| value.get("rig_limits")) {
-                let limits = limits
-                    .as_object()
-                    .ok_or_else(|| anyhow::anyhow!("rig_limits must be an object"))?;
-                for (key, value) in limits {
-                    anyhow::ensure!(
-                        matches!(
-                            key.as_str(),
-                            "max_model_calls" | "max_failed_attempts" | "max_total_tokens"
-                        ) && value.as_u64().is_some_and(|limit| limit > 0),
-                        "invalid rig_limits.{key}"
-                    );
-                }
-            }
-            Ok(())
-        }
-        _ => anyhow::bail!("llm_config.engine must be native or rig"),
+    if let Some(engine) = config.and_then(|value| value.get("engine")) {
+        anyhow::ensure!(
+            matches!(engine.as_str(), Some("native" | "rig")),
+            "llm_config.engine must be native or rig"
+        );
     }
+    // Note: native is a saved-config alias, never a new execution path.
+    if let Some(limits) = config.and_then(|value| value.get("rig_limits")) {
+        let limits = limits
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("rig_limits must be an object"))?;
+        for (key, value) in limits {
+            anyhow::ensure!(
+                matches!(
+                    key.as_str(),
+                    "max_model_calls" | "max_failed_attempts" | "max_total_tokens"
+                ) && value.as_u64().is_some_and(|limit| limit > 0),
+                "invalid rig_limits.{key}"
+            );
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_resume_engine(
@@ -85,24 +78,29 @@ pub(crate) fn validate_resume_engine(
         .map(serde_json::from_str)
         .transpose()?
         .unwrap_or_default();
-    if content
+    let recorded_rig = content
         .get("driver_checkpoint")
-        .is_some_and(|value| !value.is_null())
-    {
+        .is_some_and(|value| !value.is_null());
+    let recorded_host = content
+        .get("assistant_turns")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|turns| !turns.is_empty());
+    if recorded_rig || recorded_host {
         let config: serde_json::Value = config
             .map(serde_json::from_str)
             .transpose()?
             .unwrap_or_default();
-        anyhow::ensure!(runtime_kind == "llm_chat" && config.get("engine").and_then(|value| value.as_str()) == Some("rig"),
-            "This execution belongs to Rig; restore llm_chat with engine=rig before resuming. Native rollback requires a new thread.");
+        anyhow::ensure!(
+            runtime_kind == "llm_chat",
+            "This recorded model execution requires llm_chat before resuming."
+        );
         validate_config(Some(&config))?;
     }
     Ok(())
 }
 
 pub(crate) enum TurnEngine {
-    Native,
-    #[cfg(feature = "rig-engine")]
+    LegacyRecovery,
     Rig(Box<agent_run::RigDriver>),
 }
 
@@ -112,64 +110,45 @@ pub(crate) fn configured_engine(config: Option<&str>) -> anyhow::Result<&'static
         .transpose()?
         .unwrap_or_default();
     validate_config(Some(&config))?;
-    Ok(
-        if config.get("engine").and_then(|value| value.as_str()) == Some("rig") {
-            "rig"
-        } else {
-            "native"
-        },
-    )
+    Ok("rig")
 }
 
 impl TurnEngine {
     pub fn name(&self) -> &'static str {
         match self {
-            Self::Native => "native",
-            #[cfg(feature = "rig-engine")]
+            Self::LegacyRecovery => "native",
             Self::Rig(_) => "rig",
         }
     }
     pub fn build(
         config: Option<&str>,
         provider: &ProviderConfig,
+        legacy_resume: bool,
     ) -> anyhow::Result<(Self, Arc<dyn LlmProvider>)> {
         let config: serde_json::Value = config
             .map(serde_json::from_str)
             .transpose()?
             .unwrap_or_default();
         validate_config(Some(&config))?;
-        let engine = match config.get("engine") {
-            None => "native",
-            Some(value) => value
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("llm_config.engine must be native or rig"))?,
-        };
-        match engine {
-            "native" => Ok((Self::Native, Arc::from(build_provider(provider)?))),
-            "rig" => {
-                #[cfg(feature = "rig-engine")]
-                {
-                    let provider =
-                        Arc::new(crate::llm::rig_engine::RigProvider::from_config(provider)?);
-                    let driver = agent_run::RigDriver::new(provider.clone(), &config)?;
-                    Ok((Self::Rig(Box::new(driver)), provider))
-                }
-                #[cfg(not(feature = "rig-engine"))]
-                anyhow::bail!("the rig engine requires a build with the rig-engine feature")
-            }
-            _ => anyhow::bail!("llm_config.engine must be native or rig"),
+        // Note: only a recorded legacy continuation may bypass AgentRun. Its
+        // original budgets and native attribution cannot be invented from history.
+        // Both paths use Rig's sole transport. See RIG_MIGRATION.md#p5-cleanup-and-native-retirement.
+        if legacy_resume {
+            return Ok((Self::LegacyRecovery, Arc::from(build_provider(provider)?)));
         }
+        let provider = Arc::new(crate::llm::rig_engine::RigProvider::from_config(provider)?);
+        let driver = agent_run::RigDriver::new(provider.clone(), &config)?;
+        Ok((Self::Rig(Box::new(driver)), provider))
     }
 
     pub fn restore(&mut self, checkpoint: Option<&DriverCheckpoint>) -> anyhow::Result<()> {
         // Note: a config change must not reinterpret an accepted Rig exchange
         // or reset its budget. See RIG_MIGRATION.md#p3-host-driven-agentrun.
         match self {
-            Self::Native => anyhow::ensure!(
+            Self::LegacyRecovery => anyhow::ensure!(
                 checkpoint.is_none(),
-                "This execution belongs to Rig; restore engine=rig before resuming. Native rollback requires a new thread."
+                "A Rig checkpoint cannot enter legacy recovery."
             ),
-            #[cfg(feature = "rig-engine")]
             Self::Rig(driver) => driver.restore(checkpoint),
         }
         Ok(())
@@ -177,28 +156,21 @@ impl TurnEngine {
 
     pub fn checkpoint(&self) -> Option<DriverCheckpoint> {
         match self {
-            Self::Native => None,
-            #[cfg(feature = "rig-engine")]
+            Self::LegacyRecovery => None,
             Self::Rig(driver) => Some(driver.checkpoint.clone()),
         }
     }
 
     pub fn settle(&mut self, messages: &[ChatMessage]) -> anyhow::Result<()> {
-        #[cfg(feature = "rig-engine")]
         if let Self::Rig(driver) = self {
             driver.settle(messages)?;
         }
-        let _ = messages;
         Ok(())
     }
 
     pub fn prepare(&mut self, request: &ChatRequest) -> anyhow::Result<()> {
         match self {
-            Self::Native => anyhow::ensure!(
-                !request.messages.iter().any(|message| message.native_content.as_ref().is_some_and(|native| native.get("rig").is_some())),
-                "Native cannot replay Rig history losslessly; use engine=rig or start a new thread."
-            ),
-            #[cfg(feature = "rig-engine")]
+            Self::LegacyRecovery => {}
             Self::Rig(driver) => driver.prepare(request)?,
         }
         Ok(())
@@ -210,31 +182,25 @@ impl TurnEngine {
         request: ChatRequest,
     ) -> anyhow::Result<tokio::sync::mpsc::Receiver<crate::llm::ChatDelta>> {
         match self {
-            Self::Native => provider.stream(request).await,
-            #[cfg(feature = "rig-engine")]
+            Self::LegacyRecovery => provider.stream(request).await,
             Self::Rig(driver) => Box::pin(driver.stream(request)).await,
         }
     }
 
     pub fn observe_usage(&mut self, usage: &ContextUsage) {
-        #[cfg(feature = "rig-engine")]
         if let Self::Rig(driver) = self {
             driver.observe_usage(usage);
         }
-        let _ = usage;
     }
 
     pub async fn accept(&mut self, message: &ChatMessage, terminal: bool) -> anyhow::Result<()> {
-        #[cfg(feature = "rig-engine")]
         if let Self::Rig(driver) = self {
             Box::pin(driver.accept(message, terminal)).await?;
         }
-        let _ = (message, terminal);
         Ok(())
     }
 
     pub fn abort(&mut self) {
-        #[cfg(feature = "rig-engine")]
         if let Self::Rig(driver) = self {
             driver.abort();
         }

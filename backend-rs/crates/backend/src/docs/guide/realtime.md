@@ -155,8 +155,15 @@ worker and its external effects stopped.
 
 ### Native tool execution checkpoints
 
+Rig is the default model engine and sole provider transport. The native name in
+this anchor refers to the original host checkpoint format. Recorded legacy
+continuations retain a recovery-only host branch; new tasks, including saved
+`engine: "native"` aliases, enter Rig. Existing native measurements retain their
+original label and become partial when resumed through the new transport. The project document `RIG_MIGRATION.md` defines the retirement and recovery
+contract.
+
 Native `llm_chat` messages use `content_json` schema 2. Legacy schema 1 remains
-readable. Opt-in Rig executions use schema 3, adding a Qunica-owned
+readable. New model executions use Rig and schema 3, adding a Qunica-owned
 `driver_checkpoint` with attempt id, phase and cumulative call/failure/token
 budgets. Approval recovery and compaction do not reset these counters. This is
 not a serialized Rig run; the original tool batch is settled before constructing

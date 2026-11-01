@@ -399,8 +399,8 @@ fn agent_as_tool_schema(request: &Value) -> Option<&Value> {
 
 fn text_body(text: &str) -> String {
     format!(
-        "data: {}\ndata: [DONE]\n",
-        json!({"choices": [{"delta": {"content": text}}]})
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]})
     )
 }
 
@@ -420,7 +420,7 @@ fn tool_body(calls: Vec<(&str, &str, Value)>) -> String {
         })
         .collect();
     format!(
-        "data: {}\ndata: [DONE]\n",
+        "data: {}\n\ndata: [DONE]\n\n",
         json!({"choices": [{"delta": {"tool_calls": tool_calls}, "finish_reason": "tool_calls"}]})
     )
 }
@@ -1031,7 +1031,8 @@ async fn agent_as_tool_terminal_handoff_skips_sibling_tools() {
         "caller-agent",
         "Caller",
         "2024-01-01T00:00:00Z",
-        Some(json!({"assistant_agents": [{"agent_id": helper, "enabled": true}]})),
+        // The sibling is callable, so only terminal handoff prevents execution.
+        Some(json!({"tools":{"bash":{"enabled":true}},"assistant_agents": [{"agent_id": helper, "enabled": true}]})),
     )
     .await;
 
@@ -1648,12 +1649,12 @@ mod agent_as_tool {
             (0..16)
                 .map(|index| {
                     format!(
-                        "data: {}\n",
+                        "data: {}\n\n",
                         json!({"choices": [{"delta": {"content": index.to_string()}}]})
                     )
                 })
                 .collect::<String>()
-                + "data: [DONE]\n",
+                + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
         ])
         .await;
         let provider = seed_provider(&state, &owner, &provider_url).await;

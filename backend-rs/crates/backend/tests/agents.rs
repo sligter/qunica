@@ -166,8 +166,8 @@ async fn agent_system_prompt_can_be_generated_with_an_owned_provider() {
     let app = app().await;
     let token = register_and_login(&app, "agent-prompt-ai@example.com").await;
     let provider_body = format!(
-        "data: {}\ndata: [DONE]\n",
-        json!({"choices": [{"delta": {"content": "```markdown\n# Role\nReview safely.\n```"}}]})
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": "```markdown\n# Role\nReview safely.\n```"}, "finish_reason": "stop"}]})
     );
     let base_url = fake_provider(provider_body).await;
     let (status, provider) = send(
@@ -1230,15 +1230,7 @@ async fn agent_engine_selection_is_validated_before_storage() {
         ),
     )
     .await;
-    assert_eq!(
-        status,
-        if cfg!(feature = "rig-engine") {
-            StatusCode::CREATED
-        } else {
-            StatusCode::BAD_REQUEST
-        },
-        "{created:?}"
-    );
+    assert_eq!(status, StatusCode::CREATED, "{created:?}");
     let (status, native) = send(
         &app,
         authed_json(

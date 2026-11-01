@@ -5,7 +5,7 @@ import { useAuthStore } from '@/stores/authStore'
 export interface EngineCapabilities {
   rig_available: boolean
   rig_paused: boolean
-  default_engine: 'native'
+  default_engine: 'rig'
   app_version: string
   rig_version: string
 }

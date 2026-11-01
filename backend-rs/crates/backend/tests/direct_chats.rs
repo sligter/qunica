@@ -1428,8 +1428,8 @@ async fn direct_workspace_upload_writes_into_the_conversation_workspace() {
 
 fn openai_sse_body(text: &str) -> String {
     format!(
-        "data: {}\ndata: [DONE]\n",
-        json!({"choices": [{"delta": {"content": text}}]})
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]})
     )
 }
 

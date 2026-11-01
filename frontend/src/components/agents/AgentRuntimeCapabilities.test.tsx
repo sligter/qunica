@@ -394,7 +394,7 @@ describe('agent runtime capabilities', () => {
     renderForm(<EditAgentForm agent={agent({
       llm_config: { engine: 'rig', model: 'original', vision: false, rig_limits: { max_model_calls: 9 }, opaque: { version: 2 } },
     })} />)
-    expect(screen.getByLabelText('Execution engine')).toHaveValue('rig')
+    expect(screen.queryByLabelText('Execution engine')).not.toBeInTheDocument()
     await user.clear(screen.getByLabelText('Name'))
     await user.type(screen.getByLabelText('Name'), 'Renamed')
     fireEvent.submit(document.getElementById(EDIT_AGENT_FORM_ID)!)
@@ -406,11 +406,10 @@ describe('agent runtime capabilities', () => {
     }))
   })
 
-  it('keeps a saved Rig engine when the server lacks the feature', async () => {
+  it('normalizes legacy native configuration while preserving limits', async () => {
     mocks.engineAvailable = false
-    renderForm(<EditAgentForm agent={agent({ llm_config: { engine: 'rig', rig_limits: { max_model_calls: 9 } } })} />)
-    expect(screen.getByLabelText('Execution engine')).toHaveValue('rig')
-    expect(screen.getByRole('option', { name: 'Rig (canary)' })).toBeDisabled()
+    renderForm(<EditAgentForm agent={agent({ llm_config: { engine: 'native', rig_limits: { max_model_calls: 9 } } })} />)
+    expect(screen.queryByLabelText('Execution engine')).not.toBeInTheDocument()
     fireEvent.submit(document.getElementById(EDIT_AGENT_FORM_ID)!)
     await waitFor(() => expect(mocks.updateMutate).toHaveBeenCalledOnce())
     expect(mocks.updateMutate).toHaveBeenCalledWith(expect.objectContaining({
@@ -418,14 +417,13 @@ describe('agent runtime capabilities', () => {
     }))
   })
 
-  it('requires explicit Rig selection while newly created agents default to native', async () => {
+  it('creates model agents with Rig without a retired engine selector', async () => {
     const user = userEvent.setup()
     mocks.createMutate.mockResolvedValue(agent({}))
     renderForm(<CreateAgentForm />)
-    expect(screen.getByLabelText('Execution engine')).toHaveValue('native')
+    expect(screen.queryByLabelText('Execution engine')).not.toBeInTheDocument()
     await user.type(screen.getByLabelText('Name'), 'Canary')
     await user.selectOptions(screen.getByLabelText('Workspace'), 'workspace-1')
-    await user.selectOptions(screen.getByLabelText('Execution engine'), 'rig')
     await user.click(screen.getByRole('button', { name: 'Create agent' }))
     await waitFor(() => expect(mocks.createMutate).toHaveBeenCalledOnce())
     expect(mocks.createMutate).toHaveBeenCalledWith(expect.objectContaining({

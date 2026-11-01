@@ -4375,7 +4375,7 @@ async fn group_prompt_enhancement_uses_selected_member_and_current_context() {
     .unwrap();
     let default_provider_body = format!(
         "data: {}\n\ndata: [DONE]\n\n",
-        json!({"choices": [{"delta": {"content": "Wrong member"}}]})
+        json!({"choices": [{"delta": {"content": "Wrong member"}, "finish_reason": "stop"}]})
     );
     let default_provider =
         create_llm_provider(&app, &token, &fake_provider(default_provider_body).await).await;
@@ -4383,7 +4383,7 @@ async fn group_prompt_enhancement_uses_selected_member_and_current_context() {
         create_llm_agent(&app, &token, &workspace, &default_provider, "Writer").await;
     let provider_body = format!(
         "data: {}\n\ndata: [DONE]\n\n",
-        json!({"choices": [{"delta": {"content": "```\nImplement the Atlas release with Planner.\n```"}}]})
+        json!({"choices": [{"delta": {"content": "```\nImplement the Atlas release with Planner.\n```"}, "finish_reason": "stop"}]})
     );
     let (base_url, captures) = fake_capturing_provider(provider_body).await;
     let provider = create_llm_provider(&app, &token, &base_url).await;
@@ -4517,8 +4517,8 @@ async fn workspace_git_commit_message_generates_from_staged_diff() {
     let token = register_and_login(&app, "workspace-git-ai-message@example.com").await;
     let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
     let provider_body = format!(
-        "data: {}\ndata: [DONE]\n",
-        json!({"choices": [{"delta": {"content": "```\n\"Update tracked file\"\n```"}}]})
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": "```\n\"Update tracked file\"\n```"}, "finish_reason": "stop"}]})
     );
     let provider = create_llm_provider(&app, &token, &fake_provider(provider_body).await).await;
     let agent = create_llm_agent(&app, &token, &workspace, &provider, "Committer").await;
@@ -4553,8 +4553,8 @@ async fn workspace_git_commit_message_uses_selected_provider_and_model() {
     let token = register_and_login(&app, "workspace-git-selected-ai@example.com").await;
     let (root, workspace) = create_local_workspace(&app, &token, "Workspace Git").await;
     let provider_body = format!(
-        "data: {}\ndata: [DONE]\n",
-        json!({"choices": [{"delta": {"content": "Selected provider message"}}]})
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": "Selected provider message"}, "finish_reason": "stop"}]})
     );
     let provider = create_llm_provider(&app, &token, &fake_provider(provider_body).await).await;
     let group = create_group_with_initial_agents(&app, &token, &workspace, "mesh", &[]).await;

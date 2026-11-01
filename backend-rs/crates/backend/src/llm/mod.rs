@@ -6,20 +6,11 @@
 //! here do parsing and mapping only; the runtime owns request orchestration,
 //! tool execution and group scheduling.
 
-pub mod anthropic;
-pub mod gemini;
 pub mod model_catalog;
-pub mod openai_compatible;
-pub mod openai_responses;
 mod protocol;
-#[cfg(feature = "rig-engine")]
 pub mod rig_engine;
 
-pub use anthropic::AnthropicProvider;
-pub use gemini::GeminiProvider;
 pub use model_catalog::{discover_models, ModelCatalogError, ModelInfo, MODEL_CATALOG_TIMEOUT};
-pub use openai_compatible::OpenAiCompatibleProvider;
-pub use openai_responses::OpenAiResponsesProvider;
 
 // Re-export the runtime data contract so integration tests (which link only
 // against this crate) can name the shared types without depending on the domain
@@ -30,14 +21,11 @@ pub use qunica_domain::runtime::{
 };
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use tokio::sync::mpsc::{Receiver, Sender};
-
-use protocol::Protocol;
+use tokio::sync::mpsc::Receiver;
 
 /// Largest provider error body retained. Enough for any provider's JSON error;
 /// short enough that an HTML error page does not flood the log or the turn.
@@ -118,27 +106,6 @@ impl ProviderHttpError {
         .iter()
         .any(|needle| body.contains(needle))
     }
-}
-
-/// Reject a non-2xx response while keeping the provider's own explanation.
-pub(crate) async fn ensure_success(
-    response: reqwest::Response,
-) -> anyhow::Result<reqwest::Response> {
-    let status = response.status();
-    if status.is_success() {
-        return Ok(response);
-    }
-    let body = response.text().await.unwrap_or_default();
-    let body: String = if body.chars().count() > MAX_ERROR_BODY_CHARS {
-        body.chars().take(MAX_ERROR_BODY_CHARS).collect()
-    } else {
-        body
-    };
-    Err(ProviderHttpError {
-        status: status.as_u16(),
-        body,
-    }
-    .into())
 }
 
 /// Resolved LLM provider connection settings.
@@ -351,32 +318,9 @@ pub trait LlmProvider: Send + Sync {
 }
 
 pub fn build_provider(cfg: &ProviderConfig) -> anyhow::Result<Box<dyn LlmProvider>> {
-    let base_url = cfg.base_url.clone().unwrap_or_default();
-    let client = build_http_client(cfg, reqwest::Client::builder())?;
-    let provider: Box<dyn LlmProvider> = match Protocol::for_kind(&cfg.kind) {
-        Some(Protocol::Responses) => Box::new(OpenAiResponsesProvider::with_client(
-            client,
-            base_url,
-            cfg.api_key.clone(),
-        )),
-        Some(Protocol::OpenAi) => Box::new(OpenAiCompatibleProvider::with_client(
-            client,
-            base_url,
-            cfg.api_key.clone(),
-        )),
-        Some(Protocol::Anthropic) => Box::new(AnthropicProvider::with_client(
-            client,
-            base_url,
-            cfg.api_key.clone(),
-        )),
-        Some(Protocol::Gemini) => Box::new(GeminiProvider::with_client(
-            client,
-            base_url,
-            cfg.api_key.clone(),
-        )),
-        None => anyhow::bail!("unsupported provider kind: {}", cfg.kind),
-    };
-    Ok(provider)
+    // Note: auxiliary requests and restored legacy host turns use the same
+    // transport as AgentRun. See RIG_MIGRATION.md#p5-cleanup-and-native-retirement.
+    rig_engine::build_rig_provider(cfg)
 }
 
 pub(crate) fn build_http_client(
@@ -444,126 +388,6 @@ pub fn effort_from_config(model_config_json: Option<&str>) -> Option<ReasoningEf
                 .map(str::to_string)
         })?;
     ReasoningEffort::parse(&raw)
-}
-
-/// Accumulates the fragments of a single streamed tool call.
-///
-/// Provider deltas deliver a tool call's id, name and JSON arguments across
-/// several chunks; this buffers them until the provider signals the call is
-/// complete.
-#[derive(Default)]
-pub(crate) struct ToolAccum {
-    pub id: String,
-    pub name: String,
-    pub args: String,
-}
-
-impl ToolAccum {
-    /// Finalize the buffered fragments into a [`ChatDelta::ToolCall`], parsing
-    /// the accumulated argument string as JSON (falling back to null when the
-    /// fragments do not form valid JSON).
-    pub fn finish(self) -> ChatDelta {
-        let args = serde_json::from_str(&self.args).unwrap_or(Value::Null);
-        ChatDelta::ToolCall(ToolCall {
-            id: self.id,
-            name: self.name,
-            args,
-            provider_metadata: None,
-        })
-    }
-}
-
-/// Drive a streaming HTTP response to completion, splitting it into lines and
-/// feeding each line through `parse`. Any deltas the parser returns are
-/// forwarded on `tx`. A terminating [`ChatDelta::Done`] is sent once the
-/// upstream stream ends cleanly, regardless of whether the provider emitted an
-/// explicit end-of-stream marker.
-///
-/// If the transport fails part-way through the body — a gateway idle timeout, a
-/// dropped connection — the response is incomplete, so [`ChatDelta::Truncated`]
-/// is sent instead of `Done`. Ending such a stream with `Done` would hand the
-/// caller a partial answer that is indistinguishable from a complete one.
-///
-/// Bytes are buffered so that multi-byte UTF-8 sequences and SSE lines split
-/// across network chunks are reassembled before parsing.
-pub(crate) async fn pump<F>(resp: reqwest::Response, tx: Sender<ChatDelta>, parse: F)
-where
-    F: FnMut(&str) -> Vec<ChatDelta>,
-{
-    pump_inner(resp, tx, parse, false).await;
-}
-
-/// Responses requires a terminal event; a clean HTTP EOF alone is not success.
-pub(crate) async fn pump_terminal<F>(resp: reqwest::Response, tx: Sender<ChatDelta>, parse: F)
-where
-    F: FnMut(&str) -> Vec<ChatDelta>,
-{
-    pump_inner(resp, tx, parse, true).await;
-}
-
-async fn pump_inner<F>(
-    resp: reqwest::Response,
-    tx: Sender<ChatDelta>,
-    mut parse: F,
-    require_terminal: bool,
-) where
-    F: FnMut(&str) -> Vec<ChatDelta>,
-{
-    let mut stream = resp.bytes_stream();
-    let mut buf: Vec<u8> = Vec::new();
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = match chunk {
-            Ok(c) => c,
-            Err(error) => {
-                let _ = tx.send(ChatDelta::Truncated(error.to_string())).await;
-                return;
-            }
-        };
-        buf.extend_from_slice(&chunk);
-
-        while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
-            let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
-            let line = String::from_utf8_lossy(&line_bytes);
-            let line = line.trim_end_matches(['\r', '\n']);
-            for delta in parse(line) {
-                let terminal = matches!(delta, ChatDelta::Done | ChatDelta::Truncated(_));
-                if tx.send(delta).await.is_err() || terminal {
-                    return;
-                }
-            }
-        }
-    }
-
-    // Flush any trailing line that arrived without a terminating newline.
-    if !buf.is_empty() {
-        let line = String::from_utf8_lossy(&buf);
-        for delta in parse(line.trim()) {
-            let terminal = matches!(delta, ChatDelta::Done | ChatDelta::Truncated(_));
-            if tx.send(delta).await.is_err() || terminal {
-                return;
-            }
-        }
-    }
-
-    let end = if require_terminal {
-        ChatDelta::Truncated("Responses stream ended without a terminal event".to_string())
-    } else {
-        ChatDelta::Done
-    };
-    let _ = tx.send(end).await;
-}
-
-/// Extract the JSON payload of an SSE `data:` line.
-///
-/// Returns `None` for blank lines, comments, `event:`/`id:` fields and the
-/// OpenAI `[DONE]` sentinel — none of which carry a JSON body to parse.
-pub(crate) fn sse_data(line: &str) -> Option<&str> {
-    let data = line.trim().strip_prefix("data:")?.trim();
-    if data.is_empty() || data == "[DONE]" {
-        return None;
-    }
-    Some(data)
 }
 
 #[cfg(test)]

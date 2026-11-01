@@ -1,7 +1,9 @@
 # Rig migration: providers and host-driven execution
 
 The migration keeps Qunica's scheduler, tool executor, approval boundary and
-SQLite history authoritative. Native execution remains the default. P0's
+SQLite history authoritative. Rig handles all new model executions and provider
+requests. A recorded pre-P5 native continuation retains a recovery-only host
+path and its original attribution. P0's
 execution and recovery contract is documented in
 [Realtime synchronization](backend-rs/crates/backend/src/docs/guide/realtime.md#native-tool-execution-checkpoints).
 
@@ -12,12 +14,13 @@ execution and recovery contract is documented in
 CI, release jobs and both Rust Docker build stages use the same version.
 The application crates retain edition 2021; Rig uses its own edition 2024.
 
-The non-default Cargo feature `rig-engine` enables exactly pinned `rig-core`,
-`rig-agent` and `rig-reqwest` 0.45.0 dependencies. It is forwarded by the desktop
-crate. Enabling the feature alone keeps native execution. P3 adds an explicit
-per-agent selector described below; builds without the feature reject it.
+Rig 0.45.0 is required through exactly pinned `rig-core`, `rig-agent` and
+`rig-reqwest` dependencies. `rig-engine` is a compatibility feature for existing
+build commands; disabling default features does not remove Rig. The desktop
+crate forwards the compatibility flag. Normal server and desktop builds include
+Rig. Android still links only the mobile library, not the backend.
 
-The existing `reqwest` 0.12 clients stay unchanged. The `reqwest_013` alias is
+The non-model `reqwest` 0.12 clients stay unchanged. The `reqwest_013` alias is
 reserved for the explicitly injected Rig transport. Both use native-tls so P1
 does not change the system certificate backend or introduce a second TLS stack
 for the new transport. Default Rig derive, bundled transport, coding tools,
@@ -28,7 +31,7 @@ Rig. Qunica's history and compaction policy remain unchanged.
 Rig enables `serde_json/preserve_order` and `float_roundtrip` through Cargo
 feature unification. Qunica's durable command, Webhook and approval digests
 explicitly sort a copy of their JSON objects, retaining legacy sorted-key
-identity bytes without sorting provider history. Native and Rig-enabled tests
+identity bytes without sorting provider history. Default and no-default-feature tests
 both cover this boundary; opaque provider data must never use this digest
 serializer as its history encoding.
 
@@ -85,7 +88,7 @@ setup, tool batches, helper dispatch and completion/interruption persistence sta
 heap-allocated. Even an unused ACP branch contributes to the native Future's
 size. This changes storage, not dispatch, cancellation or approval policy. The
 existing nested success/silent/failure/cancellation/budget tests are required
-under both feature sets without increasing `RUST_MIN_STACK`.
+with and without default features without increasing `RUST_MIN_STACK`.
 
 `tests/rig_dependencies.rs` exercises a sans-I/O `AgentRun` step and constructs a
 Provider with Qunica's reqwest 0.13 client. It makes no network requests and is
@@ -94,11 +97,12 @@ acceptance gates.
 
 ## P2 message adapter and provider
 
-`llm::rig_engine` (feature `rig-engine` only) holds `RigMessageAdapter` and
-`RigProvider`. The native `build_provider` factory is unchanged; P3's explicit
-engine selector constructs the Rig provider separately.
-It serves OpenAI-compatible, Anthropic (including its compatible aliases), and
-Gemini/Google kinds, plus OpenAI Responses. All kinds default to native.
+`llm::rig_engine` holds `RigMessageAdapter` and `RigProvider`. The common
+`build_provider` factory delegates to Rig, including moderator selection,
+compaction, chat titles, system-prompt generation, prompt enhancement,
+Git commit-message generation and provider connection tests.
+It serves OpenAI-compatible, Anthropic (including compatible aliases),
+Gemini/Google and OpenAI Responses. There are no handwritten LLM SSE clients.
 
 - **History.** A Rig assistant turn is stored whole as `native_content["rig"]`,
   beside its display fields. It is replayed only while its projection still
@@ -121,7 +125,8 @@ Gemini/Google kinds, plus OpenAI Responses. All kinds default to native.
   failure becomes `Truncated`, with no body. Tool calls are released only on a
   `stop`/`tool_calls` finish.
 
-Differences from the native wire, asserted per engine in `tests/llm_contract.rs`:
+Wire conventions compared with the retired native client and asserted through
+both the common factory and direct Rig constructors in `tests/llm_contract.rs`:
 - the tool message has no `name` field (it is not in OpenAI's schema);
 - image parts carry `detail: "auto"`;
 - tool history in a request that declares no tools is sent as text;
@@ -215,7 +220,7 @@ messages in `input`, and retain non-strict function schemas. All effort levels
 and sampling values use the existing Qunica mappings. Explicit empty tools are
 preserved. Rig's user text/image parts are separate message items and images
 carry `detail: "auto"`; assistant text uses a typed output-message item rather
-than the native client's string shorthand. Those shapes are asserted separately.
+than the native client's string shorthand. The current shapes are asserted through both provider entry points.
 
 Complete Rig turns persist encrypted reasoning, opaque fields, item ids and
 original call ids, including turns without tools. Only completed ciphertext
@@ -255,22 +260,22 @@ An agent may opt in through its existing `llm_config` API field:
 }
 ```
 
-Missing `engine` means `native`. Unknown engines and invalid limits fail at API
-validation and again when loading a stored configuration. `rig` requires the
-`rig-engine` Cargo feature. The default model-call and failed-attempt limits are
-128 and 16; the optional token cap has no default. These limits cover one agent
-execution, including request retries and approval resumes. They supplement the
-existing group scheduler budget, which also accounts for summarization and
-delegated agents. They do not reset when an AgentRun is rebuilt.
+Missing `engine` means `rig`. Saved `engine: "native"` is a compatibility
+alias for **new Rig execution**, not an engine choice. Unknown values and invalid
+limits fail at API validation and again when loading stored configuration. The
+SDK is required even with `--no-default-features`. Default model-call and
+failed-attempt limits are 128 and 16; the token cap is optional. These limits
+cover one Rig execution, including retries and approval resumes, and supplement
+the group scheduler's budget for summarization and delegated agents. They do
+not reset when AgentRun is rebuilt.
 
-Before accepting a Rig resume command, the agent must have `engine: "rig"`.
-An engine mismatch is rejected inside the approval transaction, without consuming
-the pending decision; restoring Rig allows the original approval to resume.
-After acceptance, the continuation stays bound to its recorded engine, so later
-engine-setting edits apply to new executions. Native also refuses to replay
-Rig-native history without a verified lossless conversion. A native rollback
-therefore starts a fresh thread. Other agents still read public Rig replies as
-ordinary untrusted conversation text.
+Before accepting a recorded model resume command, the agent must retain
+`llm_chat` and valid model configuration. The approval transaction rejects an
+invalid runtime/configuration without consuming the decision. After acceptance,
+the continuation remains bound to the recorded model runtime despite later
+configuration edits. Rig history stays in Rig. Pre-P5 native continuations use
+the recovery policy in P5 below; ordinary new messages always use AgentRun.
+Other agents read public replies as untrusted conversation text.
 
 `runtime/rig_driver.rs` owns a sans-I/O `AgentRun`. Qunica still drives streaming,
 hooks, tool execution, approval, SQLite persistence, cancellation and scheduling.
@@ -344,11 +349,11 @@ providers. Required scenarios are:
 | Invalid calls / truncation / 429 / limits | No tool side effects, polluted history or unbounded retry |
 
 These fixtures do not establish live-vendor signature acceptance, production
-gateway compatibility or two-release canary stability. The default stays native;
-P4 rollout and P5 deletion require their own evidence.
+gateway compatibility or two-release canary stability. P5 changes source/build
+defaults; it does not establish live rollout evidence or publish a release.
 
 The recovery guards additionally cover engine changes during approval, restoring
-the original engine without losing approval, and native rollback on a new thread.
+the original runtime without losing approval, and legacy config aliases entering Rig.
 
 ### Local P3 verification (Windows, Rust 1.97.1, 2026-11-01)
 
@@ -381,18 +386,17 @@ Live-vendor replay and P4/P5 remain separate gates.
 
 ## P4 canary controls and measurements
 
-The rollout tooling keeps native as the default. The Agent create/edit forms
-offer an explicit engine choice only for `llm_chat`; Rig requires a server built
-with `rig-engine`. Editing visible model settings preserves `rig_limits` and
-other model metadata. An unavailable Rig build does not silently convert an
-existing Rig agent to native.
+P4 introduced an explicit engine choice during the dual-engine PoC. P5 retires
+that choice and requires Rig in every backend build. Editing visible model
+settings preserves `rig_limits`, opaque model metadata and explicit `vision:
+false`; legacy native settings are saved as Rig by the current forms.
 
 The Token usage page includes owner-scoped engine measurements and a **Pause
 new Rig executions** control. The authenticated API is:
 
 | Endpoint | Contract |
 | --- | --- |
-| `GET /api/v2/runtime/engines` | Build availability, native default, versions and this owner's intake setting |
+| `GET /api/v2/runtime/engines` | Rig availability/default, versions and this owner's intake setting |
 | `PATCH /api/v2/runtime/engines/rig` | `{ "paused": true }` pauses new Rig executions for this owner; `false` reopens intake |
 | `GET /api/v2/runtime/engine-metrics?days=7` | Rolling UTC window, 1–90 days; optional `agent_id`, `provider_id`, `model` filters |
 
@@ -451,84 +455,111 @@ do not enter llm_chat engine comparisons.
    reasoning passback through the real alias/gateway; Gemini thought signatures;
    Responses encrypted reasoning; custom headers and usage/error propagation.
    Local fake-provider fixtures do not establish vendor acceptance.
-3. Explicitly set only those Agents to Rig. Start fresh threads. Observe the
-   engine panel and export the filtered metrics API result with each release's
-   revision/window/cohort. Check provider usage coverage before cost comparison.
+3. Use an isolated P5 instance for the selected cohort and start fresh threads.
+   P5 routes all new model Agents to Rig; it cannot host a new native control
+   group. Preserve matched pre-upgrade native evidence separately. Export metrics
+   with revision/window/cohort and check usage coverage before cost comparison.
 4. On duplicate side effects, lost signed metadata, incorrect approvals,
    cross-account leakage, unknown outcomes or failure/tool-error regression,
    pause intake immediately. Preserve checkpoints and audit events; cancel
    running work explicitly if needed. Never replay an unknown Shell outcome.
-5. Roll back new work by selecting native and starting a fresh thread. Retain a
-   Rig-enabled server for pending original Rig checkpoints. Restore llm_chat /
-   Rig configuration before accepting their approvals; accepted jobs retain
-   that execution path despite later Agent runtime edits. Downgrading the server
-   to a native-only build cannot resume Rig checkpoints. Do not downgrade a
-   migrated SQLite database to an older application as a rollback shortcut.
-6. Require two distinct release windows with recorded cohorts, matching native
-   evidence and no unresolved regressions before separately approving a default
-   switch. Retain native for another release. P5 deletion has its own gate.
+5. Stop new intake before rollback. Use a separate pre-P5 installation with
+   its own database/workspace for new native work; there is no native selector
+   in P5. Retain P5 for existing Rig checkpoints and legacy continuations that
+   already used its transport. Never downgrade a migrated SQLite database or
+   replay an unknown external effect to reconstruct a previous installation.
+6. Keep production rollout evidence separate from P5 code retirement. Real
+   provider acceptance and two matched release windows remain unrecorded here.
+   The P5 source default is Rig; it does not upgrade a deployed instance.
 
 The P4 tooling and isolated tests are implementation work, not live enrollment.
 No real instance/Agent cohort has been selected or enabled here. Live-vendor
 replay, production observation and the two-release promotion gate remain open;
-no default switch or native retirement is included.
+P4 itself introduced no default switch. P5 source retirement is described below.
 
 ## P5: cleanup and native retirement
 
-The first cleanup slice extracts provider-kind aliases and Responses endpoint
-resolution into `llm/protocol.rs`. Both factories use that policy; Rig no longer
-imports a helper from the native Responses client. Existing defaults, public
-provider constructors, transport settings and engine-specific error messages
-remain unchanged. Contract tests send requests through both factories for every
-supported alias, alongside the existing signed-history, usage, HTTP error and
-full-endpoint/query contracts. This cleanup does not retire a client.
+The source defaults to Rig for every new model Agent execution. Rig is the only
+provider implementation, including auxiliary requests through `build_provider`.
+The four native SSE clients and their shared parser/accumulator are deleted.
+Provider aliases and Responses URL/default resolution live in `llm/protocol.rs`;
+error classification, model capabilities, HTTP settings and signed/opaque
+history remain Qunica-owned. Reqwest 0.12 remains for non-model HTTP services.
 
-Local Windows validation of this slice passes 772 native and 813 Rig tests,
-each with three existing ignored cases and no filters. The selected suites
-cover the library, Agent/group/direct-chat APIs, group streaming, provider
-settings and provider contracts. Formatting, whitespace and strict workspace /
-all-target / all-feature Clippy checks pass. New cross-platform CI evidence is
-tracked on [draft PR #4](https://github.com/sligter/qunica/pull/4); the P4
-baseline results below are not evidence for a newer commit.
+OpenAI Chat sends a single plain system/user text block as a string for gateway
+compatibility. Images, multiple blocks and blocks carrying extra metadata keep
+their structure; Assistant blocks are never flattened. Successful empty Stop
+completions are recorded once and passed to AgentRun as empty output, preserving
+Qunica's silent-turn semantics. Missing or truncated terminal responses still
+fail and cannot release tools.
 
-Native clients still have these production callers:
+`AgentAsTool` remains a host control request even when no helper is advertised:
+Qunica validates the caller's binding, owner and active group membership and
+returns structured unavailable feedback. Other unadvertised tools are rejected
+before dispatch. The terminal handoff contract enables the sibling Shell tool
+explicitly and checks that handoff still prevents its execution.
 
-| Caller | Current responsibility |
-| --- | --- |
-| `runtime/rig_driver.rs` | Default native Agent turns and native checkpoint recovery |
-| `runtime/group_scheduler/moderator.rs` | Moderator selection |
-| `runtime/chat_title.rs` | Direct-chat title generation |
-| `api/agents.rs` | System-prompt generation |
-| `api/groups.rs` | Prompt enhancement and Git commit-message generation |
-| `api/llm_providers.rs` | Provider connection testing |
+The UI creates and edits model Agents with `engine: "rig"`, preserving hidden
+model metadata, limits and `vision: false`. There is no native selector.
+Existing `engine: "native"` settings remain readable as a new-execution Rig
+alias; no bulk history or configuration rewrite is needed. The capabilities API
+reports Rig as available and default. `rig-engine` remains a no-op compatibility
+feature, so existing scripts work and `--no-default-features` still includes Rig.
 
-Retiring the four native clients requires migrating those callers explicitly,
-preserving their provider settings and accounting, and checking connection tests
-against the engine they will actually use. `build_provider` cannot silently
-become Rig-backed while measurements and settings still label those requests
-native. Existing native checkpoints need a separately verified drain or migration
-policy; changing Agent settings is insufficient. Existing Rig checkpoints must
-keep their original engine too.
+### Recorded native continuations
 
-The shared host loop in `group.rs` still owns SQLite commits, approvals, tool
-execution, cancellation, compaction and scheduler integration for both engines.
-It is not obsolete native code. Error classification, model capabilities,
-history and tool metadata are also retained. Removing reqwest 0.12 is a separate
-dependency audit because non-LLM services still use it.
+`LegacyRecovery` is a small host compatibility branch, not a provider client or
+an entry point for new native tasks. It is selected only when a resume has no
+Rig checkpoint and its frozen execution record does not identify Rig. If a Rig
+execution failed before writing its first driver checkpoint, its existing
+observation still selects Rig. New messages never select legacy recovery.
 
-Full retirement retains P4's live-provider and release-observation gates unless
-the owner explicitly replaces that rollout policy. There is no recorded live
-cohort or two-release observation here. Keep native as the default and available
-for new-work rollback through its retention window; complete safe handling of
-all in-flight checkpoints before removing recovery code. No deletion or default
-switch is implied by the compatible cleanup above.
+- Legacy approval/runtime validation happens before consuming the decision.
+  The original Assistant/tool batch is claimed and settled from SQLite before
+  another model request. Started calls without results become outcome-unknown
+  and are never automatically replayed. Repeat approval cannot rerun a call.
+- The compatibility host uses Rig's provider and lossless message adapter. It
+  preserves the original host control state rather than inventing AgentRun
+  counters from legacy history. Existing Rig checkpoints retain their counters.
+  Complete final Assistant messages, including signed/opaque blocks, are stored
+  even when produced by the legacy host.
+- Frozen native snapshots and ledger tags are not relabelled Rig. The changed
+  legacy transport version makes existing observations partial; newly observed
+  old continuations also start partial. They stay outside complete failure/cost
+  comparisons. Subsequent new work uses Rig and a separate execution snapshot.
 
-P4 baseline evidence, for commit `63939d5`: [CI run 41270512398](https://github.com/sligter/qunica/actions/runs/41270512398)
-passed all eight jobs, including unfiltered native (1068 passed) and Rig
-(1111 passed) workspace tests, each with seven existing ignored cases. Local
-frontend verification passed 139 files / 992 tests with four workers and
-unchanged timeouts. Earlier concurrent UI timeouts remain unexplained. These
-results validate that baseline, not a later cleanup commit or live rollout.
+The shared host loop in `group.rs` continues to own SQLite commits, approvals,
+tools, cancellation, compaction and scheduling. It is required by AgentRun too.
+Deleting that loop would remove Qunica's product contracts. The recovery shim
+can be removed only after recorded native continuations have drained; no live
+instance/database has been inspected to establish that fact here.
+
+### Verification and rollout scope
+
+Contracts exercise all four wires via the common factory and direct Rig
+constructors, all saved aliases, exact headers/errors and signed/opaque history.
+Runtime regressions cover old SQLite approvals, unknown tool outcomes, immutable
+historical attribution and new-work routing. CI tests the full workspace with
+and without default features; desktop/Docker/Android build gates remain enabled.
+The P5 Windows workspace run passes 1,116 tests with seven existing ignored,
+without filters. Local compilation uses two build jobs after a Windows paging
+resource failure at higher parallelism; test concurrency, assertions and thread
+stacks are unchanged. Loopback provider fixtures bypass the system proxy only
+within the test process.
+Formatting, strict workspace/all-target/all-feature Clippy and the all-target
+`--no-default-features` check pass. The complete no-default-features test run
+is a separate CI gate.
+Current commit results are reported on [draft PR #4](https://github.com/sligter/qunica/pull/4).
+
+The preceding P0-P4 test totals are historical evidence for their named commits,
+not results for P5. The earlier protocol-only cleanup `09c6c31` passed
+[all eight CI jobs](https://github.com/sligter/qunica/actions/runs/41279028299).
+No production instance or real Agent cohort is changed by this branch. Real
+vendor signature/gateway acceptance and two release observation windows remain
+unverified release evidence. P5 code retirement does not assert those results,
+merge the PR or publish a release. A deployed native instance must be drained
+and backed up before upgrade; never downgrade a migrated database or replay an
+unknown Shell outcome as a rollback shortcut.
 
 ## Validation
 
@@ -538,7 +569,7 @@ Run from the repository root:
 cargo fmt --manifest-path backend-rs/Cargo.toml --all -- --check
 cargo clippy --locked --manifest-path backend-rs/Cargo.toml --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --manifest-path backend-rs/Cargo.toml --workspace
-cargo test --locked --manifest-path backend-rs/Cargo.toml --workspace --features qunica-backend/rig-engine
+cargo test --locked --manifest-path backend-rs/Cargo.toml --workspace --no-default-features
 cargo check --locked --manifest-path frontend/src-tauri/Cargo.toml --all-targets --features rig-engine
 ```
 
@@ -546,15 +577,15 @@ CI checks the Rig-enabled backend and desktop shell on Windows, Linux and
 macOS. The Android workflow uses the pinned toolchain but deliberately depends
 only on the mobile link library, not the backend or Rig. The Docker compile
 gate builds the `server` stage with `BACKEND_FEATURES=rig-engine` and builds the
-separate supervisor image. Normal image builds keep `BACKEND_FEATURES` empty.
+separate supervisor image. Normal image builds keep `BACKEND_FEATURES` empty and still include Rig.
 
 ```sh
 docker build --target server --build-arg BACKEND_FEATURES=rig-engine -t qunica-rig-server:poc .
 docker build -f docker/supervisor.Dockerfile -t qunica-supervisor:poc .
 ```
 
-Checked-in build gates do not establish cross-platform success: P1 is not
-fully accepted until their actual results and unchanged native tests are
-observed. Lockfiles for backend and desktop must be updated together. Android
+Checked-in build gates do not establish cross-platform success for a new commit;
+the actual workflow results are required. The P1-P4 results above apply only to
+their named commits. Lockfiles for backend and desktop must be updated together. Android
 and mobile-link lockfiles need no Rig packages because they do not depend on
 the backend.
