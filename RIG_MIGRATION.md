@@ -66,8 +66,8 @@ matching any candidate counts as the same event. This is deliberately one-sided:
 for dedup a false match only suppresses a run, while a miss repeats one. It is
 not a parser and is never used for approvals, where a near match must not grant.
 
-This closes the float-digest cutover gate. Rig runtime routing stays disabled
-until the Driver phase is accepted.
+This closes the float-digest cutover gate. Rig routing is explicit per Agent
+and remains subject to the P4 rollout policy below.
 No approval, receipt or occurrence is silently rehashed or replayed.
 There is no in-place reapproval endpoint for a mismatched old action: terminate
 the old task and submit a new task for fresh review; do not edit stored hashes
@@ -204,8 +204,9 @@ No production retry policy or test assertion was relaxed.
 ### OpenAI Responses
 
 Responses uses a separate wire with the same injected HTTP client and neutral
-events. The native endpoint resolver is shared: roots, complete `/responses`
-URLs, tenant queries and fragments keep their existing behavior. The complete
+events. A neutral protocol module resolves endpoints for both engines: roots,
+complete `/responses` URLs, tenant queries and fragments keep their existing
+behavior. The complete
 resolved URL is Rig's base with an empty route suffix, avoiding double paths
 and misplaced queries.
 
@@ -470,7 +471,64 @@ do not enter llm_chat engine comparisons.
 The P4 tooling and isolated tests are implementation work, not live enrollment.
 No real instance/Agent cohort has been selected or enabled here. Live-vendor
 replay, production observation and the two-release promotion gate remain open;
-no default switch or P5 deletion is included.
+no default switch or native retirement is included.
+
+## P5: cleanup and native retirement
+
+The first cleanup slice extracts provider-kind aliases and Responses endpoint
+resolution into `llm/protocol.rs`. Both factories use that policy; Rig no longer
+imports a helper from the native Responses client. Existing defaults, public
+provider constructors, transport settings and engine-specific error messages
+remain unchanged. Contract tests send requests through both factories for every
+supported alias, alongside the existing signed-history, usage, HTTP error and
+full-endpoint/query contracts. This cleanup does not retire a client.
+
+Local Windows validation of this slice passes 772 native and 813 Rig tests,
+each with three existing ignored cases and no filters. The selected suites
+cover the library, Agent/group/direct-chat APIs, group streaming, provider
+settings and provider contracts. Formatting, whitespace and strict workspace /
+all-target / all-feature Clippy checks pass. New cross-platform CI evidence is
+tracked on [draft PR #4](https://github.com/sligter/qunica/pull/4); the P4
+baseline results below are not evidence for a newer commit.
+
+Native clients still have these production callers:
+
+| Caller | Current responsibility |
+| --- | --- |
+| `runtime/rig_driver.rs` | Default native Agent turns and native checkpoint recovery |
+| `runtime/group_scheduler/moderator.rs` | Moderator selection |
+| `runtime/chat_title.rs` | Direct-chat title generation |
+| `api/agents.rs` | System-prompt generation |
+| `api/groups.rs` | Prompt enhancement and Git commit-message generation |
+| `api/llm_providers.rs` | Provider connection testing |
+
+Retiring the four native clients requires migrating those callers explicitly,
+preserving their provider settings and accounting, and checking connection tests
+against the engine they will actually use. `build_provider` cannot silently
+become Rig-backed while measurements and settings still label those requests
+native. Existing native checkpoints need a separately verified drain or migration
+policy; changing Agent settings is insufficient. Existing Rig checkpoints must
+keep their original engine too.
+
+The shared host loop in `group.rs` still owns SQLite commits, approvals, tool
+execution, cancellation, compaction and scheduler integration for both engines.
+It is not obsolete native code. Error classification, model capabilities,
+history and tool metadata are also retained. Removing reqwest 0.12 is a separate
+dependency audit because non-LLM services still use it.
+
+Full retirement retains P4's live-provider and release-observation gates unless
+the owner explicitly replaces that rollout policy. There is no recorded live
+cohort or two-release observation here. Keep native as the default and available
+for new-work rollback through its retention window; complete safe handling of
+all in-flight checkpoints before removing recovery code. No deletion or default
+switch is implied by the compatible cleanup above.
+
+P4 baseline evidence, for commit `63939d5`: [CI run 41270512398](https://github.com/sligter/qunica/actions/runs/41270512398)
+passed all eight jobs, including unfiltered native (1068 passed) and Rig
+(1111 passed) workspace tests, each with seven existing ignored cases. Local
+frontend verification passed 139 files / 992 tests with four workers and
+unchanged timeouts. Earlier concurrent UI timeouts remain unexplained. These
+results validate that baseline, not a later cleanup commit or live rollout.
 
 ## Validation
 

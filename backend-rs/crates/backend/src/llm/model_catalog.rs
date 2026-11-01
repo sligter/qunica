@@ -218,7 +218,7 @@ fn catalog_url(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .or(match config.kind.as_str() {
-            "openai-responses" => Some(super::openai_responses::DEFAULT_BASE_URL),
+            "openai-responses" => Some(super::protocol::RESPONSES_DEFAULT_BASE_URL),
             "anthropic" => Some(ANTHROPIC_BASE_URL),
             "gemini" => Some(GEMINI_BASE_URL),
             _ => None,

@@ -3,14 +3,15 @@
 //! Each provider implements [`LlmProvider`] by issuing a streaming HTTP request
 //! and translating provider-specific server-sent events into the neutral
 //! [`ChatDelta`] vocabulary defined by the domain runtime contract. The clients
-//! here do parsing and mapping only — request orchestration, tool execution and
-//! group runtime live in later tasks.
+//! here do parsing and mapping only; the runtime owns request orchestration,
+//! tool execution and group scheduling.
 
 pub mod anthropic;
 pub mod gemini;
 pub mod model_catalog;
 pub mod openai_compatible;
 pub mod openai_responses;
+mod protocol;
 #[cfg(feature = "rig-engine")]
 pub mod rig_engine;
 
@@ -35,6 +36,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use tokio::sync::mpsc::{Receiver, Sender};
+
+use protocol::Protocol;
 
 /// Largest provider error body retained. Enough for any provider's JSON error;
 /// short enough that an HTML error page does not flood the log or the turn.
@@ -350,27 +353,28 @@ pub trait LlmProvider: Send + Sync {
 pub fn build_provider(cfg: &ProviderConfig) -> anyhow::Result<Box<dyn LlmProvider>> {
     let base_url = cfg.base_url.clone().unwrap_or_default();
     let client = build_http_client(cfg, reqwest::Client::builder())?;
-    let provider: Box<dyn LlmProvider> = match cfg.kind.as_str() {
-        "openai-responses" => Box::new(OpenAiResponsesProvider::with_client(
+    let provider: Box<dyn LlmProvider> = match Protocol::for_kind(&cfg.kind) {
+        Some(Protocol::Responses) => Box::new(OpenAiResponsesProvider::with_client(
             client,
             base_url,
             cfg.api_key.clone(),
         )),
-        "openai-compatible" | "openai_compatible" | "openai" | "deepseek" | "vllm"
-        | "openrouter" => Box::new(OpenAiCompatibleProvider::with_client(
+        Some(Protocol::OpenAi) => Box::new(OpenAiCompatibleProvider::with_client(
             client,
             base_url,
             cfg.api_key.clone(),
         )),
-        "anthropic" | "anthropic-compatible" | "anthropic_compatible" => Box::new(
-            AnthropicProvider::with_client(client, base_url, cfg.api_key.clone()),
-        ),
-        "gemini" | "google" => Box::new(GeminiProvider::with_client(
+        Some(Protocol::Anthropic) => Box::new(AnthropicProvider::with_client(
             client,
             base_url,
             cfg.api_key.clone(),
         )),
-        other => anyhow::bail!("unsupported provider kind: {other}"),
+        Some(Protocol::Gemini) => Box::new(GeminiProvider::with_client(
+            client,
+            base_url,
+            cfg.api_key.clone(),
+        )),
+        None => anyhow::bail!("unsupported provider kind: {}", cfg.kind),
     };
     Ok(provider)
 }

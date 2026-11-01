@@ -1466,6 +1466,91 @@ fn configured_kind(
     }
 }
 
+#[tokio::test]
+async fn provider_aliases_keep_their_wire_protocol_in_both_factories() {
+    for &engine in ENGINES {
+        for (kinds, path, stop, prompt_pointer) in [
+            (
+                &[
+                    "openai-compatible",
+                    "openai_compatible",
+                    "openai",
+                    "deepseek",
+                    "vllm",
+                    "openrouter",
+                ][..],
+                "/chat/completions",
+                OPENAI_STOP,
+                "/messages/0/content",
+            ),
+            (
+                &["anthropic", "anthropic-compatible", "anthropic_compatible"][..],
+                "/v1/messages",
+                ANTHROPIC_STOP,
+                "/messages/0/content/0/text",
+            ),
+            (
+                &["gemini", "google"][..],
+                "/v1beta/models/test-model:streamGenerateContent",
+                GEMINI_STOP,
+                "/contents/0/parts/0/text",
+            ),
+            (
+                &["openai-responses"][..],
+                "/responses",
+                RESPONSES_TEXT,
+                "/input/0/content/0/text",
+            ),
+        ] {
+            let prompt_pointer = match (engine, path) {
+                (Engine::Native, "/v1/messages") => "/messages/0/content",
+                (Engine::Native, "/responses") => "/input/0/content",
+                _ => prompt_pointer,
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let captures = Arc::new(Mutex::new(Vec::new()));
+            let app = Router::new().fallback({
+                let captures = captures.clone();
+                move |req: axum::http::Request<Body>| {
+                    let captures = captures.clone();
+                    async move {
+                        let path = req.uri().path().to_string();
+                        let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+                            .await
+                            .unwrap();
+                        let body: Value = serde_json::from_slice(&bytes).unwrap();
+                        captures.lock().await.push((path, body));
+                        (
+                            [
+                                (header::CONTENT_TYPE, "text/event-stream"),
+                                (header::CONNECTION, "close"),
+                            ],
+                            stop,
+                        )
+                    }
+                }
+            });
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            for kind in kinds {
+                let provider = configured_kind(engine, kind, url.clone(), &[]);
+                let deltas = collect(provider.stream(request()).await.unwrap()).await;
+                assert!(ends_with_done(&deltas), "{engine:?}/{kind}: {deltas:?}");
+                let captures = captures.lock().await;
+                let (actual_path, body) = captures.last().unwrap();
+                assert_eq!(actual_path, path, "{engine:?}/{kind}");
+                assert_eq!(
+                    body.pointer(prompt_pointer),
+                    Some(&json!("hi")),
+                    "{engine:?}/{kind}: {body}"
+                );
+            }
+            assert_eq!(captures.lock().await.len(), kinds.len());
+            server.abort();
+        }
+    }
+}
+
 async fn llm_contract_openai_configured_headers_never_replace_the_key(engine: Engine) {
     let (url, captures) = status_server(200, OPENAI_STOP).await;
     let provider = configured(

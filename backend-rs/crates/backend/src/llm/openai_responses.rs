@@ -7,9 +7,8 @@ use qunica_domain::runtime::ChatContentPart;
 use serde_json::{json, Value};
 use tokio::sync::mpsc::{self, Receiver};
 
+use super::protocol::responses_endpoint;
 use super::{ChatDelta, ChatMessage, ChatRequest, ContextUsage, LlmProvider, ToolCall};
-
-pub(crate) const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
 pub struct OpenAiResponsesProvider {
     client: reqwest::Client,
@@ -36,27 +35,8 @@ impl OpenAiResponsesProvider {
     }
 
     fn endpoint(&self) -> anyhow::Result<reqwest::Url> {
-        endpoint(&self.base_url)
+        responses_endpoint(&self.base_url)
     }
-}
-
-/// Shared with the Rig adapter so full endpoints and tenant queries resolve identically.
-pub(crate) fn endpoint(base_url: &str) -> anyhow::Result<reqwest::Url> {
-    let base = base_url.trim();
-    let mut url = reqwest::Url::parse(if base.is_empty() {
-        DEFAULT_BASE_URL
-    } else {
-        base
-    })?;
-    let path = url.path().trim_end_matches('/');
-    let path = if path.ends_with("/responses") {
-        path.to_string()
-    } else {
-        format!("{path}/responses")
-    };
-    url.set_path(&path);
-    url.set_fragment(None);
-    Ok(url)
 }
 
 fn to_input(messages: &[ChatMessage]) -> Vec<Value> {
@@ -280,29 +260,6 @@ impl LlmProvider for OpenAiResponsesProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn endpoints_accept_roots_and_full_paths_without_losing_queries() {
-        for (base, expected) in [
-            ("", "https://api.openai.com/v1/responses"),
-            (
-                " https://gateway.test/v1/ ",
-                "https://gateway.test/v1/responses",
-            ),
-            (
-                "https://gateway.test/v1/responses/?tenant=a#fragment",
-                "https://gateway.test/v1/responses?tenant=a",
-            ),
-        ] {
-            assert_eq!(
-                OpenAiResponsesProvider::new(base, "key")
-                    .endpoint()
-                    .unwrap()
-                    .as_str(),
-                expected
-            );
-        }
-    }
 
     #[test]
     fn completed_output_deduplicates_done_items_and_refusal_is_visible() {

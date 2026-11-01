@@ -2,7 +2,8 @@
 //!
 //! Rig sends the request and decodes the stream; Qunica keeps the request
 //! settings, the message history, the transport and the error classification.
-//! Runtime routing does not select this provider yet. See RIG_MIGRATION.md.
+//! The runtime selects it for Agents explicitly configured for Rig; native
+//! remains the default. See RIG_MIGRATION.md.
 
 mod adapter;
 
@@ -28,6 +29,7 @@ use tokio::sync::{
     oneshot,
 };
 
+use super::protocol::{responses_endpoint, Protocol};
 use super::{
     ChatDelta, ChatRequest, ContextUsage, LlmProvider, ProviderConfig, ProviderHttpError,
     MAX_ERROR_BODY_CHARS,
@@ -57,14 +59,6 @@ enum Client {
     Gemini(GeminiConfig),
 }
 
-#[derive(Clone, Copy)]
-enum Protocol {
-    OpenAi,
-    Responses,
-    Anthropic,
-    Gemini,
-}
-
 impl RigProvider {
     pub fn openai_responses(
         base_url: impl Into<String>,
@@ -82,7 +76,7 @@ impl RigProvider {
         api_key: String,
         http: DynHttpClient,
     ) -> anyhow::Result<Self> {
-        let endpoint = super::openai_responses::endpoint(&base_url)?;
+        let endpoint = responses_endpoint(&base_url)?;
         let mut dialect = gateway();
         dialect.name = "openai-responses";
         // Note: resolving the entire URL once preserves tenant queries and
@@ -197,21 +191,25 @@ impl RigProvider {
     pub fn from_config(cfg: &ProviderConfig) -> anyhow::Result<Self> {
         let http = transport(&cfg.headers, cfg.user_agent.as_deref())?;
         let base_url = cfg.base_url.clone().unwrap_or_default();
-        match cfg.kind.as_str() {
-            "openai-responses" => {
+        match Protocol::for_kind(&cfg.kind) {
+            Some(Protocol::Responses) => {
                 RigProvider::responses_with_http(base_url, cfg.api_key.clone(), http)
             }
-            "openai-compatible" | "openai_compatible" | "openai" | "deepseek" | "vllm"
-            | "openrouter" => RigProvider::with_http(base_url, cfg.api_key.clone(), http),
-            "anthropic" | "anthropic-compatible" | "anthropic_compatible" => Ok(
-                RigProvider::anthropic_with_http(base_url, cfg.api_key.clone(), http),
-            ),
-            "gemini" | "google" => Ok(RigProvider::gemini_with_http(
+            Some(Protocol::OpenAi) => RigProvider::with_http(base_url, cfg.api_key.clone(), http),
+            Some(Protocol::Anthropic) => Ok(RigProvider::anthropic_with_http(
                 base_url,
                 cfg.api_key.clone(),
                 http,
             )),
-            other => anyhow::bail!("the Rig engine does not serve provider kind {other} yet"),
+            Some(Protocol::Gemini) => Ok(RigProvider::gemini_with_http(
+                base_url,
+                cfg.api_key.clone(),
+                http,
+            )),
+            None => anyhow::bail!(
+                "the Rig engine does not serve provider kind {} yet",
+                cfg.kind
+            ),
         }
     }
 }
