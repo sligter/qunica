@@ -34,7 +34,7 @@ import {
   type ConversationScope,
 } from '@/hooks/useGroupMessages'
 import { conversationWorkspaceFilesQueryKey } from '@/hooks/useConversationWorkspaceFiles'
-import { notifyReplyOutcome } from '@/lib/replyNotifications'
+import { notifyReplyOutcome, localReplyNotificationKind } from '@/lib/replyNotifications'
 import { useAuthStore } from '@/stores/authStore'
 import { useConversationActivityStore } from '@/stores/conversationActivityStore'
 import { useAccountSyncStore, type AccountJob } from '@/stores/accountSyncStore'
@@ -607,7 +607,7 @@ export function useSendMessageStream(
       sendFailuresRef.current.delete(id)
       const finishedRun = finishActivityRun(id, failure ? 'failed' : 'completed', failure)
       if (finishedRun && !finishedRun.announced) {
-        notifyReplyOutcome(finishedRun, failure ? 'failed' : 'completed', failure)
+        notifyReplyOutcome(finishedRun, failure ? 'failed' : 'completed', failure, localReplyNotificationKind(finishedRun), true)
       }
       streamsRef.current.delete(id)
       clearRetry(id)
@@ -960,7 +960,7 @@ export function useSendMessageStream(
                 const turnId = markStreamRunWaitingForUser(storeId, streamId)
                 if (turnId) invalidateTurn(turnId)
                 const waitingRun = markActivityRunWaiting(id)
-                if (waitingRun) notifyReplyOutcome(waitingRun, 'waiting')
+                if (waitingRun) notifyReplyOutcome(waitingRun, 'waiting', undefined, localReplyNotificationKind(waitingRun), true)
                 return
               }
               case 'approval_required': {
@@ -986,7 +986,7 @@ export function useSendMessageStream(
                 const turnId = markStreamRunWaitingForUser(storeId, streamId)
                 if (turnId) invalidateTurn(turnId)
                 const approvalRun = markActivityRunWaiting(id)
-                if (approvalRun) notifyReplyOutcome(approvalRun, 'waiting')
+                if (approvalRun) notifyReplyOutcome(approvalRun, 'waiting', undefined, localReplyNotificationKind(approvalRun), true)
                 return
               }
               case 'todo_update': {

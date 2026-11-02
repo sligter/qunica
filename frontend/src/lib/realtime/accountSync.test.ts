@@ -5,7 +5,8 @@ import { useConversationActivityStore, selectConversationStatus } from '@/stores
 import { useMessageStore } from '@/stores/messageStore'
 import { ApiError } from '@/lib/api-v2/client'
 const mock = vi.hoisted(() => ({ request: vi.fn(), subscribe: vi.fn(), localRuns: new Set<string>(), localContinuationThreads: new Set<string>(), controller: new AbortController(), origin: '', sse: vi.fn(), notify: vi.fn(), alert: vi.fn() }))
-vi.mock('@/lib/replyNotifications', () => ({ notifyReplyOutcome: mock.notify, notifyWatchdogAlert: mock.alert }))
+vi.mock('@/lib/notifications', () => ({ showNotification: mock.notify }))
+vi.mock('@/lib/replyNotifications', async original => ({ ...await original<typeof import('@/lib/replyNotifications')>(), notifyWatchdogAlert: mock.alert }))
 vi.mock('./client', async original => ({ ...await original<typeof import('./client')>(), realtimeClient: () => mock }))
 vi.mock('@microsoft/fetch-event-source', () => ({ fetchEventSource: mock.sse }))
 import { startAccountSync } from './accountSync'
@@ -19,7 +20,9 @@ function snapshot(cursor = '10'): AccountSnapshot {
 beforeEach(() => {
   mock.request.mockReset().mockResolvedValue(snapshot()); mock.subscribe.mockReset().mockReturnValue(vi.fn()); mock.sse.mockReset().mockReturnValue(new Promise(() => undefined))
   mock.localRuns.clear(); mock.localContinuationThreads.clear(); mock.controller = new AbortController(); mock.origin = ''
-  mock.notify.mockReset(); mock.alert.mockReset()
+  mock.notify.mockReset().mockResolvedValue({ ok: true }); mock.alert.mockReset()
+  localStorage.clear()
+  vi.spyOn(document, 'hasFocus').mockReturnValue(false)
   useAccountSyncStore.setState(useAccountSyncStore.getInitialState(), true)
   useConversationActivityStore.setState(useConversationActivityStore.getInitialState(), true)
   useMessageStore.setState(useMessageStore.getInitialState(), true)
@@ -101,4 +104,26 @@ it('uses account SSE for the saved Noise pairing with the same applied cursor', 
   expect(useAccountSyncStore.getState().status).toBe('connected')
   init.onmessage({ event: 'resync_required' })
   await vi.waitFor(() => expect(mock.sse).toHaveBeenCalledTimes(2))
+})
+
+it.each([true, false])('routes three completed tasks and a Router reply (reported=%s)', async reported => {
+  mock.request.mockResolvedValue({ ...snapshot(), active_jobs: [] })
+  cleanup = startAccountSync('token', new QueryClient())
+  await vi.waitFor(() => expect(mock.subscribe).toHaveBeenCalled())
+  const apply = mock.subscribe.mock.calls[0][2]
+  for (let i = 0; i < 4; i++) {
+    apply({ type: 'event', cursor: String(11 + i), event_id: `done-${i}`, kind: 'job.changed',
+      resource_id: `job-${i}`, group_id: reported ? 'group' : `group-${i}`, thread_id: `thread-${i}`,
+      payload: { status: 'succeeded', stream_id: `stream-${i}`, task_reported: i < 3 && reported } })
+  }
+  // Different conversations test fallback delivery independently of the coalescing window.
+  expect(mock.notify).toHaveBeenCalledTimes(reported ? 1 : 4)
+})
+it('notifies a reported task waiting for user input', async () => {
+  cleanup = startAccountSync('token', new QueryClient())
+  await vi.waitFor(() => expect(mock.subscribe).toHaveBeenCalled())
+  mock.subscribe.mock.calls[0][2]({ type: 'event', cursor: '11', event_id: 'waiting', kind: 'job.changed',
+    resource_id: 'job', group_id: 'group', thread_id: 'thread',
+    payload: { status: 'waiting_for_user', stream_id: 'stream', task_reported: true } })
+  expect(mock.notify).toHaveBeenCalledOnce()
 })

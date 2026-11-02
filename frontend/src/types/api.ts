@@ -951,6 +951,12 @@ export interface TaskReport {
   status: 'completed' | 'failed' | 'waiting_for_user'
   excerpt: string
   truncated: boolean
+  /**
+   * Which dispatch of the task produced this report; a continuation of the
+   * same task thread reports `2` and up. Absent on reports written before
+   * continuations existed.
+   */
+  run?: number | null
 }
 
 /** A watchdog check's alert about one task, posted where the task was dispatched. */

@@ -4,7 +4,7 @@ import { ApiError } from '@/lib/api-v2/client'
 import { retryDelayMs } from '@/lib/api-v2/retry'
 import { authFetch } from '@/lib/authFetch'
 import { LAN_ORIGIN } from '@/lib/androidSession'
-import { notifyReplyOutcome, notifyWatchdogAlert } from '@/lib/replyNotifications'
+import { notifyReplyOutcome, notifyWatchdogAlert, replyNotificationKind, clearReplyNotificationWindows } from '@/lib/replyNotifications'
 import { useAccountSyncStore, type AccountSnapshot } from '@/stores/accountSyncStore'
 import { useConversationActivityStore } from '@/stores/conversationActivityStore'
 import { useMessageStore } from '@/stores/messageStore'
@@ -74,7 +74,7 @@ export function startAccountSync(token: string, queries: QueryClient): () => voi
     if (!seen.has(id)) {
       const kind = String(event.kind)
       const groupId = event.group_id
-      const payload = event.payload as { status?: string; operation?: string; stream_id?: string; turn_id?: string; conversation_kind?: string; watchdog?: boolean } | undefined
+      const payload = event.payload as { status?: string; operation?: string; stream_id?: string; turn_id?: string; conversation_kind?: string; watchdog?: boolean; task_reported?: boolean } | undefined
       if (kind === 'message.changed' && payload?.operation === 'delete' && typeof groupId === 'string') {
         for (const bucket of [groupId, event.thread_id]) if (typeof bucket === 'string') useMessageStore.getState().removeMessage(bucket, String(event.resource_id))
       }
@@ -115,9 +115,11 @@ export function startAccountSync(token: string, queries: QueryClient): () => voi
           const waiting = payload?.status === 'waiting_for_user'
           const outcome = payload?.status === 'cancelled' ? 'cancelled' : ['failed', 'interrupted'].includes(payload?.status ?? '') ? 'failed' : 'completed'
           const run = waiting ? activity.markRunWaiting(job.stream_id) : activity.finishRun(job.stream_id, outcome)
-          // A watchdog's own check finishing is routine; its alerts notify separately.
-          const watchdog = payload?.watchdog === true || snapshot?.threads.some(thread => thread.id === job.thread_id && thread.watchdog)
-          if (run && !run.announced && outcome !== 'cancelled' && !watchdog) notifyReplyOutcome(run, waiting ? 'waiting' : outcome)
+          const thread = snapshot?.threads.find(thread => thread.id === job.thread_id)
+          const notificationKind = payload?.watchdog === true ? 'watchdog'
+            : payload?.task_reported === true ? 'task' : replyNotificationKind(thread)
+          // Note: markRunWaiting returns only a new transition, already marked announced.
+          if (run && (waiting || !run.announced) && outcome !== 'cancelled') notifyReplyOutcome(run, waiting ? 'waiting' : outcome, undefined, notificationKind, payload?.task_reported === true)
           if (!waiting) remoteRuns.delete(job.stream_id)
         }
       }
@@ -201,6 +203,7 @@ export function startAccountSync(token: string, queries: QueryClient): () => voi
   document.addEventListener('visibilitychange', foreground)
   void start()
   return () => {
+    clearReplyNotificationWindows()
     disposed = true
     ++generation
     unsubscribe?.()

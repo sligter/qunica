@@ -6,12 +6,18 @@
 //! list) and secret containment (no API key or MCP header value reaches the
 //! model, at any depth, in any field).
 
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+    Router,
+};
 use qunica_backend::{
     api::router_with_state_for_tests,
     tools::{AppControlContext, ToolExecutor, ToolResult, ToolStatus},
 };
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
+use tower::ServiceExt;
 use uuid::Uuid;
 
 const SECRET_KEY: &str = "sk-super-secret-do-not-leak";
@@ -146,6 +152,129 @@ fn executor_for(pool: &SqlitePool, owner_id: &str) -> ToolExecutor {
         owner_id.to_string(),
         Uuid::new_v4().to_string(),
     ))
+}
+
+async fn json_request(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    body: Value,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json");
+    if let Some(token) = token {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn app_get_reports_bounded_mode_without_a_router() {
+    let (_app, state) = router_with_state_for_tests().await;
+    let pool = state.db.pool();
+    let owner = seed_user(pool, "app-bounded-mode@example.com").await;
+    let group = seed_group(pool, &owner, "Ordinary group").await;
+    let result = execute(
+        &executor_for(pool, &owner),
+        "AppGet",
+        json!({ "kind": "group", "id": group }),
+    )
+    .await;
+    assert_eq!(result.status, ToolStatus::Completed, "{}", result.output);
+    let item = &parsed(&result)["item"];
+    assert_eq!(item["scheduler_mode"], "bounded");
+    assert_eq!(item["router_agent_id"], Value::Null);
+}
+
+#[tokio::test]
+async fn app_get_tracks_router_membership_and_leaving_router_mode() {
+    let (app, state) = router_with_state_for_tests().await;
+    let email = "app-router-mode@example.com";
+    let (status, response) = json_request(
+        &app,
+        "POST",
+        "/api/v2/auth/register",
+        None,
+        json!({ "email": email, "password": "supersecret", "name": "Tester" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{response}");
+    let (status, response) = json_request(
+        &app,
+        "POST",
+        "/api/v2/auth/login",
+        None,
+        json!({ "email": email, "password": "supersecret" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let token = response["access_token"].as_str().unwrap();
+
+    let pool = state.db.pool();
+    let owner: String = sqlx::query_scalar("SELECT id FROM users WHERE email = ?")
+        .bind(email)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let workspace = seed_workspace(pool, &owner, "Router workspace").await;
+    let router = seed_agent(pool, &owner, &workspace, "Dispatcher").await;
+    let group = seed_group(pool, &owner, "Router group").await;
+    sqlx::query(
+        "INSERT INTO group_agents (group_id, agent_id, joined_at, updated_at) \
+         VALUES (?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+    )
+    .bind(&group)
+    .bind(&router)
+    .execute(pool)
+    .await
+    .unwrap();
+    let executor = executor_for(pool, &owner);
+
+    // Exercise the real API transition: leaving router mode must discard the
+    // binding even when the request repeats its old router_agent_id.
+    for mode in ["router", "bounded"] {
+        let (status, response) = json_request(
+            &app,
+            "PATCH",
+            &format!("/api/v2/groups/{group}"),
+            Some(token),
+            json!({ "scheduler_mode": mode, "router_agent_id": router }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{response}");
+        assert_eq!(response["scheduler_mode"], mode);
+        let expected_router = if mode == "router" {
+            json!(router)
+        } else {
+            Value::Null
+        };
+        assert_eq!(response["router_agent_id"], expected_router);
+
+        let result = execute(&executor, "AppGet", json!({ "kind": "group", "id": group })).await;
+        assert_eq!(result.status, ToolStatus::Completed, "{}", result.output);
+        let item = &parsed(&result)["item"];
+        assert_eq!(item["scheduler_mode"], response["scheduler_mode"]);
+        assert_eq!(item["router_agent_id"], expected_router);
+        let member = item["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|member| member["id"] == router)
+            .expect("Router agent remains a visible active group member");
+        assert_eq!(member["name"], "Dispatcher");
+    }
 }
 
 #[tokio::test]

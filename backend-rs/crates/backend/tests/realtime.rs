@@ -1514,3 +1514,74 @@ async fn recovery_reconciles_committed_results_and_waits_but_never_replays_uncer
         1
     );
 }
+
+#[tokio::test]
+async fn job_events_report_router_task_eligibility() {
+    let (app, state, token, group) = fixture().await;
+    let pool = state.db.pool();
+    let owner: String = sqlx::query_scalar("SELECT owner_id FROM groups WHERE id=?")
+        .bind(&group)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO agents(id,owner_id,name,system_prompt,created_at,updated_at) VALUES('router',?,'Router','test','now','now')")
+        .bind(&owner).execute(pool).await.unwrap();
+    sqlx::query("UPDATE groups SET router_agent_id='router' WHERE id=?")
+        .bind(&group)
+        .execute(pool)
+        .await
+        .unwrap();
+    for (id, origin) in [("main", None), ("task", Some("main"))] {
+        sqlx::query("INSERT INTO threads(id,group_id,status,next_seq,origin_thread_id,created_at,updated_at) VALUES(?,?,'active',1,?,'now','now')")
+            .bind(id).bind(&group).bind(origin).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,created_at,updated_at) VALUES(?,?,?,'message.send',?,?,?,?,'{}','running','now','now')")
+            .bind(id).bind(&owner).bind(id).bind(&group).bind(id).bind(id).bind(id).execute(pool).await.unwrap();
+    }
+    let (_, snapshot) = request(
+        &app,
+        "GET",
+        "/api/v2/account/snapshot",
+        Some(&token),
+        Value::Null,
+    )
+    .await;
+    for thread in snapshot["threads"].as_array().unwrap() {
+        assert_eq!(thread["dispatched"], json!(thread["id"] == "task"));
+    }
+    for (job, expected, origin_status, router_enabled, group_status) in [
+        ("task", true, "active", true, "active"),
+        ("main", false, "active", true, "active"),
+        ("task", true, "running", true, "active"),
+        ("task", true, "paused", true, "active"),
+        ("task", false, "archived", true, "active"),
+        ("task", false, "active", false, "active"),
+        ("task", false, "active", true, "archived"),
+    ] {
+        sqlx::query("UPDATE threads SET status=? WHERE id='main'")
+            .bind(origin_status)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE groups SET router_agent_id=?,status=? WHERE id=?")
+            .bind(if router_enabled { Some("router") } else { None })
+            .bind(group_status)
+            .bind(&group)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE execution_jobs SET status='succeeded' WHERE id=?")
+            .bind(job)
+            .execute(pool)
+            .await
+            .unwrap();
+        let payload: String = sqlx::query_scalar("SELECT payload_json FROM account_events WHERE kind='job.changed' AND resource_id=? ORDER BY seq DESC LIMIT 1")
+            .bind(job).fetch_one(pool).await.unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(
+            payload["task_reported"],
+            json!(expected),
+            "{job}/{origin_status}/{router_enabled}/{group_status}"
+        );
+        assert_eq!(payload["watchdog"], json!(false));
+    }
+}

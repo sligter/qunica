@@ -11,6 +11,7 @@
  * device the account signs in from would be the wrong promise.
  */
 
+import { useAccountSyncStore } from '@/stores/accountSyncStore'
 import i18n from '@/i18n'
 import { showNotification } from '@/lib/notifications'
 import {
@@ -86,18 +87,59 @@ export function notifyWatchdogAlert(
   })
 }
 
+export type ReplyNotificationKind = 'main' | 'task' | 'watchdog'
+export type TaskNotificationLevel = 'summary' | 'all'
+const TASK_STORAGE_KEY = 'qunica:notifications:task-updates'
+
+export function readTaskNotificationLevel(): TaskNotificationLevel {
+  try { return localStorage.getItem(TASK_STORAGE_KEY) === 'all' ? 'all' : 'summary' }
+  catch { return 'summary' }
+}
+export function writeTaskNotificationLevel(level: TaskNotificationLevel): void {
+  try { localStorage.setItem(TASK_STORAGE_KEY, level) }
+  catch { /* Unavailable storage retains the summary default. */ }
+}
+export function replyNotificationPolicy(kind: ReplyNotificationKind, outcome: ReplyNotificationOutcome, taskReported: boolean, level: TaskNotificationLevel): boolean {
+  return kind !== 'watchdog' && (kind !== 'task' || outcome === 'waiting' || !taskReported || level === 'all')
+}
+export function replyNotificationKind(thread?: { watchdog?: boolean; dispatched?: boolean }): ReplyNotificationKind {
+  return thread?.watchdog ? 'watchdog' : thread?.dispatched ? 'task' : 'main'
+}
+/** Local streams have no report event; an opened task is assumed to report. */
+export function localReplyNotificationKind(run: ConversationActivityRun): ReplyNotificationKind {
+  return replyNotificationKind(useAccountSyncStore.getState().snapshot?.threads.find(t => t.id === run.thread_id))
+}
+const windows = new Map<string, { count: number; run: ConversationActivityRun; timer: ReturnType<typeof setTimeout> }>()
+export function clearReplyNotificationWindows(): void {
+  for (const entry of windows.values()) clearTimeout(entry.timer)
+  windows.clear()
+}
+// Note: Visiting then leaving a conversation also acknowledges its pending updates.
+useConversationActivityStore.subscribe((state, previous) => {
+  if (state.viewed !== previous.viewed && state.viewed) {
+    const entry = windows.get(state.viewed.conversation_id)
+    if (entry) entry.count = 0
+  }
+})
+function deliver(run: ConversationActivityRun, body: string): void {
+  void showNotification(conversationLabel(run), body).then(result => {
+    if (!result.ok) console.warn('Reply notification was not delivered:', result.error)
+  })
+}
 export function notifyReplyOutcome(
-  run: ConversationActivityRun,
-  outcome: ReplyNotificationOutcome,
-  detail?: string,
+  run: ConversationActivityRun, outcome: ReplyNotificationOutcome, detail?: string,
+  kind: ReplyNotificationKind = 'main', taskReported = false,
 ): void {
-  if (!readReplyNotificationsEnabled()) return
-  if (isReplyNotificationSuppressed(run)) return
-  void showNotification(conversationLabel(run), notificationBody(outcome, detail)).then(
-    (result) => {
-      // Reported, not thrown: the reply itself landed fine, and the settings
-      // screen has a test button for anyone chasing a missing toast.
-      if (!result.ok) console.warn('Reply notification was not delivered:', result.error)
-    },
-  )
+  if (!replyNotificationPolicy(kind, outcome, taskReported, readTaskNotificationLevel())) return
+  if (!readReplyNotificationsEnabled() || isReplyNotificationSuppressed(run)) return
+  const pending = windows.get(run.conversation_id)
+  if (pending) { pending.count += 1; pending.run = run; return }
+  const entry = { count: 0, run, timer: setTimeout(() => {
+    windows.delete(run.conversation_id)
+    if (entry.count && readReplyNotificationsEnabled() && !isReplyNotificationSuppressed(entry.run)) {
+      deliver({ ...entry.run, thread_title: null }, i18n.t('chat:notifications.body.updates', { count: entry.count }))
+    }
+  }, 20_000) }
+  windows.set(run.conversation_id, entry)
+  deliver(run, notificationBody(outcome, detail))
 }

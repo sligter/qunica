@@ -368,6 +368,7 @@ export const enUS = {
     notifications: {
       fallback: { group: 'Group chat', direct: 'Chat' },
       body: {
+        updates: '{{count}} updates',
         completed: 'The reply is ready.',
         waiting: 'The agent is waiting for your input.',
         failed: 'The reply failed.',
@@ -442,7 +443,7 @@ export const enUS = {
       drop: { ready: 'Drop workspace files to attach them or folders to insert their paths.', conversationReady: 'Drop to insert this conversation ID.', conversationInserted: 'Conversation ID inserted.', fileAdded_one: 'Workspace file added.', fileAdded_other: '{{count}} workspace files added.', directoryInserted_one: 'Folder path inserted.', directoryInserted_other: '{{count}} folder paths inserted.', unsupported: 'This dropped item is not supported.', uploadUnsupported: 'External file uploads are not supported in direct chats.', noWorkspace: 'This conversation has no local workspace.', unreadable: 'Unable to read that workspace item.', limitReached: 'You can attach up to {{count}} files.' }, queued_one: '{{count}} message queued — it sends when the current reply finishes', queued_other: '{{count}} messages queued — they send when the current reply finishes', clearQueued: 'Clear queue',
     },
     attachments: { uploading: 'Uploading…', uploaded: 'Uploaded', failed: 'Upload failed', workspace: 'Workspace file', unknownType: 'Unknown type', retry: 'Retry upload', remove: 'Remove attachment', open: 'Open attachment', retryNamed: 'Retry upload {{name}}', removeNamed: 'Remove {{name}}', openNamed: 'Open {{name}}', previewNamed: 'Preview {{name}}' },
-    taskReport: { label: 'Task report', untitled: 'Untitled task', open: 'Open task', truncated: 'Shortened; open the task for the full reply.', status: { completed: 'Done', failed: 'Failed', waiting_for_user: 'Needs your reply' }, waitingHint: 'Answer in the task itself; the router will not answer for you.' },
+    taskReport: { label: 'Task report', untitled: 'Untitled task', open: 'Open task', run: 'Run {{count}}', truncated: 'Shortened; open the task for the full reply.', status: { completed: 'Done', failed: 'Failed', waiting_for_user: 'Needs your reply' }, waitingHint: 'Answer in the task itself; the router will not answer for you.' },
     watchdogAlert: { label: 'Watchdog', action: { notified: 'Needs attention', stopped: 'Stopped' } },
     messages: {
       workspaceIsolated: 'Own folder', workspaceOwnFolder: 'Own folder mounted',
@@ -470,7 +471,7 @@ export const enUS = {
       phase: { preparing: 'Getting ready', thinking: 'Thinking', tool: 'Running {{name}}', toolGeneric: 'Using tools', writing: 'Writing reply', waiting: 'Waiting for you' },
     },
     tools: {
-      activity: 'Activity', activityLabel: 'Activity: {{counts}}{{active}}', activeSuffix: ', active', reasoningCount_one: '{{count}} reasoning', reasoningCount_other: '{{count}} reasoning', toolCount_one: '{{count}} tool', toolCount_other: '{{count}} tools', segmentCount_one: '{{count}} segment', segmentCount_other: '{{count}} segments', toolCalls: 'Tool calls', arguments: 'Arguments', result: 'Result', workingDirectory: 'Working directory', summary: 'Summary', noDetails: 'No details returned.', statuses: { completed: 'completed', started: 'started', running: 'running', failed: 'failed', cancelled: 'cancelled', unavailable: 'unavailable', setup_required: 'setup required', workspace_required: 'workspace required', input_required: 'input required', approval_required: 'approval required', unknown: 'unknown', missingResult: 'No result received', unknownDetail: 'Status: {{value}}' },
+      dispatchTask: 'Dispatch task', continueTask: 'Continue task', activity: 'Activity', activityLabel: 'Activity: {{counts}}{{active}}', activeSuffix: ', active', reasoningCount_one: '{{count}} reasoning', reasoningCount_other: '{{count}} reasoning', toolCount_one: '{{count}} tool', toolCount_other: '{{count}} tools', segmentCount_one: '{{count}} segment', segmentCount_other: '{{count}} segments', toolCalls: 'Tool calls', arguments: 'Arguments', result: 'Result', workingDirectory: 'Working directory', summary: 'Summary', noDetails: 'No details returned.', statuses: { completed: 'completed', started: 'started', running: 'running', failed: 'failed', cancelled: 'cancelled', unavailable: 'unavailable', setup_required: 'setup required', workspace_required: 'workspace required', input_required: 'input required', approval_required: 'approval required', unknown: 'unknown', missingResult: 'No result received', unknownDetail: 'Status: {{value}}' },
     },
     trace: { stopConfirmation: { title: 'Previous work needs verification', description: 'The server restarted while work was running. This task thread stays paused until its external actions are confirmed stopped. Other threads can continue.', open: 'Confirm stopped work…', confirmDescription: 'Verify that the previous process and any external actions have stopped. Confirming releases this task thread and can start its queued work. It does not retry the interrupted action.', confirm: 'I verified it has stopped' },
       title: 'Turn details', description: 'Durable routing and budget details for this turn.', loading: 'Loading trace…', unavailable: 'Trace unavailable', retry: 'Retry', stop: 'Stop turn', stopping: 'Stopping…', usage: 'Turn usage', steps: 'Steps', hops: 'Hops', tokens: 'Tokens', cost: 'Cost', costUnavailable: 'Cost unavailable', summary: 'Scheduler turn summary', view: 'View trace', dispatches: 'Dispatches', dispatchPath: 'Dispatch path', noDispatches: 'No dispatches recorded.', hop: 'hop {{count}}', tokenCount: '{{count}} tokens', missingParent: 'Missing parent', cycleDetached: 'Cycle detached', mode: 'Mode', target: 'Target', child: 'Child', remainingWork: 'Remaining work', outcome: 'Outcome', failure: 'Failure', failureDetail: 'Failure: {{message}}', statuses: { queued: 'Queued', pending: 'Scheduled', running: 'Running', waiting_for_user: 'Waiting for input', completed: 'Completed', silence: 'Completed silently', budget_exhausted: 'Step budget reached', failure_budget_exhausted: 'Failure budget reached', cancelled: 'Cancelled', superseded: 'Superseded', failed: 'Failed' }, dispatchStatuses: { queued: 'Queued', running: 'Running', completed: 'Completed', silent: 'Silent', waiting_for_user: 'Waiting for user input', interrupted: 'Interrupted', cancelled: 'Cancelled', failed: 'Failed' }, terminationReasons: { waiting_for_user: 'Waiting for user input', budget_exhausted: 'Budget exhausted', failure_budget_exhausted: 'Failure budget exhausted', user_cancelled: 'User cancelled', superseded: 'Superseded', server_restart: 'Server restarted', persistence_failed: 'Persistence failed', silence: 'Completed silently', moderator_finished: 'Moderator completed the turn' }, summaries: { deterministicSelection_one: 'Scheduler selected {{count}} speaker', deterministicSelection_other: 'Scheduler selected {{count}} speakers', call: 'Agent call routed to {{target}}', handoff: 'Handoff routed to {{target}}', dispatchFailed: 'Dispatch to {{target}} failed', moderatorFallback: 'Moderator fallback selected {{target}}', cancelled: 'Turn cancelled', superseded: 'Turn superseded by a newer message', budgetExhausted: 'Turn reached its budget limit', failureBudgetExhausted: 'Turn stopped after repeated failures', waitingForUser: 'Turn is waiting for user input', silence: 'Turn completed without a visible reply', persistenceFailed: 'Turn failed while persisting scheduler state', failed: 'Turn failed' }, actions: { speak: 'Speak', call: 'Call', handoff: 'Handoff', wait: 'Wait', silent: 'Silent', response: 'Response', tool: 'Tool' }, reasons: { user_mention: 'User mention', agent_call: 'Agent call', agent_handoff: 'Agent handoff', agent_text_mention: 'Agent text mention', deterministic_order: 'Deterministic order', moderator: 'Moderator', moderator_fallback: 'Moderator fallback', decision_model: 'Decision model', agent_mention: 'Agent mention', scheduler: 'Scheduler' },
@@ -632,7 +633,7 @@ export const enUS = {
     tasks: {
       rename: 'Rename task', renameNamed: 'Rename “{{title}}”', renameDescription: 'Change the task title while keeping its messages and Git branch binding.', renameError: 'Failed to rename task: {{message}}',
       deleteNamed: 'Delete “{{title}}”', deleteAllArchived: 'Delete all archived', dispatched: 'Dispatched', watchdog: 'Watchdog', following: 'Following {{topics}}', deleteAllArchivedTitle: 'Delete {{count}} archived tasks?', deleteAllArchivedDescription: 'These archived tasks and their messages will be removed and cannot be restored. Git branches are kept; bound worktrees are removed. Active tasks are unaffected. If deletion fails, retry the remaining tasks.',
-      switcher: 'Current task', none: 'No task yet', active: 'Active', archived: 'Archived', untitled: 'Untitled task', loading: 'Loading tasks…',
+      switcher: 'Current task', none: 'No task yet', active: 'Active', archived: 'Archived', untitled: 'Untitled task', loading: 'Loading tasks…', search: 'Search tasks', searchPlaceholder: 'Search title, branch, or topic…', categoryFilter: 'Filter by task type', statusFilter: 'Filter by status', categoryAll: 'All tasks', main: 'Main conversation', waitingOnly: 'Waiting for you', noMatches: 'No tasks match these filters.', clearFilters: 'Clear filters', backToSource: 'Back to source conversation',
       title: 'Task title', createTitle: 'Start a new task', createDescription: 'Give this task its own title and context.', creating: 'Creating…', createError: 'Failed to create task: {{message}}',
       gitBranch: 'Git branch (optional)', gitBranchPlaceholder: 'Existing or new branch', gitBranchHint: 'Pick a local branch, or type a new name to branch from the shared workspace.', gitBranchesLoading: 'Loading available branches…', gitBranchesUnavailable: 'Git branches are unavailable. Leave this blank to use the shared workspace.',
       archive: 'Archive task', archiveTitle: 'Archive “{{title}}”?', archiveDescription: 'Its messages stay available, but the task becomes read-only.', archivedReadOnly: 'This task is archived. Choose an active task or start a new one.',
@@ -827,12 +828,20 @@ export const enUS = {
       providerDefaultNamed: "Provider default ({{model}})",
       autoApprove: 'Apply assistant changes automatically',
       autoApproveDescription:
-        'Supported changes run without another click. Secrets, deletions, and form-only steps still stay with you.',
+        'When a pending action card is displayed, it calls the same approval endpoint automatically. This is not a background approver.',
+      approvalManual: 'App changes: manual approval',
+      approvalAutomatic: 'App changes: automatic approval',
+      approvalUnknown: 'Approval mode unavailable',
+      approvalScope: 'AppPropose changes use approval cards. Read-only tools and scratch-file writes do not. Shell uses separate command-policy checks, not an operating-system sandbox. Form hand-offs require your own submission; keys and resource deletions cannot be staged.',
+      actionHistory: 'Assistant actions',
       save: 'Save',
       saving: 'Saving…',
       cancel: 'Cancel',
     },
     actions: {
+      unavailable: 'This action record is no longer available',
+      statusError: 'Could not load action status',
+      loadingStatus: 'Loading action status…',
       title: 'Assistant actions',
       description: 'Changes the assistant proposed, and what became of each one.',
       empty: 'The assistant has not proposed any changes.',
@@ -848,7 +857,8 @@ export const enUS = {
       approved: 'Approved',
       running: 'Running…',
       openLink: 'Open the form',
-      prefillHint: 'This step needs details only you can provide. I filled in everything else.',
+      prefillHint: 'Open the form with the supported non-sensitive fields filled in. Enter credentials yourself, review, and submit; opening the form saves nothing.',
+      manualFormHint: 'Open the form and complete it yourself. This entry does not support automatic field filling or submission.',
       nothingChangedYet: 'Nothing changes until you confirm.',
       search: 'Search history',
       searchPlaceholder: 'Search summaries, kinds, actions…',
@@ -1000,6 +1010,7 @@ export const enUS = {
       enabledDescription: 'Show the assistant launcher in the bottom-right corner.',
     },
     notifications: {
+      taskCompletion: 'Task completion', taskSummary: 'Summary only', taskAll: 'Notify every task',
       title: 'Notifications',
       replyFinished: 'Notify when a reply finishes',
       replyFinishedDescription:

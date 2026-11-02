@@ -19,6 +19,16 @@ export const DEFAULT_DOCK_HEIGHT = 560
 /** How much of the dock must stay on screen for it to remain grabbable. */
 export const MIN_VISIBLE_EDGE = 48
 
+/** Keep the dock from consuming Escape while one of its portalled overlays is open. */
+export function hasOpenAssistantOverlay(): boolean {
+  if (typeof document === 'undefined') return false
+  return Boolean(
+    document.querySelector(
+      '[role="alertdialog"], [role="dialog"][data-state="open"], [role="menu"][data-state="open"], [role="listbox"][data-state="open"], [data-radix-menu-content][data-state="open"]',
+    ),
+  )
+}
+
 /** Distance from a corner, in px, within which a drag snaps to it. */
 const SNAP_THRESHOLD = 72
 

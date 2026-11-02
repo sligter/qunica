@@ -8612,6 +8612,13 @@ async fn build_agent_system_prompt(
     match seat {
         RouterSeat::Router if dispatches => {
             sections.push(crate::runtime::router::ROUTER_PROMPT.to_string());
+            // Note: rendered per turn so the list reflects every message the
+            // router wrote this conversation, not what it remembers itself.
+            if let Some(tasks) =
+                crate::runtime::router::render_tasks_section(pool, &ctx.thread_id).await?
+            {
+                sections.push(tasks);
+            }
         }
         RouterSeat::Worker => sections.push(crate::runtime::router::WORKER_PROMPT.to_string()),
         RouterSeat::Watchdog => {

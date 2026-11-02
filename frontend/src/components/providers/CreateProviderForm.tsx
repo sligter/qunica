@@ -26,6 +26,7 @@ import { ApiError } from '@/lib/api-v2/client'
 import { localizedErrorText, messageError, translatedError, type LocalizedError } from '@/i18n/localizedError'
 import { cn } from '@/lib/utils'
 import type { LLMProviderRead, ProviderKind } from '@/types/api'
+import type { ProviderPrefill } from '@/components/assistant/assistantPrefill'
 
 function createSchema(required: string) { return z.object({
   name: z.string().min(1, required).max(100),
@@ -40,6 +41,7 @@ type FormValues = z.infer<ReturnType<typeof createSchema>>
 
 interface CreateProviderFormProps {
   onCreated?: (provider: LLMProviderRead) => void
+  prefill?: ProviderPrefill
 }
 
 const KIND_OPTIONS: ProviderKind[] = ['openai-compatible', 'openai-responses', 'anthropic', 'anthropic-compatible', 'gemini']
@@ -53,7 +55,7 @@ function baseUrlPlaceholder(kind: ProviderKind): string {
   return 'https://api.openai.com/v1'
 }
 
-export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) {
+export function CreateProviderForm({ onCreated, prefill }: CreateProviderFormProps = {}) {
   const { t, i18n } = useTranslation('providers')
   const create = useCreateProvider()
   const discoverModels = useDiscoverProviderModels()
@@ -61,13 +63,13 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
   const [submitError, setSubmitError] = useState<LocalizedError | null>(null)
   const [models, setModels] = useState<ProviderModelDraft[]>([
     {
-      id: '',
+      id: prefill?.default_model ?? '',
       context_window_tokens: undefined,
       context_output_reserve_percent: 30,
       reasoning_passback: false,
     },
   ])
-  const [defaultModel, setDefaultModel] = useState('')
+  const [defaultModel, setDefaultModel] = useState(prefill?.default_model ?? '')
   const [headerRows, setHeaderRows] = useState<KeyValueRow[]>([])
   const schema = useMemo(() => createSchema(t('validation.required')), [t])
   const validationLanguage = useRef(i18n.resolvedLanguage)
@@ -75,12 +77,12 @@ export function CreateProviderForm({ onCreated }: CreateProviderFormProps = {}) 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: {
-      name: '',
-      kind: 'openai-compatible',
-      base_url: '',
+      name: prefill?.name ?? '',
+      kind: prefill?.kind ?? 'openai-compatible',
+      base_url: prefill?.base_url ?? '',
       api_key: '',
       user_agent: '',
-      description: '',
+      description: prefill?.description ?? '',
     },
   })
 

@@ -304,7 +304,7 @@ fn detail_columns(kind: TargetKind) -> &'static str {
         }
         TargetKind::Group => {
             "g.id, g.name, g.description, g.announcement, g.workspace_id, g.free_speech, \
-             g.proactive_mode, g.communication_mode, g.scheduler_mode, g.agent_mention_policy, \
+             g.proactive_mode, g.communication_mode, g.scheduler_mode, g.router_agent_id, g.agent_mention_policy, \
              g.max_total_tokens, g.turn_timeout_seconds, g.created_at"
         }
         TargetKind::GroupTemplate => {
@@ -325,6 +325,15 @@ fn detail_columns(kind: TargetKind) -> &'static str {
 /// booleans. Nothing here can un-redact a secret, because no secret column is
 /// ever selected in the first place.
 fn postprocess(kind: TargetKind, mut row: Map<String, Value>) -> Value {
+    if kind == TargetKind::Group {
+        if let Some(stored_mode) = row.get("scheduler_mode").and_then(Value::as_str) {
+            let mode = crate::api::groups::effective_scheduler_mode(
+                stored_mode,
+                row.get("router_agent_id").and_then(Value::as_str),
+            );
+            row.insert("scheduler_mode".to_string(), json!(mode));
+        }
+    }
     if kind == TargetKind::Mcp {
         // Header values carry bearer tokens. The names are the useful part —
         // enough to say "you have an Authorization header set" — so keep those

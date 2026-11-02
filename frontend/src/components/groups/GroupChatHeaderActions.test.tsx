@@ -132,6 +132,72 @@ describe('GroupChatHeaderActions task status', () => {
     expect(options.at(-1)).toHaveTextContent('Fix PR 7 · Dispatched · Following github:owner/repo#7')
   })
 
+  it('filters by title, branch, and topic without changing the selected task', async () => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    const branchTask = { ...thread('thread-3', 'Branch work'), git_branch: 'feature/Checkout' }
+    const topicTask = { ...thread('thread-4', 'Topic work'), origin_thread_id: 'thread-1', topics: ['github:owner/repo#7'] }
+    renderSwitcher({ tasks: [...threads, branchTask, topicTask], onSelect })
+    await user.click(screen.getByRole('button', { name: 'Current task' }))
+    const search = screen.getByRole('searchbox', { name: 'Search tasks' })
+    const active = () => screen.getByRole('group', { name: 'Active' })
+
+    await user.type(search, 'docs')
+    expect(within(active()).getByText('Write the docs')).toBeInTheDocument()
+    expect(within(active()).queryByText('Ship the API')).not.toBeInTheDocument()
+    await user.clear(search)
+    await user.type(search, 'CHECKOUT')
+    expect(within(active()).getByText('Branch work')).toBeInTheDocument()
+    await user.clear(search)
+    await user.type(search, 'OWNER/REPO#7')
+    expect(within(active()).getByText('Topic work')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Current task' })).toHaveTextContent('Ship the API')
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('filters the three task categories using the existing thread markers', async () => {
+    const user = userEvent.setup()
+    const dispatched = { ...thread('thread-3', 'Dispatched work'), origin_thread_id: 'thread-1' }
+    const watchdog = { ...thread('thread-4', 'Watchdog work'), watchdog_automation_id: 'automation-1' }
+    renderSwitcher({ tasks: [threads[0], dispatched, watchdog] })
+    await user.click(screen.getByRole('button', { name: 'Current task' }))
+    const active = () => screen.getByRole('group', { name: 'Active' })
+
+    await user.click(screen.getByRole('button', { name: /^Main conversation$/ }))
+    expect(within(active()).getByText('Ship the API')).toBeInTheDocument()
+    expect(within(active()).queryByText('Dispatched work')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^Dispatched$/ }))
+    expect(within(active()).getByText('Dispatched work')).toBeInTheDocument()
+    expect(within(active()).queryByText('Watchdog work')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /^Watchdog$/ }))
+    expect(within(active()).getByText('Watchdog work')).toBeInTheDocument()
+    expect(within(active()).queryByText('Ship the API')).not.toBeInTheDocument()
+  })
+
+  it('shows a clear empty state when filters match no task', async () => {
+    const user = userEvent.setup()
+    renderSwitcher()
+    await user.click(screen.getByRole('button', { name: 'Current task' }))
+    await user.type(screen.getByRole('searchbox', { name: 'Search tasks' }), 'does-not-exist')
+
+    expect(screen.getByRole('status')).toHaveTextContent('No tasks match these filters.')
+    expect(screen.getByRole('button', { name: 'Clear filters' })).toBeInTheDocument()
+  })
+
+  it('filters the waiting-for-you status without inventing a thread state', async () => {
+    const user = userEvent.setup()
+    startRun('run-1', 'thread-1')
+    startRun('run-2', 'thread-2')
+    useConversationActivityStore.getState().markRunWaiting('run-2')
+    renderSwitcher()
+    await user.click(screen.getByRole('button', { name: 'Current task' }))
+    await user.click(screen.getByRole('button', { name: /^Waiting for you$/ }))
+
+    const active = screen.getByRole('group', { name: 'Active' })
+    expect(within(active).getByText('Write the docs')).toBeInTheDocument()
+    expect(within(active).queryByText('Ship the API')).not.toBeInTheDocument()
+  })
+
   it('says nothing about a task that is not doing anything', async () => {
     await openSwitcher()
 

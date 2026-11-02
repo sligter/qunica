@@ -519,6 +519,23 @@ describe('StreamTimeline activity rendering', () => {
     expect(await screen.findByText('未知工具')).toBeVisible()
   })
 
+  it('names a router dispatch by whether it started or continued a task', async () => {
+    const user = userEvent.setup()
+    const dispatch = (id: string, status: string) => event({
+      id, stream_id: 'stream-1', type: 'tool', agent_id: 'agent-1',
+      display_name: 'Lead', tool_call_id: `call-${id}`, tool_name: 'DispatchTask',
+      status: 'completed', created_at: '2026-07-16T10:00:02Z',
+      result_summary: `{"assistant":"Coder","run":2,"status":"${status}","task_id":"task-1"}`,
+    })
+    await i18n.changeLanguage('zh-CN')
+    render(<StreamTimeline run={run([dispatch('started', 'started'), dispatch('continued', 'continued')])} />)
+    const activity = screen.getByRole('group', { name: '活动：2 个工具' })
+    await user.click(activity.querySelector(':scope > summary') as HTMLElement)
+    expect(screen.getByText('派发任务')).toBeVisible()
+    expect(screen.getByText('继续任务')).toBeVisible()
+    expect(screen.queryByText('DispatchTask')).not.toBeInTheDocument()
+  })
+
   it('folds live reasoning and tool calls into one activity bubble', async () => {
     const user = userEvent.setup()
     render(

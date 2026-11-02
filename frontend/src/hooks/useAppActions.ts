@@ -1,11 +1,33 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { fetchJson } from '@/lib/api-v2/client'
+import { ApiError, fetchJson } from '@/lib/api-v2/client'
 import { queryKeysForKind } from '@/lib/appActions'
 import { useAuthStore } from '@/stores/authStore'
 import type { AppActionList, AppActionRead, AppActionStatus } from '@/types/api'
 
 export const appActionsQueryKey = ['app-actions'] as const
+
+const appActionQueryKey = (token: string | null, actionId: string | null) =>
+  [...appActionsQueryKey, 'detail', token, actionId] as const
+
+/** A message outlives the history page containing its action. */
+export function useAppAction(actionId: string | null) {
+  const token = useAuthStore((state) => state.token)
+  return useQuery({
+    queryKey: appActionQueryKey(token, actionId),
+    queryFn: async () => {
+      try {
+        return await fetchJson<AppActionRead>(`/app-actions/${encodeURIComponent(actionId!)}`, { token })
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null
+        throw error
+      }
+    },
+    enabled: token !== null && actionId !== null,
+    refetchInterval: (query) =>
+      !query.state.error && query.state.data?.status === 'approved' ? 1_000 : false,
+  })
+}
 
 export interface AppActionListOptions {
   limit?: number
@@ -57,6 +79,9 @@ export function useResolveAppAction() {
         method: 'POST',
         token,
       }),
+    onSuccess: (result, variables) => {
+      qc.setQueryData(appActionQueryKey(token, variables.actionId), result)
+    },
     onSettled: (_result, _error, variables) => {
       void qc.invalidateQueries({ queryKey: appActionsQueryKey })
       if (variables.decision !== 'approve' || !variables.targetKind) return

@@ -25,7 +25,7 @@ import type { RetryState } from '@/lib/api-v2/retry'
 import type { StreamEvent } from '@/lib/api-v2/types'
 import { conversationMessagesKey } from '@/hooks/useGroupMessages'
 import type { ConversationScope } from '@/hooks/useGroupMessages'
-import { notifyReplyOutcome } from '@/lib/replyNotifications'
+import { notifyReplyOutcome, localReplyNotificationKind } from '@/lib/replyNotifications'
 import { useAuthStore } from '@/stores/authStore'
 import { useConversationActivityStore } from '@/stores/conversationActivityStore'
 import { useMessageStore } from '@/stores/messageStore'
@@ -192,7 +192,7 @@ export function useResumeStream(
       const outcome = failure ? 'failed' : 'completed'
       const finishedRun = finishActivityRun(messageId, outcome, failure ?? undefined)
       if (finishedRun && !finishedRun.announced) {
-        notifyReplyOutcome(finishedRun, outcome, failure ?? undefined)
+        notifyReplyOutcome(finishedRun, outcome, failure ?? undefined, localReplyNotificationKind(finishedRun), true)
       }
     }
     if (groupId) {
@@ -394,7 +394,7 @@ export function useResumeStream(
                 })
               }
               const waitingRun = markActivityRunWaiting(messageId)
-              if (waitingRun) notifyReplyOutcome(waitingRun, 'waiting')
+              if (waitingRun) notifyReplyOutcome(waitingRun, 'waiting', undefined, localReplyNotificationKind(waitingRun), true)
               return
             }
             case 'approval_required': {
@@ -420,7 +420,7 @@ export function useResumeStream(
                 })
               }
               const approvalRun = markActivityRunWaiting(messageId)
-              if (approvalRun) notifyReplyOutcome(approvalRun, 'waiting')
+              if (approvalRun) notifyReplyOutcome(approvalRun, 'waiting', undefined, localReplyNotificationKind(approvalRun), true)
               return
             }
             case 'user_message':

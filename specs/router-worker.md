@@ -47,7 +47,7 @@ Router 回合：有可派发成员（活跃、未静音、非自己）时获得 
 
 | 工具 | 参数 | 行为 |
 | --- | --- | --- |
-| `DispatchTask` | `assistant`、`instructions`、可选 `title`、`topics` | 一个写事务内创建任务线程、首条消息、回合、job、回执，并订阅话题（默认继承来源线程的话题，见 [Thread 订阅](thread-subscriptions.md)）；返回 `{task_id, title, assistant, status:"started", topics}` |
+| `DispatchTask` | `assistant`、`instructions`、可选 `title`、`topics` | 一个写事务内创建任务线程、首条消息、回合、job、回执，并订阅话题（默认继承来源线程的话题，见 [Thread 订阅](thread-subscriptions.md)）；返回 `{task_id, title, assistant, status:"started", topics}`；可选 `task_id` 续投本会话已派发的任务，不建新线程，见 [任务复用与通知收敛](router-task-reuse.md) |
 | `ListTasks` | 可选 `task_id` | 无参数：列出最近 20 个派发任务及状态；带 `task_id`：返回该任务最新回复（至多 20000 字符） |
 | `SendToTask` | `task_id`、`message` | 向任务追加指令；线程忙则排队。任务在等用户回复时拒绝 |
 | `CancelTask` | `task_id` | 取消该线程所有进行中回合并退订其话题；无进行中回合时返回 `idle` |

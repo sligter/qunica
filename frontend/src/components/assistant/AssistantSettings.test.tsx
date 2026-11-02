@@ -15,6 +15,8 @@ const fetchJson = vi.hoisted(() => vi.fn())
 const desktop = vi.hoisted(() => ({
   enabled: false,
   openLibraryWindow: vi.fn(() => Promise.resolve()),
+  openSettingsWindow: vi.fn(() => Promise.resolve()),
+  autoApprove: false,
 }))
 vi.mock('@/lib/api-v2/client', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api-v2/client')>(
@@ -25,6 +27,7 @@ vi.mock('@/lib/api-v2/client', async () => {
 vi.mock('@/lib/desktop', () => ({
   isDesktopRuntime: () => desktop.enabled,
   openLibraryWindow: desktop.openLibraryWindow,
+  openSettingsWindow: desktop.openSettingsWindow,
 }))
 
 const PROVIDERS = [
@@ -65,6 +68,7 @@ async function renderSettings(
     }
     if (path === '/assistant') return Promise.resolve(assistant)
     if (path === '/llm-providers') return Promise.resolve(PROVIDERS)
+    if (path === '/settings/system') return Promise.resolve({ assistant_auto_approve: desktop.autoApprove })
     return Promise.resolve([])
   })
 
@@ -95,6 +99,8 @@ describe('AssistantSettings', () => {
     fetchJson.mockReset()
     desktop.enabled = false
     desktop.openLibraryWindow.mockReset()
+    desktop.openSettingsWindow.mockReset().mockResolvedValue(undefined)
+    desktop.autoApprove = false
   })
 
   afterEach(cleanup)
@@ -103,6 +109,20 @@ describe('AssistantSettings', () => {
     await renderSettings()
     const select = (await screen.findByLabelText(/provider/i)) as HTMLSelectElement
     expect(select.value).toBe('provider-1')
+  })
+
+  it.each([false, true])('explains approval scope and opens history (automatic=%s)', async (automatic) => {
+    desktop.autoApprove = automatic
+    const user = userEvent.setup()
+    await renderSettings()
+    expect(await screen.findByText(automatic ? 'App changes: automatic approval' : 'App changes: manual approval')).toBeVisible()
+    expect(screen.getByText(/not a background approver/)).toBeVisible()
+    expect(screen.getByText(/Shell uses separate command-policy checks/)).toBeVisible()
+    const history = screen.getByRole('link', { name: 'Assistant actions' })
+    expect(history).toHaveAttribute('href', '/settings/assistant-actions')
+    desktop.enabled = true
+    await user.click(history)
+    expect(desktop.openSettingsWindow).toHaveBeenCalledWith('/settings/assistant-actions')
   })
 
   it('opens provider creation in the desktop library window', async () => {

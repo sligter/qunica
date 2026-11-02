@@ -796,15 +796,20 @@ struct GroupRow {
     updated_at: String,
 }
 
+/// The mode clients and app-control tools see, independent of their row shape.
+pub(crate) fn effective_scheduler_mode(stored_mode: &str, router_agent_id: Option<&str>) -> String {
+    // Note: the column's CHECK constraint predates router mode (migration 0052).
+    // Keep this mapping shared so Assistant inspection agrees with the group API.
+    if router_agent_id.is_some() {
+        "router".to_string()
+    } else {
+        stored_mode.to_string()
+    }
+}
+
 impl GroupRow {
-    /// The mode clients see. Router mode is stored as `bounded` plus a router
-    /// because the column's CHECK constraint predates it; see the 0052 migration.
     fn effective_scheduler_mode(&self) -> String {
-        if self.router_agent_id.is_some() {
-            "router".to_string()
-        } else {
-            self.scheduler_mode.clone()
-        }
+        effective_scheduler_mode(&self.scheduler_mode, self.router_agent_id.as_deref())
     }
 }
 

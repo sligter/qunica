@@ -9,12 +9,13 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use qunica_backend::{config::AppConfig, server, telemetry};
+use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::PageLoadEvent;
@@ -620,6 +621,20 @@ const LIBRARY_WINDOW_LABEL: &str = "library";
 const SETTINGS_WINDOW_LABEL: &str = "settings";
 const ASSISTANT_WINDOW_LABEL: &str = "assistant";
 const ASSISTANT_WINDOW_EDGE_MARGIN: f64 = 16.0;
+const ASSISTANT_WINDOW_DEFAULT_WIDTH: f64 = 380.0;
+const ASSISTANT_WINDOW_DEFAULT_HEIGHT: f64 = 520.0;
+const ASSISTANT_WINDOW_MIN_WIDTH: u32 = 300;
+const ASSISTANT_WINDOW_MIN_HEIGHT: u32 = 360;
+const ASSISTANT_WINDOW_MIN_VISIBLE_EDGE: i64 = 48;
+const ASSISTANT_WINDOW_STATE_FILE: &str = "assistant-window-state.json";
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+struct AssistantWindowGeometry {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
 
 fn assistant_window_monitor(app: &tauri::AppHandle) -> Option<Monitor> {
     app.get_webview_window(MAIN_WINDOW_LABEL)
@@ -667,6 +682,148 @@ fn move_assistant_to_bottom_right(window: &tauri::WebviewWindow, monitor: &Monit
         monitor.scale_factor(),
     );
     let _ = window.set_position(position);
+}
+
+fn assistant_window_state_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|directory| directory.join(ASSISTANT_WINDOW_STATE_FILE))
+}
+
+fn read_assistant_window_geometry(app: &tauri::AppHandle) -> Option<AssistantWindowGeometry> {
+    let path = assistant_window_state_path(app)?;
+    let bytes = fs::read(path).ok()?;
+    let geometry = serde_json::from_slice::<AssistantWindowGeometry>(&bytes).ok()?;
+    (geometry.width >= ASSISTANT_WINDOW_MIN_WIDTH && geometry.height >= ASSISTANT_WINDOW_MIN_HEIGHT)
+        .then_some(geometry)
+}
+
+fn assistant_geometry_intersects_work_area(
+    geometry: &AssistantWindowGeometry,
+    work_area_position: PhysicalPosition<i32>,
+    work_area_size: PhysicalSize<u32>,
+) -> bool {
+    let left = i64::from(geometry.x);
+    let top = i64::from(geometry.y);
+    let right = left + i64::from(geometry.width);
+    let bottom = top + i64::from(geometry.height);
+    let area_left = i64::from(work_area_position.x);
+    let area_top = i64::from(work_area_position.y);
+    let area_right = area_left + i64::from(work_area_size.width);
+    let area_bottom = area_top + i64::from(work_area_size.height);
+    left < area_right && right > area_left && top < area_bottom && bottom > area_top
+}
+
+fn assistant_window_monitor_for_geometry(
+    app: &tauri::AppHandle,
+    geometry: &AssistantWindowGeometry,
+    fallback: Option<&Monitor>,
+) -> Option<Monitor> {
+    app.available_monitors()
+        .ok()
+        .and_then(|monitors| {
+            monitors.into_iter().find(|monitor| {
+                let work_area = monitor.work_area();
+                assistant_geometry_intersects_work_area(
+                    geometry,
+                    work_area.position,
+                    work_area.size,
+                )
+            })
+        })
+        .or_else(|| fallback.cloned())
+        .or_else(|| app.primary_monitor().ok().flatten())
+}
+
+fn clamp_assistant_window_geometry(
+    geometry: AssistantWindowGeometry,
+    work_area_position: PhysicalPosition<i32>,
+    work_area_size: PhysicalSize<u32>,
+) -> AssistantWindowGeometry {
+    let area_left = i64::from(work_area_position.x);
+    let area_top = i64::from(work_area_position.y);
+    let area_width = i64::from(work_area_size.width);
+    let area_height = i64::from(work_area_size.height);
+    let width = i64::from(geometry.width).clamp(
+        i64::from(ASSISTANT_WINDOW_MIN_WIDTH),
+        area_width.max(i64::from(ASSISTANT_WINDOW_MIN_WIDTH)),
+    );
+    let height = i64::from(geometry.height).clamp(
+        i64::from(ASSISTANT_WINDOW_MIN_HEIGHT),
+        area_height.max(i64::from(ASSISTANT_WINDOW_MIN_HEIGHT)),
+    );
+    let min_x = area_left - width + ASSISTANT_WINDOW_MIN_VISIBLE_EDGE;
+    let max_x = area_left + area_width - ASSISTANT_WINDOW_MIN_VISIBLE_EDGE;
+    let min_y = area_top - height + ASSISTANT_WINDOW_MIN_VISIBLE_EDGE;
+    let max_y = area_top + area_height - ASSISTANT_WINDOW_MIN_VISIBLE_EDGE;
+    AssistantWindowGeometry {
+        x: i64::from(geometry.x)
+            .clamp(min_x, max_x)
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        y: i64::from(geometry.y)
+            .clamp(min_y, max_y)
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+        width: width as u32,
+        height: height as u32,
+    }
+}
+
+fn restore_assistant_window_geometry(
+    window: &tauri::WebviewWindow,
+    geometry: AssistantWindowGeometry,
+) {
+    let _ = window.set_size(PhysicalSize::new(geometry.width, geometry.height));
+    let _ = window.set_position(PhysicalPosition::new(geometry.x, geometry.y));
+}
+
+/// How long a throttled geometry write waits before hitting the disk again.
+/// Windows reports `Moved` once per pixel while a window is dragged, so an
+/// unthrottled write here would rewrite the state file at pointer speed.
+const ASSISTANT_WINDOW_PERSIST_INTERVAL_MS: u64 = 250;
+static ASSISTANT_WINDOW_LAST_PERSIST_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// `force` writes even inside the throttle window; the closing path uses it so
+/// the final position is exact rather than up to 250ms stale.
+fn persist_assistant_window_geometry(window: &tauri::Window, force: bool) {
+    if !force {
+        let now = now_millis();
+        let last = ASSISTANT_WINDOW_LAST_PERSIST_MS.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < ASSISTANT_WINDOW_PERSIST_INTERVAL_MS {
+            return;
+        }
+        ASSISTANT_WINDOW_LAST_PERSIST_MS.store(now, Ordering::Relaxed);
+    }
+    let Ok(position) = window.outer_position() else {
+        return;
+    };
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let Some(path) = assistant_window_state_path(window.app_handle()) else {
+        return;
+    };
+    let Ok(bytes) = serde_json::to_vec(&AssistantWindowGeometry {
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+    }) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let _ = fs::write(path, bytes);
 }
 
 /// Shared bootstrap for auxiliary windows: reuse an existing one, otherwise
@@ -792,6 +949,17 @@ async fn toggle_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
     }
     let revealed = Arc::new(AtomicBool::new(false));
     let initial_monitor = assistant_window_monitor(&app);
+    let restored_geometry = read_assistant_window_geometry(&app).and_then(|saved| {
+        let monitor =
+            assistant_window_monitor_for_geometry(&app, &saved, initial_monitor.as_ref())?;
+        let work_area = monitor.work_area();
+        Some(clamp_assistant_window_geometry(
+            saved,
+            work_area.position,
+            work_area.size,
+        ))
+    });
+    let has_restored_geometry = restored_geometry.is_some();
     WebviewWindowBuilder::new(
         &app,
         ASSISTANT_WINDOW_LABEL,
@@ -799,8 +967,14 @@ async fn toggle_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
     )
     .disable_drag_drop_handler()
     .title("Qunica — Assistant")
-    .inner_size(380.0, 520.0)
-    .min_inner_size(300.0, 360.0)
+    .inner_size(
+        ASSISTANT_WINDOW_DEFAULT_WIDTH,
+        ASSISTANT_WINDOW_DEFAULT_HEIGHT,
+    )
+    .min_inner_size(
+        ASSISTANT_WINDOW_MIN_WIDTH as f64,
+        ASSISTANT_WINDOW_MIN_HEIGHT as f64,
+    )
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
@@ -810,15 +984,21 @@ async fn toggle_assistant_window(app: tauri::AppHandle) -> Result<(), String> {
     .focused(false)
     .on_page_load(move |window, payload| {
         if payload.event() == PageLoadEvent::Finished && !revealed.swap(true, Ordering::Relaxed) {
-            if let Some(monitor) = initial_monitor.as_ref() {
-                move_assistant_to_bottom_right(&window, monitor);
+            if !has_restored_geometry {
+                if let Some(monitor) = initial_monitor.as_ref() {
+                    move_assistant_to_bottom_right(&window, monitor);
+                }
             }
             let _ = window.show();
             let _ = window.set_focus();
         }
     })
     .build()
-    .map(|_| ())
+    .map(|window| {
+        if let Some(geometry) = restored_geometry {
+            restore_assistant_window_geometry(&window, geometry);
+        }
+    })
     .map_err(|error| error.to_string())
 }
 
@@ -1140,6 +1320,13 @@ fn main() {
         })
         .on_window_event(|window, event| {
             match event {
+                tauri::WindowEvent::Moved(_)
+                | tauri::WindowEvent::Resized(_)
+                | tauri::WindowEvent::ScaleFactorChanged { .. }
+                    if window.label() == ASSISTANT_WINDOW_LABEL =>
+                {
+                    persist_assistant_window_geometry(window, false);
+                }
                 tauri::WindowEvent::CloseRequested { api, .. } => {
                     if window.label() == MAIN_WINDOW_LABEL {
                         // The conversation window hides to the tray so a later
@@ -1149,6 +1336,8 @@ fn main() {
                         // previous surface the next time they reopen.
                         api.prevent_close();
                         let _ = window.hide();
+                    } else if window.label() == ASSISTANT_WINDOW_LABEL {
+                        persist_assistant_window_geometry(window, true);
                     }
                 }
                 tauri::WindowEvent::Focused(false) => {
@@ -1177,9 +1366,9 @@ mod tests {
     use std::future::Future;
 
     use super::{
-        bottom_right_window_position, is_library_route, is_settings_route, open_library_window,
-        open_settings_window, pids_listening_on_port, shell_path_from_output, taskkill_args,
-        toggle_assistant_window,
+        bottom_right_window_position, clamp_assistant_window_geometry, is_library_route,
+        is_settings_route, open_library_window, open_settings_window, pids_listening_on_port,
+        shell_path_from_output, taskkill_args, toggle_assistant_window, AssistantWindowGeometry,
     };
     use tauri::{PhysicalPosition, PhysicalSize};
 
@@ -1253,6 +1442,25 @@ mod tests {
         );
 
         assert_eq!(position, PhysicalPosition::new(-424, 356));
+    }
+
+    #[test]
+    fn assistant_geometry_stays_reachable_after_a_monitor_is_removed() {
+        let geometry = clamp_assistant_window_geometry(
+            AssistantWindowGeometry {
+                x: -5000,
+                y: 5000,
+                width: 2400,
+                height: 1200,
+            },
+            PhysicalPosition::new(0, 0),
+            PhysicalSize::new(1920, 1040),
+        );
+
+        assert_eq!(geometry.x, -1872);
+        assert_eq!(geometry.y, 992);
+        assert_eq!(geometry.width, 1920);
+        assert_eq!(geometry.height, 1040);
     }
 
     /// Proves a portable exe can register its own identity and raise a toast.

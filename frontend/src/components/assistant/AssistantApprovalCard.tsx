@@ -13,11 +13,13 @@ import { Link } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { MobileAction } from '@/components/chat/MobileAction'
-import { useAppActions, useResolveAppAction } from '@/hooks/useAppActions'
+import { useAppAction, useResolveAppAction } from '@/hooks/useAppActions'
 import { useSystemSettings } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api-v2/client'
 import { isPrefill, queryKeysForKind, type PendingAppAction } from '@/lib/appActions'
 import type { AppActionStatus } from '@/types/api'
+import { assistantPrefillLink } from '@/components/assistant/assistantPrefill'
+import { isDesktopRuntime, openLibraryWindow } from '@/lib/desktop'
 
 interface AssistantApprovalCardProps {
   action: PendingAppAction
@@ -33,28 +35,36 @@ export function AssistantApprovalCard({ action, hideSummary }: AssistantApproval
   const resolve = useResolveAppAction()
   const queryClient = useQueryClient()
   const systemSettings = useSystemSettings()
-  const appActions = useAppActions()
-  const [resolved, setResolved] = useState<AppActionStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const autoApproveStarted = useRef(false)
   const targetRefreshStarted = useRef(false)
   const actionId = isPrefill(action) ? null : action.action_id
   const targetKind = isPrefill(action) ? undefined : action.target_kind
-  const savedStatus = actionId
-    ? appActions.data?.items?.find((item) => item.id === actionId)?.status
-    : undefined
+  // Note: absence from a paginated history is not evidence of pending approval.
+  const appAction = useAppAction(actionId)
+  const savedStatus = appAction.isError ? undefined : appAction.data?.status
+  const pending = savedStatus === 'pending'
+  let failureReason: string | null = null
+  if (savedStatus === 'failed' && appAction.data?.result_json) {
+    try {
+      const result: unknown = JSON.parse(appAction.data.result_json)
+      if (result && typeof result === 'object' && 'error' in result && typeof result.error === 'string') {
+        failureReason = result.error
+      }
+    } catch { /* Older results may not contain a structured error. */ }
+  }
+  const displayError = failureReason ?? error ?? appAction.error?.message
 
   const decide = useCallback(
     async (decision: 'approve' | 'reject') => {
-      if (!actionId) return
+      if (!actionId || !pending) return
       setError(null)
       try {
-        const result = await resolve.mutateAsync({
+        await resolve.mutateAsync({
           actionId,
           decision,
           targetKind,
         })
-        setResolved(result.status)
       } catch (cause) {
         // The apply can fail on validation the core still performs — a workspace
         // deleted since the proposal, a name now taken. Saying so is the whole
@@ -68,14 +78,13 @@ export function AssistantApprovalCard({ action, hideSummary }: AssistantApproval
         )
       }
     },
-    [actionId, resolve, targetKind],
+    [actionId, pending, resolve, targetKind],
   )
 
   useEffect(() => {
     if (!actionId) return
     if (savedStatus && savedStatus !== 'pending') {
       setError(null)
-      setResolved(savedStatus)
       if (savedStatus === 'applied' && targetKind && !targetRefreshStarted.current) {
         targetRefreshStarted.current = true
         for (const key of queryKeysForKind(targetKind)) {
@@ -85,10 +94,10 @@ export function AssistantApprovalCard({ action, hideSummary }: AssistantApproval
       return
     }
     if (
+      systemSettings.isError ||
       systemSettings.data?.assistant_auto_approve !== true ||
-      !appActions.isFetched ||
+      !appAction.isFetched ||
       savedStatus !== 'pending' ||
-      resolved ||
       error ||
       autoApproveStarted.current
     ) {
@@ -96,13 +105,14 @@ export function AssistantApprovalCard({ action, hideSummary }: AssistantApproval
     }
     autoApproveStarted.current = true
     void decide('approve')
-  }, [actionId, appActions.isFetched, decide, error, queryClient, resolved, savedStatus, systemSettings.data?.assistant_auto_approve, targetKind])
+  }, [actionId, appAction.isFetched, decide, error, queryClient, savedStatus, systemSettings.isError, systemSettings.data?.assistant_auto_approve, targetKind])
 
   if (isPrefill(action)) {
-    const fields = Object.entries(action.fields)
+    const prefill = assistantPrefillLink(action.route, action.fields)
+    const fields = Object.entries(prefill.fields)
     return (
       <div className="min-w-0 rounded-md border border-border bg-muted/40 p-3 text-sm">
-        <p className="text-xs leading-5 text-muted-foreground">{t('actions.prefillHint')}</p>
+        <p className="text-xs leading-5 text-muted-foreground">{t(prefill.prefilled ? 'actions.prefillHint' : 'actions.manualFormHint')}</p>
         {fields.length > 0 ? (
           <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
             {fields.map(([key, value]) => (
@@ -114,16 +124,25 @@ export function AssistantApprovalCard({ action, hideSummary }: AssistantApproval
           </dl>
         ) : null}
         <Button asChild size="sm" variant="outline" className="mt-3">
-          <Link to={action.route}>
+          <Link to={prefill.route} onClick={(event) => {
+            if (!isDesktopRuntime()) return
+            event.preventDefault()
+            void openLibraryWindow(prefill.route).catch((cause: unknown) => {
+              setError(cause instanceof Error ? cause.message : String(cause))
+            })
+          }}>
             <ExternalLink className="mr-1.5 h-3.5 w-3.5" aria-hidden />
             {t('actions.openLink')}
           </Link>
         </Button>
+        {error ? <p role="alert" className="mt-2 text-xs text-destructive">{error}</p> : null}
       </div>
     )
   }
 
   const statusLabel: Partial<Record<AppActionStatus, string>> = {
+    pending: t('actions.pending'),
+    expired: t('actions.expired'),
     applied: t('actions.applied'),
     rejected: t('actions.rejected'),
     failed: t('actions.failed'),
@@ -131,14 +150,16 @@ export function AssistantApprovalCard({ action, hideSummary }: AssistantApproval
   }
 
   return (
-    <MobileAction active={!resolved}>
+    <MobileAction active={pending}>
     <div className="min-w-0 rounded-md border border-warning bg-warning/40 p-3 text-sm text-foreground">
       <div className="text-xs font-semibold text-warning-foreground">
-        {resolved ? statusLabel[resolved] ?? resolved : t('actions.pending')}
+        {appAction.data === null ? t('actions.unavailable')
+          : appAction.isError ? t('actions.statusError')
+          : savedStatus ? statusLabel[savedStatus] ?? savedStatus : t('actions.loadingStatus')}
       </div>
       {hideSummary ? null : <p className="mt-1 leading-6">{action.summary}</p>}
 
-      {resolved ? null : (
+      {!pending ? null : (
         <>
           <p className="mt-1 text-xs text-muted-foreground">{t('actions.nothingChangedYet')}</p>
           <div className="mt-3 flex gap-2">
@@ -167,10 +188,10 @@ export function AssistantApprovalCard({ action, hideSummary }: AssistantApproval
         </>
       )}
 
-      {error ? (
+      {displayError ? (
         <p className="mt-2 flex items-start gap-1.5 text-xs text-destructive">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-          <span className="min-w-0">{error}</span>
+          <span className="min-w-0">{displayError}</span>
         </p>
       ) : null}
     </div>

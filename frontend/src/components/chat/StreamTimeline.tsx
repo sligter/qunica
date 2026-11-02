@@ -16,6 +16,7 @@ import {
 import { AssistantApprovalCard } from '@/components/assistant/AssistantApprovalCard'
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
+import { toolDisplayName } from '@/components/chat/toolDisplayName'
 import { useGroupAgents } from '@/hooks/useGroupAgents'
 import {
   humanInputRequestFromText,
@@ -467,7 +468,10 @@ function AgentBlockView({
         return [
           {
             id: event.id,
-            name: event.tool_name === 'Unknown tool' ? t('messages.unknownTool') : event.tool_name,
+            name: toolDisplayName(event.tool_name, t, {
+              argsSummary: event.args_summary,
+              resultSummary: event.result_summary,
+            }),
             status: event.status,
             argsSummary: event.args_summary,
             resultSummary: event.result_summary,

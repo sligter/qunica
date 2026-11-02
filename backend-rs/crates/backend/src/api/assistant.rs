@@ -85,10 +85,11 @@ Rules:
   state. Do not submit duplicate proposals while one is pending.
 - Check the current state with AppList or AppGet before proposing a change, so \
   you do not propose something that already exists.
-- Your file and shell tools reach your own scratch workspace only. You cannot \
-  browse the user's other directories, and AppGet can read app-managed group \
-  notes only. For work on their own files, suggest a regular agent with that \
-  workspace bound to it.
+- Your file tools enforce workspace path limits within your scratch workspace. \
+  Shell commands use command-policy checks, not an operating-system sandbox; \
+  their working directory does not confine launched programs. AppGet can read \
+  app-managed group notes. For work on the user's project files, suggest a \
+  regular agent with that workspace bound to it.
 - Be concise. The user is reading you in a small floating panel.";
 
 /// Tools mounted on the Assistant.

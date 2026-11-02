@@ -27,6 +27,8 @@ import {
 import { notificationsSupported, requestNotificationPermission, showNotification } from '@/lib/notifications'
 import {
   readReplyNotificationsEnabled,
+  readTaskNotificationLevel,
+  writeTaskNotificationLevel,
   writeReplyNotificationsEnabled,
 } from '@/lib/replyNotifications'
 import { isDesktopRuntime } from '@/lib/runtime'
@@ -78,6 +80,7 @@ export function SystemSettingsPage() {
   const [language, setLanguage] = useState<Language>('en-US')
   const [assistantEnabled, setAssistantEnabled] = useState(true)
   const [replyInsertMode, setReplyInsertMode] = useState<ReplyInsertMode>('instant')
+  const [taskLevel, setTaskLevel] = useState(readTaskNotificationLevel)
   const [replyNotifications, setReplyNotifications] = useState(readReplyNotificationsEnabled)
   const [notificationError, setNotificationError] = useState<string | null>(null)
   const [notificationTested, setNotificationTested] = useState(false)
@@ -728,6 +731,18 @@ export function SystemSettingsPage() {
               onCheckedChange={(next) => void onReplyNotificationsChange(next)}
               aria-label={t('notifications.replyFinished')}
             />
+          </SettingsRow>
+          <SettingsRow label={t('notifications.taskCompletion')} htmlFor="task-notifications">
+            <select id="task-notifications" value={taskLevel}
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              onChange={event => {
+                const level = event.target.value === 'all' ? 'all' : 'summary'
+                setTaskLevel(level)
+                writeTaskNotificationLevel(level)
+              }}>
+              <option value="summary">{t('notifications.taskSummary')}</option>
+              <option value="all">{t('notifications.taskAll')}</option>
+            </select>
           </SettingsRow>
           <SettingsRow label={t('notifications.test')}>
             <Button

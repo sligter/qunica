@@ -60,6 +60,7 @@ async function renderDock(
       return assistant ? Promise.resolve(assistant) : Promise.reject(new Error('nope'))
     }
     if (path === '/llm-providers') return Promise.resolve(providers)
+    if (path === '/settings/system') return Promise.resolve({ assistant_auto_approve: true })
     return Promise.resolve([])
   })
 
@@ -126,6 +127,24 @@ describe('AssistantDock', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     // Focus must come back, or a keyboard user is stranded after collapsing.
     expect(screen.getByRole('button', { name: /assistant/i })).toHaveFocus()
+  })
+
+  it('leaves Escape to an open dialog instead of collapsing the dock', async () => {
+    const user = userEvent.setup()
+    await renderDock()
+    await user.click(await screen.findByRole('button', { name: /assistant/i }))
+    expect(await screen.findByRole('button', { name: 'Collapse assistant' })).toBeVisible()
+
+    const dialog = document.createElement('div')
+    dialog.setAttribute('role', 'dialog')
+    dialog.setAttribute('data-state', 'open')
+    document.body.append(dialog)
+    try {
+      await user.keyboard('{Escape}')
+      expect(screen.getByRole('button', { name: 'Collapse assistant' })).toBeVisible()
+    } finally {
+      dialog.remove()
+    }
   })
 
   it('does not render at all without a token', async () => {
@@ -197,6 +216,8 @@ describe('AssistantDock', () => {
       'data-agent-is-system',
       'true',
     )
+    expect(await screen.findByText('App changes: automatic approval')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Assistant actions' })).toHaveAttribute('href', '/settings/assistant-actions')
   })
 
   it('opens settings from the header and returns to the chat on cancel', async () => {

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { MessagesSquare, Settings } from 'lucide-react'
+import { ArrowLeft, MessagesSquare, Settings } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ConversationChatView } from '@/components/chat/ConversationChatView'
@@ -119,6 +119,7 @@ export function GroupChatPage() {
     setSelection({ groupId, threadId })
     persistSelectedThreadId(groupId, threadId)
   }
+  const sourceThreadId = selectedThread?.origin_thread_id
   return (
     <ConversationChatView
       key={`groups:${groupId}:${selectedThread?.id ?? 'no-task'}`}
@@ -139,33 +140,50 @@ export function GroupChatPage() {
       })}
       announcement={t('header.announcement', { text: group.data.announcement ?? '' })}
       renderHeaderContext={(disabled) => (
-        <GroupChatHeaderActions
-          groupId={groupId}
-          threads={threads}
-          selectedThread={selectedThread}
-          disabled={disabled}
-          onSelect={selectThread}
-          onArchived={(archivedId) => {
-            const next = threads.find(
-              (thread) => thread.id !== archivedId && thread.status !== 'archived',
-            )
-            selectThread(next?.id ?? archivedId)
-          }}
-          onDeleted={(deletedId, deletedIds = [deletedId]) => {
-            const remaining = threads.filter((thread) => !deletedIds.includes(thread.id))
-            const next = remaining.find((thread) => thread.status !== 'archived')
-              ?? remaining[0]
-            if (next) selectThread(next.id)
-            else {
-              setSelection({ groupId, threadId: undefined })
-              try {
-                window.localStorage.removeItem(`${SELECTED_THREAD_STORAGE_PREFIX}${groupId}`)
-              } catch {
-                // Clearing stale selection must not block task deletion.
+        <div className="flex min-w-0 items-center gap-1">
+          {sourceThreadId ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 max-w-40 shrink-0 px-2 text-xs"
+              disabled={disabled}
+              onClick={() => selectThread(sourceThreadId)}
+              aria-label={t('tasks.backToSource')}
+              title={t('tasks.backToSource')}
+            >
+              <ArrowLeft className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span className="truncate">{t('tasks.backToSource')}</span>
+            </Button>
+          ) : null}
+          <GroupChatHeaderActions
+            groupId={groupId}
+            threads={threads}
+            selectedThread={selectedThread}
+            disabled={disabled}
+            onSelect={selectThread}
+            onArchived={(archivedId) => {
+              const next = threads.find(
+                (thread) => thread.id !== archivedId && thread.status !== 'archived',
+              )
+              selectThread(next?.id ?? archivedId)
+            }}
+            onDeleted={(deletedId, deletedIds = [deletedId]) => {
+              const remaining = threads.filter((thread) => !deletedIds.includes(thread.id))
+              const next = remaining.find((thread) => thread.status !== 'archived')
+                ?? remaining[0]
+              if (next) selectThread(next.id)
+              else {
+                setSelection({ groupId, threadId: undefined })
+                try {
+                  window.localStorage.removeItem(`${SELECTED_THREAD_STORAGE_PREFIX}${groupId}`)
+                } catch {
+                  // Clearing stale selection must not block task deletion.
+                }
               }
-            }
-          }}
-        />
+            }}
+          />
+        </div>
       )}
       disabledComposerReason={
         selectedThread?.status === 'archived' ? t('tasks.archivedReadOnly') : undefined

@@ -202,6 +202,17 @@ fn normalize_status_filter(raw: Option<&str>) -> Result<Option<String>, ApiError
     Ok(Some(value.to_string()))
 }
 
+/// Read the durable row independently of the history page window.
+pub async fn get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(action_id): Path<String>,
+) -> Result<Json<AppActionResponse>, ApiError> {
+    let owner_id = current_user_id(&headers, &state).await?;
+    // Note: the owner-scoped lookup makes foreign and missing IDs indistinguishable.
+    Ok(Json(fetch(&state, &action_id, &owner_id).await?))
+}
+
 pub async fn delete(
     State(state): State<AppState>,
     headers: HeaderMap,

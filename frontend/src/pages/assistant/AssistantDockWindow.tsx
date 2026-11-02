@@ -7,12 +7,13 @@
  * assume a `TerminalRuntimeProvider` — this window never mounts one.
  */
 
-import { useCallback, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { GripHorizontal, Minus, Settings2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { AssistantSettings } from '@/components/assistant/AssistantSettings'
 import { AssistantSetupChecklist } from '@/components/assistant/AssistantSetupChecklist'
+import { hasOpenAssistantOverlay } from '@/components/assistant/useAssistantDockPlacement'
 import { ConversationChatView } from '@/components/chat/ConversationChatView'
 import { Button } from '@/components/ui/button'
 import { PageState } from '@/components/ui/page-state'
@@ -32,6 +33,19 @@ export function AssistantDockWindow() {
   const supportsReasoningEffort = Boolean(
     provider.data?.models?.find((model) => model.id === activeModel)?.supports_reasoning_effort,
   )
+  const collapse = useCallback(() => {
+    void hideCurrentDesktopWindow().catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || hasOpenAssistantOverlay()) return
+      collapse()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [collapse])
+
   const startWindowDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
     event.preventDefault()
@@ -77,7 +91,7 @@ export function AssistantDockWindow() {
             size="icon"
             className="h-8 w-8 rounded-full"
             aria-label={t('collapse')}
-            onClick={() => void hideCurrentDesktopWindow().catch(() => undefined)}
+            onClick={collapse}
           >
             <Minus className="h-4 w-4" aria-hidden />
           </Button>

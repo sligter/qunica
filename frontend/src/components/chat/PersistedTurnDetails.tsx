@@ -5,6 +5,7 @@ import {
 } from '@/components/chat/AgentActivityBubble'
 import type { MessageToolCall } from '@/types/api'
 import { useTranslation } from 'react-i18next'
+import { toolDisplayName, type Translate } from '@/components/chat/toolDisplayName'
 
 interface PersistedTurnDetailsProps {
   reasoning?: string[] | null
@@ -18,10 +19,13 @@ function persistedReasoning(reasoning: string[] | null | undefined): ActivityRea
   }))
 }
 
-function persistedTools(toolCalls: MessageToolCall[] | null | undefined, unknownTool: string): ActivityToolItem[] {
+function persistedTools(toolCalls: MessageToolCall[] | null | undefined, t: Translate): ActivityToolItem[] {
   return (toolCalls ?? []).map((call, index) => ({
     id: call.tool_call_id ?? `persisted-tool-${index}`,
-    name: call.tool_name ?? unknownTool,
+    name: toolDisplayName(call.tool_name, t, {
+      argsSummary: call.args_summary,
+      resultSummary: call.result_summary,
+    }),
     status: call.status,
     argsSummary: call.args_summary,
     resultSummary: call.result_summary,
@@ -39,7 +43,7 @@ export function PersistedTurnDetails({ reasoning, toolCalls }: PersistedTurnDeta
   return (
     <AgentActivityBubble
       reasoning={persistedReasoning(reasoning)}
-      tools={persistedTools(toolCalls, t('messages.unknownTool'))}
+      tools={persistedTools(toolCalls, t)}
     />
   )
 }

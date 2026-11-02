@@ -274,7 +274,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/api/v2/app-actions/:action_id",
-            axum::routing::delete(app_actions::delete),
+            get(app_actions::get).delete(app_actions::delete),
         )
         .route(
             "/api/v2/app-actions/:action_id/approve",

@@ -391,6 +391,13 @@ async fn only_approval_applies_a_staged_action_and_only_once() {
     assert_eq!(status, StatusCode::OK, "body: {body:?}");
     assert_eq!(body["status"], "applied");
     assert_eq!(count(&state, "agents", &owner).await, 1);
+    let (status, detail) = send(
+        &app,
+        authed("GET", &format!("/api/v2/app-actions/{action}"), &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(detail, body);
 }
 
 #[tokio::test]
@@ -1497,4 +1504,53 @@ async fn a_workspace_can_be_proposed_with_auto_create() {
         std::path::Path::new(&local_path).is_dir(),
         "expected a real directory at {local_path}"
     );
+}
+
+#[tokio::test]
+async fn action_detail_is_owner_scoped_and_preserves_every_status() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register(&app, "detail-owner@example.com").await;
+    let stranger = register(&app, "detail-stranger@example.com").await;
+    let owner = owner_id(&state, "detail-owner@example.com").await;
+    let executor = executor_for(&state, &owner);
+    let staged = executor
+        .execute(
+            "AppPropose",
+            json!({
+                "target_kind": "skill", "action": "create",
+                "payload": {"name": "Detail", "body_markdown": "# Detail"}
+            }),
+        )
+        .await;
+    assert_eq!(staged.status, ToolStatus::ApprovalRequired);
+    let action = action_id_of(&staged);
+    let uri = format!("/api/v2/app-actions/{action}");
+    let (status, foreign) = send(&app, authed("GET", &uri, &stranger)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, missing) = send(&app, authed("GET", "/api/v2/app-actions/missing", &token)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(foreign, missing);
+
+    for expected in [
+        "pending", "approved", "applied", "failed", "rejected", "expired",
+    ] {
+        let reason = json!({"error": "execution failed"}).to_string();
+        sqlx::query("UPDATE app_actions SET status = ?, result_json = ? WHERE id = ?")
+            .bind(expected)
+            .bind(&reason)
+            .bind(&action)
+            .execute(state.db.pool())
+            .await
+            .unwrap();
+        let (status, detail) = send(&app, authed("GET", &uri, &token)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["status"], expected);
+        assert_eq!(detail["result_json"], reason);
+        let (_, list) = send(&app, authed("GET", "/api/v2/app-actions", &token)).await;
+        assert_eq!(detail, list["items"][0]);
+    }
+    let (status, _) = send(&app, authed("DELETE", &uri, &token)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send(&app, authed("GET", &uri, &token)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

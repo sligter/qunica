@@ -28,10 +28,12 @@ import { Bot, Minus, Settings2, Sparkles } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { AssistantSettings } from '@/components/assistant/AssistantSettings'
+import { AssistantApprovalStatus } from '@/components/assistant/AssistantApprovalStatus'
 import { AssistantSetupChecklist } from '@/components/assistant/AssistantSetupChecklist'
 import {
   MIN_DOCK_HEIGHT,
   MIN_DOCK_WIDTH,
+  hasOpenAssistantOverlay,
   useAssistantDockPlacement,
 } from '@/components/assistant/useAssistantDockPlacement'
 import { ConversationChatView } from '@/components/chat/ConversationChatView'
@@ -136,9 +138,7 @@ export function AssistantDock({ mobileTriggerRef }: { mobileTriggerRef?: RefObje
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       // Let a dialog or popover inside the dock handle its own Escape first.
-      if (document.querySelector('[role="alertdialog"], [data-state="open"][role="dialog"]')) {
-        return
-      }
+      if (hasOpenAssistantOverlay()) return
       collapse()
     }
     document.addEventListener('keydown', onKeyDown)
@@ -233,11 +233,16 @@ export function AssistantDock({ mobileTriggerRef }: { mobileTriggerRef?: RefObje
   const content = showSettings ? (
     <AssistantSettings onClose={() => setShowSettings(false)} />
   ) : assistant.data?.provider_configured && assistant.data.chat_id ? (
-    <ConversationChatView conversationId={assistant.data.chat_id} workspaceId={null}
+    <div className="flex h-full min-h-0 flex-col">
+      <AssistantApprovalStatus compact />
+      <div className="min-h-0 flex-1">
+      <ConversationChatView conversationId={assistant.data.chat_id} workspaceId={null}
       supportsReasoningEffort={supportsReasoningEffort} scope="direct-chats" agents={[]}
       agentIsSystem compact title={t('chat.title')}
       capabilities={{ showAnnouncement: false, showManage: false, showTurnTrace: false,
         showWorkspace: false, showTerminal: false, allowMentions: false }} />
+      </div>
+    </div>
   ) : <AssistantSetupChecklist loading={assistant.isLoading} error={Boolean(assistant.error)} />
 
   if (compactLayout && !desktop) {

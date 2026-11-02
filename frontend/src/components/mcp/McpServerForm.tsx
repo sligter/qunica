@@ -23,6 +23,7 @@ import {
 } from '@/hooks/useMcpServers'
 import { ApiError } from '@/lib/api-v2/client'
 import { parseMcpConfig } from '@/lib/mcpConfigImport'
+import type { McpPrefill } from '@/components/assistant/assistantPrefill'
 import type {
   McpServerCreate,
   McpServerRead,
@@ -58,6 +59,7 @@ function transportStep(key: string, current: number): number {
 interface McpServerFormProps {
   /** The server being edited, or omitted to create a new one. */
   server?: McpServerRead
+  prefill?: McpPrefill
   onSaved?: (server: McpServerRead) => void
   onSavingChange?: (saving: boolean) => void
 }
@@ -89,6 +91,7 @@ function formatArgs(args: string[]): string {
  */
 export function McpServerForm({
   server,
+  prefill,
   onSaved,
   onSavingChange,
 }: McpServerFormProps) {
@@ -97,19 +100,19 @@ export function McpServerForm({
   const update = useUpdateMcpServer(server?.id)
   const testDraft = useTestMcpDraft()
 
-  const [name, setName] = useState(server?.name ?? '')
-  const [description, setDescription] = useState(server?.description ?? '')
-  const [transport, setTransport] = useState<McpTransport>(server?.transport ?? 'stdio')
+  const [name, setName] = useState(server?.name ?? prefill?.name ?? '')
+  const [description, setDescription] = useState(server?.description ?? prefill?.description ?? '')
+  const [transport, setTransport] = useState<McpTransport>(server?.transport ?? prefill?.transport ?? 'stdio')
   const [command, setCommand] = useState(server?.command ?? '')
   const [argsText, setArgsText] = useState(formatArgs(server?.args ?? []))
   const [cwd, setCwd] = useState(server?.cwd ?? '')
-  const [url, setUrl] = useState(server?.url ?? '')
+  const [url, setUrl] = useState(server?.url ?? prefill?.url ?? '')
   const [envRows, setEnvRows] = useState<KeyValueRow[]>(() => rowsFromRecord(server?.env))
   const [headerRows, setHeaderRows] = useState<KeyValueRow[]>(() =>
     maskedRowsFromRecord(server?.headers_masked),
   )
-  const [timeoutSeconds, setTimeoutSeconds] = useState(server?.timeout_seconds ?? 60)
-  const [toolFilterText, setToolFilterText] = useState((server?.tool_filter ?? []).join(', '))
+  const [timeoutSeconds, setTimeoutSeconds] = useState(server?.timeout_seconds ?? prefill?.timeout_seconds ?? 60)
+  const [toolFilterText, setToolFilterText] = useState((server?.tool_filter ?? prefill?.tool_filter ?? []).join(', '))
   const [enabled, setEnabled] = useState(server?.enabled ?? true)
   const [jsonConfig, setJsonConfig] = useState('')
   const [jsonError, setJsonError] = useState(false)

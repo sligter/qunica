@@ -30,6 +30,85 @@ fn dispatched_task(messages: &[Value]) -> String {
     history[start..start + 36].to_string()
 }
 
+/// The task id in a user message shaped `SEND <task-id>`.
+fn sent_task(messages: &[Value]) -> String {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "user")
+        .map(|message| wire_text(&message["content"]))
+        .and_then(|text| {
+            let start = text.find("SEND ")? + "SEND ".len();
+            text.get(start..start + 36).map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+/// A task thread seeded directly, as though the router had dispatched it to
+/// `worker` from `origin` at `ts`. No job, so the runtime reads it as idle.
+async fn seed_task_thread(
+    state: &AppState,
+    group: &str,
+    worker: &str,
+    origin: &str,
+    title: &str,
+    ts: &str,
+) -> String {
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO threads (id, group_id, agent_id, title, status, next_seq, \
+         assigned_agent_id, origin_thread_id, origin_turn_id, created_at, updated_at) \
+         VALUES (?, ?, NULL, ?, 'active', 1, ?, ?, NULL, ?, ?)",
+    )
+    .bind(&id)
+    .bind(group)
+    .bind(title)
+    .bind(worker)
+    .bind(origin)
+    .bind(ts)
+    .bind(ts)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+    id
+}
+
+/// A fake provider whose replies a handler scripted by request shape; the
+/// router and worker turns run as independent jobs, so replies key off the
+/// message state rather than arrival order.
+async fn scripted_router_provider(
+    handler: impl Fn(&Value, &[Value]) -> String + Clone + Send + Sync + 'static,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let app = Router::new().fallback({
+        let requests = Arc::clone(&requests);
+        move |request: Request<Body>| {
+            let requests = Arc::clone(&requests);
+            let handler = handler.clone();
+            async move {
+                let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let request: Value = serde_json::from_slice(&bytes).unwrap();
+                let messages = request["messages"].as_array().cloned().unwrap_or_default();
+                let body = if is_router_request(&request) {
+                    handler(&request, &messages)
+                } else {
+                    text_body("worker result 42")
+                };
+                requests.lock().await.push(request);
+                ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), requests)
+}
+
 /// The JSON result of the router's tool call `call_id`.
 fn tool_result(requests: &[Value], call_id: &str) -> Option<Value> {
     let messages: Vec<Value> = requests
@@ -37,6 +116,41 @@ fn tool_result(requests: &[Value], call_id: &str) -> Option<Value> {
         .flat_map(|request| request["messages"].as_array().cloned().unwrap_or_default())
         .collect();
     result_in(&messages, call_id)
+}
+
+/// The raw text of the router's tool call `call_id`, failures included.
+fn tool_text(requests: &[Value], call_id: &str) -> Option<String> {
+    requests
+        .iter()
+        .flat_map(|request| request["messages"].as_array().cloned().unwrap_or_default())
+        .find(|message| message["role"] == "tool" && message["tool_call_id"] == call_id)
+        .map(|message| wire_text(&message["content"]))
+}
+
+/// The text after `marker` in the latest user message, split into task ids.
+fn ids_after(messages: &[Value], marker: &str) -> Vec<String> {
+    let text = messages
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "user")
+        .map(|message| wire_text(&message["content"]))
+        .unwrap_or_default();
+    let Some(start) = text.find(marker) else {
+        return Vec::new();
+    };
+    text[start + marker.len()..]
+        .split_whitespace()
+        .filter_map(|word| word.get(..36).map(str::to_string))
+        .collect()
+}
+
+fn last_user_text(messages: &[Value]) -> String {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message["role"] == "user")
+        .map(|message| wire_text(&message["content"]))
+        .unwrap_or_default()
 }
 
 fn result_in(messages: &[Value], call_id: &str) -> Option<Value> {
@@ -161,13 +275,22 @@ struct RouterGroup {
 }
 
 async fn router_group(name: &str, first_router_reply: String, extra: Value) -> RouterGroup {
+    let (url, requests) = router_fake_provider(first_router_reply).await;
+    router_group_with(name, url, requests, extra).await
+}
+
+async fn router_group_with(
+    name: &str,
+    url: String,
+    requests: Arc<Mutex<Vec<Value>>>,
+    extra: Value,
+) -> RouterGroup {
     let (app, state) = router_with_state_for_tests().await;
     let email = format!("router-{name}@example.test");
     let token = register_and_login(&app, &email).await;
     let owner = owner_id(&state, &email).await;
     let (root, workspace) = create_local_workspace(&app, &token).await;
     let group = create_group(&app, &token, &workspace, json!({})).await;
-    let (url, requests) = router_fake_provider(first_router_reply).await;
     let provider = seed_provider(&state, &owner, &url).await;
     let router = seed_agent(
         &state,
@@ -210,6 +333,67 @@ async fn router_group(name: &str, first_router_reply: String, extra: Value) -> R
 }
 
 impl RouterGroup {
+    /// Router-written task instructions in `thread`.
+    async fn instructions_in(&self, thread: &str) -> i64 {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM messages WHERE thread_id=? AND \
+             COALESCE(json_extract(CASE WHEN json_valid(content_json) THEN content_json ELSE '{}' END,'$.router_dispatch'),0)=1",
+        )
+        .bind(thread)
+        .fetch_one(self.state.db.pool())
+        .await
+        .unwrap()
+    }
+
+    async fn topics_of(&self, thread: &str) -> Vec<String> {
+        sqlx::query_scalar("SELECT topic FROM thread_topics WHERE thread_id=? ORDER BY topic")
+            .bind(thread)
+            .fetch_all(self.state.db.pool())
+            .await
+            .unwrap()
+    }
+
+    /// The single task this conversation dispatched.
+    async fn only_task(&self, main: &str) -> String {
+        let tasks: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM threads WHERE origin_thread_id=?")
+                .bind(main)
+                .fetch_all(self.state.db.pool())
+                .await
+                .unwrap();
+        assert_eq!(tasks.len(), 1, "one task thread: {tasks:?}");
+        tasks[0].clone()
+    }
+
+    async fn wait_for_tool_text(&self, call_id: &str) -> String {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if let Some(output) = tool_text(&self.requests.lock().await, call_id) {
+                    break output;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the router sees the result of {call_id}"))
+    }
+
+    /// The `task_reports` entries posted to `thread`, oldest first.
+    async fn reports(&self, thread: &str) -> Vec<Value> {
+        self.messages(thread)
+            .await
+            .into_iter()
+            .filter(|m| m.2 == "task_report")
+            .flat_map(|m| {
+                let value: Value = serde_json::from_str(m.4.as_deref().unwrap()).unwrap();
+                value["task_reports"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
     async fn say(&self, thread: &str, content: &str) {
         let (status, receipt) = send(
             &self.app,
@@ -590,6 +774,341 @@ async fn router_follows_up_on_and_cancels_its_task() {
     .expect("the router sees the CancelTask result");
     assert_eq!(cancelled["task_id"], json!(task));
     assert_eq!(cancelled["status"], "idle", "nothing was running");
+}
+
+#[tokio::test]
+async fn send_to_task_takes_a_slot_for_idle_tasks_but_queues_on_running_ones() {
+    let dispatch_two = tool_body(vec![
+        (
+            "call-one",
+            "DispatchTask",
+            json!({"assistant": "Coder", "instructions": "First job"}),
+        ),
+        (
+            "call-two",
+            "DispatchTask",
+            json!({"assistant": "Coder", "instructions": "Second job"}),
+        ),
+    ]);
+    let handler = {
+        let dispatch_two = dispatch_two;
+        move |_request: &Value, messages: &[Value]| {
+            let last_user = messages
+                .iter()
+                .rev()
+                .find(|message| message["role"] == "user")
+                .map(|message| wire_text(&message["content"]))
+                .unwrap_or_default();
+            let last_is_tool = messages
+                .last()
+                .is_some_and(|message| message["role"] == "tool");
+            if last_user.contains("Task report") {
+                text_body("Summary: the worker finished.")
+            } else if last_is_tool {
+                text_body("Started the task.")
+            } else if last_user.contains("SEND") {
+                let task = sent_task(messages);
+                let call_id = format!("call-send-{}", &task[..8]);
+                tool_body(vec![(
+                    &call_id,
+                    "SendToTask",
+                    json!({ "task_id": task, "message": "Add tests" }),
+                )])
+            } else {
+                dispatch_two.clone()
+            }
+        }
+    };
+    let (url, requests) = scripted_router_provider(handler).await;
+    let scenario =
+        router_group_with("send-slot", url, requests, json!({ "max_router_tasks": 2 })).await;
+    let main = seed_thread(&scenario.state, &scenario.group, "active").await;
+    scenario.say(&main, "do two things").await;
+    scenario.wait_for_summary(&main).await;
+    // Both workers finished, so both tasks are idle before we freeze one.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let open: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM execution_jobs WHERE thread_id IN \
+                 (SELECT id FROM threads WHERE group_id=? AND origin_thread_id=?) \
+                 AND status IN ('queued','running','waiting_for_user')",
+            )
+            .bind(&scenario.group)
+            .bind(&main)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+            if open == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("both dispatched tasks finish");
+    let tasks: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM threads WHERE origin_thread_id=? ORDER BY created_at,id",
+    )
+    .bind(&main)
+    .fetch_all(scenario.state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(tasks.len(), 2);
+    let (busy, idle) = (tasks[0].clone(), tasks[1].clone());
+    // Keep the first task counted as running while the group's single slot is
+    // tightened, the same way the watchdog test fakes a failed run.
+    sqlx::query("UPDATE execution_jobs SET status='running' WHERE thread_id=?")
+        .bind(&busy)
+        .execute(scenario.state.db.pool())
+        .await
+        .unwrap();
+    let (status, _) = send(
+        &scenario.app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{}", scenario.group),
+            &scenario.token,
+            json!({ "max_router_tasks": 1 }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A follow-up to the running task queues behind its current run.
+    scenario.say(&main, &format!("SEND {busy}")).await;
+    let queued = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Some(result) = tool_result(
+                &scenario.requests.lock().await,
+                &format!("call-send-{}", &busy[..8]),
+            ) {
+                break result;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the router sees the SendToTask result");
+    assert_eq!(queued["status"], "accepted");
+    assert!(
+        scenario
+            .messages(&busy)
+            .await
+            .iter()
+            .any(|m| m.3 == "Add tests"),
+        "the follow-up lands in the running task"
+    );
+
+    // A follow-up that would restart the idle task needs a slot, and the one
+    // slot this group has is taken by the running task.
+    scenario.say(&main, &format!("SEND {idle}")).await;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let requests = scenario.requests.lock().await;
+            if requests.iter().any(|r| {
+                is_router_request(r)
+                    && r.to_string().contains(&format!("SEND {idle}"))
+                    && r.to_string()
+                        .contains("the limit for this group; wait for one to report")
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the router sees the SendToTask failure");
+    assert!(
+        !scenario
+            .messages(&idle)
+            .await
+            .iter()
+            .any(|m| m.3 == "Add tests"),
+        "the denied follow-up writes nothing into the idle task"
+    );
+}
+
+#[tokio::test]
+async fn the_per_request_limit_counts_follow_ups_not_new_threads() {
+    follow_ups_stop_at_the_per_request_cap("per-request", "SendToTask").await;
+}
+
+#[tokio::test]
+async fn the_per_request_limit_counts_continued_dispatches() {
+    follow_ups_stop_at_the_per_request_cap("per-request-continue", "DispatchTask").await;
+}
+
+/// The router keeps adding work to one task with `tool` within a single user
+/// request; the 17th instruction is refused and no second thread opens.
+async fn follow_ups_stop_at_the_per_request_cap(name: &str, tool: &'static str) {
+    let handler = move |_request: &Value, messages: &[Value]| {
+        let last_user = messages
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "user")
+            .map(|message| wire_text(&message["content"]))
+            .unwrap_or_default();
+        let tool_results = messages
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .count();
+        if last_user.contains("Task report") {
+            text_body("Summary: the worker finished.")
+        } else if tool_results > 16 {
+            // The 17th follow-up was the one refused.
+            text_body("Stopped at the limit.")
+        } else {
+            let task = sent_task(messages);
+            let call_id = format!("call-send-{tool_results:02}");
+            let round = format!("Round {}", tool_results + 1);
+            let args = if tool == "SendToTask" {
+                json!({ "task_id": task, "message": round })
+            } else {
+                json!({ "task_id": task, "instructions": round })
+            };
+            tool_body(vec![(&call_id, tool, args)])
+        }
+    };
+    let (url, requests) = scripted_router_provider(handler).await;
+    let scenario = router_group_with(name, url, requests, json!({})).await;
+    let main = seed_thread(&scenario.state, &scenario.group, "active").await;
+    let task = seed_task_thread(
+        &scenario.state,
+        &scenario.group,
+        &scenario.worker,
+        &main,
+        "Follow up",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    scenario.say(&main, &format!("SEND {task}")).await;
+    let refused = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(output) = tool_text(&scenario.requests.lock().await, "call-send-16") {
+                break output;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the router runs into the per-request cap");
+    assert!(
+        refused.contains(
+            "16 task instructions were already sent for the user's latest message; report what you have instead"
+        ),
+        "{refused}"
+    );
+    let earlier = tool_text(&scenario.requests.lock().await, "call-send-15").unwrap();
+    assert!(!earlier.contains("already sent"), "{earlier}");
+    assert_eq!(scenario.instructions_in(&task).await, 16);
+    // The loop never opened a second thread.
+    let threads: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM threads WHERE group_id=? AND origin_thread_id IS NOT NULL",
+    )
+    .bind(&scenario.group)
+    .fetch_one(scenario.state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(threads, 1);
+}
+
+#[tokio::test]
+async fn the_router_prompt_lists_this_conversations_tasks_newest_first() {
+    let scenario = router_group("tasks-view", text_body("Done."), json!({})).await;
+    let main = seed_thread(&scenario.state, &scenario.group, "active").await;
+    let other = seed_thread(&scenario.state, &scenario.group, "active").await;
+
+    let mut seeded = Vec::new();
+    for n in 1..=10 {
+        let ts = format!("2024-01-01T00:{n:02}:00Z");
+        let title = if n == 5 {
+            "Title <x> & \"quoted\"".to_string()
+        } else {
+            format!("Seed task {n}")
+        };
+        let id = seed_task_thread(
+            &scenario.state,
+            &scenario.group,
+            &scenario.worker,
+            &main,
+            &title,
+            &ts,
+        )
+        .await;
+        seeded.push((id, title, ts));
+    }
+    // A newer task of another conversation must never leak into this list.
+    let foreign = seed_task_thread(
+        &scenario.state,
+        &scenario.group,
+        &scenario.worker,
+        &other,
+        "Foreign task",
+        "2024-01-02T00:00:00Z",
+    )
+    .await;
+
+    scenario.say(&main, "hello").await;
+    // Wait on the provider request itself: the router's reply row can exist
+    // before the request is recorded.
+    let prompt = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Some(request) = scenario
+                .requests
+                .lock()
+                .await
+                .iter()
+                .find(|r| is_router_request(r) && r.to_string().contains("hello"))
+            {
+                break request.to_string();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the router's request for the hello turn");
+    assert!(
+        prompt.contains("Tasks in this conversation (newest first):"),
+        "{prompt}"
+    );
+    // The eight newest tasks of this conversation are listed newest first.
+    for n in 3..=10 {
+        let (id, title, ts) = &seeded[n - 1];
+        let title = title
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;");
+        assert!(
+            prompt.contains(&format!(
+                "- {id} · {title} · Coder · idle · run 0 · updated {ts}"
+            )),
+            "newest tasks are listed: {title}, {prompt}"
+        );
+    }
+    // The two oldest fall off the eight-row budget and the cut is marked.
+    for (id, title, _) in &seeded[..2] {
+        assert!(
+            !prompt.contains(&format!("- {id} · ")),
+            "oldest tasks drop off: {title}, {prompt}"
+        );
+    }
+    assert!(
+        prompt.contains("(More tasks exist; use ListTasks to see them all.)"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains(&format!("- {foreign} ·")),
+        "tasks of another conversation are not listed: {prompt}"
+    );
+    assert!(!prompt.contains("Foreign task"), "{prompt}");
+    // The router's own markup characters are escaped like transcript text.
+    assert!(!prompt.contains("Title <x>"), "{prompt}");
+    assert!(
+        prompt.contains("Title &lt;x&gt; &amp; &quot;quoted&quot;"),
+        "{prompt}"
+    );
 }
 
 impl RouterGroup {
@@ -1039,4 +1558,302 @@ async fn a_watchdog_check_reviews_tasks_alerts_the_user_and_stops_one_read_only(
             .unwrap();
     assert_ne!(landed, check);
     assert_ne!(landed, main);
+}
+
+#[tokio::test]
+async fn dispatch_with_task_id_continues_the_task_in_its_thread() {
+    let handler = |_request: &Value, messages: &[Value]| {
+        let last_user = last_user_text(messages);
+        let last_is_tool = messages
+            .last()
+            .is_some_and(|message| message["role"] == "tool");
+        if last_user.contains("Task report") {
+            text_body("Summary: the worker finished.")
+        } else if last_is_tool {
+            text_body("Started the task.")
+        } else if last_user.contains("AGAIN") {
+            tool_body(vec![(
+                "call-continue",
+                "DispatchTask",
+                json!({"task_id": dispatched_task(messages), "title": "Renamed",
+                    "instructions": "Now add tests"}),
+            )])
+        } else {
+            tool_body(vec![(
+                "call-dispatch",
+                "DispatchTask",
+                json!({"assistant": "Coder", "title": "Widget", "instructions": "Build the widget"}),
+            )])
+        }
+    };
+    let (url, requests) = scripted_router_provider(handler).await;
+    let scenario = router_group_with("continue", url, requests, json!({})).await;
+    let main = seed_thread(&scenario.state, &scenario.group, "active").await;
+    scenario.say(&main, "build the widget").await;
+    scenario.wait_for_summary(&main).await;
+    scenario.say(&main, "AGAIN with tests").await;
+    scenario.wait_for_summaries(&main, 2).await;
+
+    let task = scenario.only_task(&main).await;
+    let continued = tool_result(&scenario.requests.lock().await, "call-continue").unwrap();
+    assert_eq!(continued["task_id"], json!(task));
+    assert_eq!(continued["status"], "continued");
+    assert_eq!(continued["run"], 2);
+    assert_eq!(continued["assistant"], "Coder");
+    assert_eq!(
+        continued["title"], "Widget",
+        "a continued task keeps its title"
+    );
+    let title: String = sqlx::query_scalar("SELECT title FROM threads WHERE id=?")
+        .bind(&task)
+        .fetch_one(scenario.state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(title, "Widget");
+
+    // The worker's second run sees the first instruction and its own reply.
+    let requests = scenario.requests.lock().await;
+    let worker_requests: Vec<String> = requests
+        .iter()
+        .filter(|r| !is_router_request(r))
+        .map(Value::to_string)
+        .collect();
+    assert_eq!(worker_requests.len(), 2);
+    let second = &worker_requests[1];
+    for seen in ["Build the widget", "worker result 42", "Now add tests"] {
+        assert!(second.contains(seen), "{seen} in {second}");
+    }
+    drop(requests);
+
+    let runs: Vec<Value> = scenario
+        .reports(&main)
+        .await
+        .iter()
+        .map(|report| report["run"].clone())
+        .collect();
+    assert_eq!(runs, [json!(1), json!(2)]);
+    let summary_requests = scenario.requests.lock().await;
+    assert!(
+        summary_requests
+            .iter()
+            .any(|r| is_router_request(r) && r.to_string().contains("- run: 2")),
+        "the router reads which run reported"
+    );
+}
+
+#[tokio::test]
+async fn dispatch_with_task_id_refuses_tasks_it_cannot_continue() {
+    let handler = |_request: &Value, messages: &[Value]| {
+        let last_user = last_user_text(messages);
+        let last_is_tool = messages
+            .last()
+            .is_some_and(|message| message["role"] == "tool");
+        if last_user.contains("Task report") {
+            text_body("Summary: the worker finished.")
+        } else if last_is_tool {
+            text_body("Checked.")
+        } else if last_user.contains("TRY ") {
+            let ids = ids_after(messages, "TRY ");
+            let continue_call = |id: &str, extra: Value| {
+                let mut args = json!({"task_id": id, "instructions": "More"});
+                args.as_object_mut()
+                    .unwrap()
+                    .extend(extra.as_object().cloned().unwrap_or_default());
+                args
+            };
+            tool_body(vec![
+                (
+                    "call-foreign",
+                    "DispatchTask",
+                    continue_call(&ids[0], json!({})),
+                ),
+                (
+                    "call-send-foreign",
+                    "SendToTask",
+                    json!({"task_id": ids[0], "message": "More"}),
+                ),
+                (
+                    "call-waiting",
+                    "DispatchTask",
+                    continue_call(&ids[1], json!({})),
+                ),
+                (
+                    "call-archived",
+                    "DispatchTask",
+                    continue_call(&ids[2], json!({})),
+                ),
+                (
+                    "call-other-assistant",
+                    "DispatchTask",
+                    continue_call(&ids[3], json!({"assistant": "Coder"})),
+                ),
+            ])
+        } else {
+            tool_body(vec![(
+                "call-dispatch",
+                "DispatchTask",
+                json!({"assistant": "Coder", "instructions": "Build the widget"}),
+            )])
+        }
+    };
+    let (url, requests) = scripted_router_provider(handler).await;
+    let scenario = router_group_with("continue-refused", url, requests, json!({})).await;
+    let pool = scenario.state.db.pool();
+    let main = seed_thread(&scenario.state, &scenario.group, "active").await;
+    let other = seed_thread(&scenario.state, &scenario.group, "active").await;
+
+    // A real task whose run is then held waiting for the user.
+    scenario.say(&main, "build the widget").await;
+    scenario.wait_for_summary(&main).await;
+    let waiting = scenario.only_task(&main).await;
+    sqlx::query("UPDATE execution_jobs SET status='waiting_for_user' WHERE thread_id=?")
+        .bind(&waiting)
+        .execute(pool)
+        .await
+        .unwrap();
+    let foreign = seed_task_thread(
+        &scenario.state,
+        &scenario.group,
+        &scenario.worker,
+        &other,
+        "Foreign",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    let archived = seed_task_thread(
+        &scenario.state,
+        &scenario.group,
+        &scenario.worker,
+        &main,
+        "Archived",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+    sqlx::query("UPDATE threads SET status='archived' WHERE id=?")
+        .bind(&archived)
+        .execute(pool)
+        .await
+        .unwrap();
+    let (owner, provider): (String, String) =
+        sqlx::query_as("SELECT owner_id,provider_id FROM agents WHERE id=?")
+            .bind(&scenario.worker)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let reviewer = seed_agent(
+        &scenario.state,
+        &owner,
+        &scenario.group,
+        &provider,
+        "Reviewer",
+        "2024-01-01T00:00:02Z",
+    )
+    .await;
+    let reviewed = seed_task_thread(
+        &scenario.state,
+        &scenario.group,
+        &reviewer,
+        &main,
+        "Review",
+        "2024-01-01T00:00:00Z",
+    )
+    .await;
+
+    scenario
+        .say(
+            &main,
+            &format!("TRY {foreign} {waiting} {archived} {reviewed}"),
+        )
+        .await;
+    for (call, reason) in [
+        ("call-foreign", "dispatched from another conversation"),
+        ("call-send-foreign", "dispatched from another conversation"),
+        ("call-waiting", "waiting for the user's own answer"),
+        ("call-archived", "is archived and cannot be continued"),
+        (
+            "call-other-assistant",
+            "is run by Reviewer; to hand the work to another assistant, dispatch a new task",
+        ),
+    ] {
+        let output = scenario.wait_for_tool_text(call).await;
+        assert!(output.contains(reason), "{call}: {output}");
+    }
+    for (task, expected) in [(&foreign, 0), (&waiting, 1), (&archived, 0), (&reviewed, 0)] {
+        assert_eq!(
+            scenario.instructions_in(task).await,
+            expected,
+            "a refused continuation writes nothing"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_cancelled_task_continues_without_its_topics_until_given_again() {
+    let handler = |_request: &Value, messages: &[Value]| {
+        let last_user = last_user_text(messages);
+        let last_is_tool = messages
+            .last()
+            .is_some_and(|message| message["role"] == "tool");
+        if last_user.contains("Task report") {
+            text_body("Summary: the worker finished.")
+        } else if last_is_tool {
+            text_body("Started the task.")
+        } else if last_user.contains("STOP") {
+            tool_body(vec![(
+                "call-cancel",
+                "CancelTask",
+                json!({"task_id": dispatched_task(messages)}),
+            )])
+        } else if last_user.contains("AGAIN") {
+            tool_body(vec![(
+                "call-again",
+                "DispatchTask",
+                json!({"task_id": dispatched_task(messages), "instructions": "Resume"}),
+            )])
+        } else if last_user.contains("TOPICS") {
+            tool_body(vec![(
+                "call-topics",
+                "DispatchTask",
+                json!({"task_id": dispatched_task(messages), "instructions": "Resume with the PR",
+                    "topics": ["github:owner/repo#12"]}),
+            )])
+        } else {
+            tool_body(vec![(
+                "call-dispatch",
+                "DispatchTask",
+                json!({"assistant": "Coder", "instructions": "Watch the PR",
+                    "topics": ["github:owner/repo#12"]}),
+            )])
+        }
+    };
+    let (url, requests) = scripted_router_provider(handler).await;
+    let scenario = router_group_with("continue-cancelled", url, requests, json!({})).await;
+    let main = seed_thread(&scenario.state, &scenario.group, "active").await;
+    scenario.say(&main, "watch the PR").await;
+    scenario.wait_for_summary(&main).await;
+    let task = scenario.only_task(&main).await;
+    let followed = scenario.topics_of(&task).await;
+    assert_eq!(followed.len(), 1);
+
+    scenario.say(&main, "STOP it").await;
+    scenario.wait_for_tool_text("call-cancel").await;
+    assert!(scenario.topics_of(&task).await.is_empty());
+
+    scenario.say(&main, "AGAIN please").await;
+    scenario.wait_for_summaries(&main, 2).await;
+    let again = tool_result(&scenario.requests.lock().await, "call-again").unwrap();
+    assert_eq!(again["status"], "continued");
+    assert_eq!(
+        again["topics"],
+        json!([]),
+        "topics are not restored on their own"
+    );
+    assert!(scenario.topics_of(&task).await.is_empty());
+
+    scenario.say(&main, "TOPICS back").await;
+    scenario.wait_for_summaries(&main, 3).await;
+    let restored = tool_result(&scenario.requests.lock().await, "call-topics").unwrap();
+    assert_eq!(restored["topics"], json!(followed));
+    assert_eq!(restored["run"], 3);
+    assert_eq!(scenario.topics_of(&task).await, followed);
 }

@@ -2,8 +2,7 @@
  * The Assistant's own settings: which provider it calls, and which model.
  *
  * Reachable from the dock header at any time. Everything else about the
- * Assistant — its prompt, its tools, its lack of a workspace — is fixed by
- * construction, because those are what make it safe to give app-control tools.
+ * Assistant — its prompt, its tools, and its scratch workspace — is fixed.
  */
 
 import { useState } from 'react'
@@ -19,6 +18,7 @@ import { useProviders } from '@/hooks/useProviders'
 import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/useSystemSettings'
 import { ApiError } from '@/lib/api-v2/client'
 import { isDesktopRuntime, openLibraryWindow } from '@/lib/desktop'
+import { AssistantApprovalStatus } from '@/components/assistant/AssistantApprovalStatus'
 
 interface AssistantSettingsProps {
   onClose: () => void
@@ -180,6 +180,8 @@ export function AssistantSettings({ onClose }: AssistantSettingsProps) {
           </p>
         </div>
       </div>
+
+      <AssistantApprovalStatus />
 
       {error ? <p role="alert" className="text-xs text-destructive">{error}</p> : null}
 

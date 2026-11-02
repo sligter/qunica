@@ -274,15 +274,20 @@ function TaskReportCards({ message, groupId }: { message: Message; groupId: stri
       className="mx-auto my-2 w-full max-w-2xl space-y-2 px-3"
       aria-label={t('taskReport.label')}
     >
-      {reports.map((report) => (
+      {reports.map((report, index) => (
         <div
-          key={report.task_id}
+          key={`${report.task_id}-${report.run ?? index}`}
           className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-sm"
         >
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate font-medium">
               {report.title || t('taskReport.untitled')}
             </span>
+            {report.run && report.run > 1 ? (
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {t('taskReport.run', { count: report.run })}
+              </span>
+            ) : null}
             {report.assistant ? (
               <span className="shrink-0 text-xs text-muted-foreground">{report.assistant}</span>
             ) : null}

@@ -337,6 +337,38 @@ describe('MessageItem', () => {
       '/groups/group-1?thread=task-1',
       '/groups/group-1?thread=task-2',
     ])
+    expect(screen.queryByText(/^Run \d+$/)).not.toBeInTheDocument()
+  })
+
+  it('numbers the run of a continued task and keeps both reports of one task', () => {
+    const report = (run: number, excerpt: string) => ({
+      task_id: 'task-1',
+      title: 'Build the widget',
+      assistant: 'Coder',
+      status: 'completed' as const,
+      excerpt,
+      truncated: false,
+      run,
+    })
+    render(
+      <MemoryRouter>
+        <MessageItem
+          message={message({
+            sender_type: 'system',
+            sender_id: null,
+            message_type: 'task_report',
+            content: 'Task report',
+            task_reports: [report(1, 'First pass'), report(2, 'Tests added')],
+          })}
+          groupId="group-1"
+        />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('First pass')).toBeVisible()
+    expect(screen.getByText('Tests added')).toBeVisible()
+    expect(screen.getByText('Run 2')).toBeVisible()
+    expect(screen.queryByText('Run 1')).not.toBeInTheDocument()
   })
 
   it('renders a watchdog alert as a card that opens its task', () => {
