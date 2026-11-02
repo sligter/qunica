@@ -39,6 +39,7 @@ Router 是群组调度方式的第三种（API 中 `scheduler_mode = "router"`�
 - 线程有 `assigned_agent_id`：只运行该 Worker（派发任务线程）。
 - 否则群为 Router 模式且是群会话：只运行 Router。用户 `@` 其他成员也由 Router 应答。
 - 固定应答者时跳过 `select_agents` 与 `automatic` 主持循环。
+- 回复里的文本 `@成员` 只作显示，不安排该成员接着发言（`schedules_peer_mentions` 排除 Router 模式）。否则默认的网状群组会让被提到的成员在同一线程里发言，破坏「一个线程一个应答者」。
 
 Router 回合：有可派发成员（活跃、未静音、非自己）时获得 4 个 Router 工具和 Router 提示段；不提供 `AgentAsTool`，因为同步 `call` 会占住主对话。Worker 回合获得 Worker 提示段，不获得 Router 工具。
 
@@ -79,6 +80,8 @@ Router 看到的报告正文把 Worker 输出包在 `<task_result untrusted="tru
 - `task_report` 系统消息渲染为任务卡片：标题、执行者、状态、摘录、“打开任务”（`/groups/:id?thread=<task_id>`）。
 - 任务选择器为派发任务标注“派发任务”；默认选中线程时跳过派发任务，落在主对话。
 - `DispatchTask` 调用沿用通用工具卡片展示。
+- 调度设置在 Router 模式下隐藏主持模型相关项（调用次数、超时、开关、提供商、模型），因为主持模型不会运行。保存时如果隐藏的主持模型配置已不可用，就关掉它，以免挡住保存。步骤数、跳数和失败、Token 预算仍然显示：Worker 用 `AgentAsTool` 调用其他成员时会消耗这些预算。
+- 决策模型设置在已保存为 Router 模式时，隐藏「发言者选择」「自动结束」「主动模式预筛选」：它们要在多个候选成员之间挑选或筛除，而 Router 模式每个线程只有一个应答者。「回复结果判定」、Shell 复核、Skill 推荐和笔记校验照常显示。
 
 ## 7. 安全
 

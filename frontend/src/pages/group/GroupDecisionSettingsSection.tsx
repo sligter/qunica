@@ -17,6 +17,14 @@ const SCENARIO_KEYS: DecisionScenarioKey[] = [
   'reply_outcome',
 ]
 
+// Note: every router-mode thread has one fixed responder, so these scenarios,
+// which pick among or prune several candidates, never run there.
+const ROUTER_UNUSED: ReadonlySet<DecisionScenarioKey> = new Set([
+  'moderator_selection',
+  'automatic_finish',
+  'proactive_prefilter',
+])
+
 interface GroupDecisionSettingsSectionProps {
   group: GroupRead
   /** Whether the account has a decision endpoint and key saved. */
@@ -45,6 +53,11 @@ export function GroupDecisionSettingsSection({
   useEffect(() => {
     setScenarios(group.decision_scenarios)
   }, [group.decision_scenarios])
+
+  const visibleScenarios =
+    group.scheduler_mode === 'router'
+      ? SCENARIO_KEYS.filter((key) => !ROUTER_UNUSED.has(key))
+      : SCENARIO_KEYS
 
   const errorMessage = (err: unknown): string | null =>
     err instanceof ApiError ? err.message : null
@@ -93,7 +106,7 @@ export function GroupDecisionSettingsSection({
           aria-label={t('settings:decision.scenarios.enabled')}
         />
       </SettingsRow>
-      {SCENARIO_KEYS.map((key) => (
+      {visibleScenarios.map((key) => (
         <SettingsRow
           key={key}
           label={t(`settings:decision.scenarios.${key}`)}

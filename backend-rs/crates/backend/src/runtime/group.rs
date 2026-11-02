@@ -3468,7 +3468,10 @@ struct InvocationContext {
 
 impl GroupRuntimeConfig {
     fn schedules_peer_mentions(&self) -> bool {
-        self.conversation_kind != "direct"
+        // Note: router mode is stored as bounded, but each of its threads has
+        // exactly one responder, so a text @mention must stay display-only.
+        self.router_agent_id.is_none()
+            && self.conversation_kind != "direct"
             && self.communication_mode == "mesh"
             && self.scheduler_mode == "bounded"
             && !self.moderator_enabled

@@ -479,6 +479,56 @@ async fn router_dispatch_respects_the_group_task_limit() {
 }
 
 #[tokio::test]
+async fn a_router_mention_does_not_bring_a_member_into_the_conversation() {
+    // A new group is mesh with hops and no moderator: the setup where a text
+    // @mention would otherwise schedule the named member next.
+    let scenario = router_group(
+        "mention",
+        text_body("I will ask @Coder about it."),
+        json!({}),
+    )
+    .await;
+    let main = seed_thread(&scenario.state, &scenario.group, "active").await;
+
+    scenario.say(&main, "hello").await;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let open: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM execution_jobs WHERE thread_id=? \
+                 AND status IN ('queued','running')",
+            )
+            .bind(&main)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+            let replied = scenario
+                .messages(&main)
+                .await
+                .iter()
+                .any(|message| message.1.as_deref() == Some(scenario.router.as_str()));
+            if open == 0 && replied {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the router turn finishes");
+
+    let messages = scenario.messages(&main).await;
+    assert!(
+        messages
+            .iter()
+            .all(|message| message.1.as_deref() != Some(scenario.worker.as_str())),
+        "{messages:?}"
+    );
+    let requests = scenario.requests.lock().await;
+    assert!(requests.iter().all(is_router_request));
+    let system = requests[0]["messages"][0]["content"].to_string();
+    assert!(system.contains("display-only"), "{system}");
+}
+
+#[tokio::test]
 async fn router_follows_up_on_and_cancels_its_task() {
     let dispatch = tool_body(vec![(
         "call-dispatch",

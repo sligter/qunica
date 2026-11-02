@@ -66,7 +66,8 @@ const schedulerFormSchema = z
         message: 'router',
       })
     }
-    if (!values.moderator_enabled) return
+    // Router mode hides the moderator settings, so they cannot block a save.
+    if (!values.moderator_enabled || values.scheduler_mode === 'router') return
 
     if (!values.moderator_provider_id?.trim()) {
       context.addIssue({
@@ -235,7 +236,8 @@ export function GroupSchedulerSettingsSection({
     setSubmitError(undefined)
     setTopologyError(false)
 
-    if (values.moderator_enabled && !selectedProviderIsActive) {
+    const routerMode = values.scheduler_mode === 'router'
+    if (values.moderator_enabled && !routerMode && !selectedProviderIsActive) {
       form.setError('moderator_provider_id', {
         message: 'provider',
       })
@@ -253,7 +255,11 @@ export function GroupSchedulerSettingsSection({
       max_total_failures: values.max_total_failures,
       max_total_tokens: values.max_total_tokens,
       turn_timeout_seconds: values.turn_timeout_seconds,
-      moderator_enabled: values.moderator_enabled,
+      // A hidden, no longer usable moderator is turned off rather than left to
+      // fail the save; a usable one is kept for leaving router mode later.
+      moderator_enabled:
+        values.moderator_enabled &&
+        (!routerMode || (selectedProviderIsActive && Boolean(values.moderator_model?.trim()))),
       moderator_provider_id: values.moderator_provider_id,
       moderator_model: values.moderator_model,
       // Leaving router mode clears the router server-side, so only send the
@@ -466,21 +472,6 @@ export function GroupSchedulerSettingsSection({
           </div>
         </SettingsRow>
 
-        <SettingsRow label={t('scheduler.moderatorCalls')} htmlFor="scheduler-max-moderator-calls">
-          <div className="space-y-1">
-            <Input
-              id="scheduler-max-moderator-calls"
-              type="number"
-              min={0}
-              step={1}
-              className="w-24"
-              disabled={schedulerControlsDisabled}
-              {...form.register('max_moderator_calls', numericRegistration())}
-            />
-            <FieldError message={form.formState.errors.max_moderator_calls?.message} />
-          </div>
-        </SettingsRow>
-
         <SettingsRow label={t('scheduler.consecutiveFailures')} htmlFor="scheduler-max-consecutive-failures">
           <div className="space-y-1">
             <Input
@@ -526,82 +517,102 @@ export function GroupSchedulerSettingsSection({
           </div>
         </SettingsRow>
 
-        <SettingsRow label={t('scheduler.timeout')} description={t('scheduler.timeoutDescription', { minimum: formatNumber(1, language), maximum: formatNumber(3600, language) })} htmlFor="scheduler-turn-timeout">
-          <div className="space-y-1">
-            <Input
-              id="scheduler-turn-timeout"
-              type="number"
-              min={1}
-              max={3600}
-              step={1}
-              className="w-24"
-              disabled={schedulerControlsDisabled}
-              {...form.register('turn_timeout_seconds', numericRegistration())}
-            />
-            <FieldError message={form.formState.errors.turn_timeout_seconds?.message} />
-          </div>
-        </SettingsRow>
+        {/* Each router-mode thread has one fixed responder; the moderator never runs. */}
+        {schedulerMode !== 'router' ? (
+          <>
+            <SettingsRow label={t('scheduler.moderatorCalls')} htmlFor="scheduler-max-moderator-calls">
+              <div className="space-y-1">
+                <Input
+                  id="scheduler-max-moderator-calls"
+                  type="number"
+                  min={0}
+                  step={1}
+                  className="w-24"
+                  disabled={schedulerControlsDisabled}
+                  {...form.register('max_moderator_calls', numericRegistration())}
+                />
+                <FieldError message={form.formState.errors.max_moderator_calls?.message} />
+              </div>
+            </SettingsRow>
 
-        <SettingsRow label={t('scheduler.enableModerator')} description={t('scheduler.enableModeratorDescription')}>
-          <Switch
-            checked={moderatorEnabled}
-            onCheckedChange={(value) => updateValue('moderator_enabled', value)}
-            disabled={schedulerControlsDisabled || schedulerMode === 'automatic'}
-            aria-label={t('scheduler.enableModerator')}
-          />
-        </SettingsRow>
+            <SettingsRow label={t('scheduler.timeout')} description={t('scheduler.timeoutDescription', { minimum: formatNumber(1, language), maximum: formatNumber(3600, language) })} htmlFor="scheduler-turn-timeout">
+              <div className="space-y-1">
+                <Input
+                  id="scheduler-turn-timeout"
+                  type="number"
+                  min={1}
+                  max={3600}
+                  step={1}
+                  className="w-24"
+                  disabled={schedulerControlsDisabled}
+                  {...form.register('turn_timeout_seconds', numericRegistration())}
+                />
+                <FieldError message={form.formState.errors.turn_timeout_seconds?.message} />
+              </div>
+            </SettingsRow>
 
-        <SettingsRow label={t('scheduler.moderatorProvider')} stacked>
-          <div className="space-y-1">
-            <Select
-              value={selectedProviderId ?? NO_SELECTION}
-              onValueChange={onProviderChange}
-              disabled={moderatorControlsDisabled || providers.isLoading}
-            >
-              <SelectTrigger className="w-full" aria-label={t('scheduler.moderatorProvider')}>
-                <SelectValue placeholder={providers.isLoading ? t('scheduler.loadingProviders') : t('scheduler.chooseProvider')} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NO_SELECTION}>{t('scheduler.noProvider')}</SelectItem>
-                {providerOptions.map((provider) => (
-                  <SelectItem
-                    key={provider.id}
-                    value={provider.id}
-                    disabled={provider.status !== 'active'}
-                  >
-                    {provider.name} - {provider.default_model || t('scheduler.unavailable')}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <FieldError message={form.formState.errors.moderator_provider_id?.message} />
-          </div>
-        </SettingsRow>
+            <SettingsRow label={t('scheduler.enableModerator')} description={t('scheduler.enableModeratorDescription')}>
+              <Switch
+                checked={moderatorEnabled}
+                onCheckedChange={(value) => updateValue('moderator_enabled', value)}
+                disabled={schedulerControlsDisabled || schedulerMode === 'automatic'}
+                aria-label={t('scheduler.enableModerator')}
+              />
+            </SettingsRow>
 
-        <SettingsRow label={t('scheduler.moderatorModel')} stacked>
-          <div className="space-y-1">
-            <Select
-              value={selectedModel ?? NO_SELECTION}
-              onValueChange={(value) =>
-                updateValue('moderator_model', value === NO_SELECTION ? null : value)
-              }
-              disabled={moderatorControlsDisabled || !selectedProviderId || models.isLoading}
-            >
-              <SelectTrigger className="w-full" aria-label={t('scheduler.moderatorModel')}>
-                <SelectValue placeholder={models.isLoading ? t('scheduler.loadingModels') : t('scheduler.chooseModel')} />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NO_SELECTION}>{t('scheduler.noModel')}</SelectItem>
-                {modelOptions.map((model) => (
-                  <SelectItem key={model.id} value={model.id}>
-                    {model.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <FieldError message={form.formState.errors.moderator_model?.message} />
-          </div>
-        </SettingsRow>
+            <SettingsRow label={t('scheduler.moderatorProvider')} stacked>
+              <div className="space-y-1">
+                <Select
+                  value={selectedProviderId ?? NO_SELECTION}
+                  onValueChange={onProviderChange}
+                  disabled={moderatorControlsDisabled || providers.isLoading}
+                >
+                  <SelectTrigger className="w-full" aria-label={t('scheduler.moderatorProvider')}>
+                    <SelectValue placeholder={providers.isLoading ? t('scheduler.loadingProviders') : t('scheduler.chooseProvider')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_SELECTION}>{t('scheduler.noProvider')}</SelectItem>
+                    {providerOptions.map((provider) => (
+                      <SelectItem
+                        key={provider.id}
+                        value={provider.id}
+                        disabled={provider.status !== 'active'}
+                      >
+                        {provider.name} - {provider.default_model || t('scheduler.unavailable')}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldError message={form.formState.errors.moderator_provider_id?.message} />
+              </div>
+            </SettingsRow>
+
+            <SettingsRow label={t('scheduler.moderatorModel')} stacked>
+              <div className="space-y-1">
+                <Select
+                  value={selectedModel ?? NO_SELECTION}
+                  onValueChange={(value) =>
+                    updateValue('moderator_model', value === NO_SELECTION ? null : value)
+                  }
+                  disabled={moderatorControlsDisabled || !selectedProviderId || models.isLoading}
+                >
+                  <SelectTrigger className="w-full" aria-label={t('scheduler.moderatorModel')}>
+                    <SelectValue placeholder={models.isLoading ? t('scheduler.loadingModels') : t('scheduler.chooseModel')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_SELECTION}>{t('scheduler.noModel')}</SelectItem>
+                    {modelOptions.map((model) => (
+                      <SelectItem key={model.id} value={model.id}>
+                        {model.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldError message={form.formState.errors.moderator_model?.message} />
+              </div>
+            </SettingsRow>
+          </>
+        ) : null}
 
         {submitError !== undefined ? (
           <p className="py-2 text-sm text-destructive" role="alert">

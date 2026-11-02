@@ -345,6 +345,42 @@ describe('GroupSchedulerSettingsSection', () => {
     })
   })
 
+  it('hides moderator settings in router mode and keeps them from blocking a save', async () => {
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter>
+        <GroupSchedulerSettingsSection
+          group={{ ...group, moderator_enabled: true, moderator_provider_id: null, moderator_model: null }}
+          agents={[{ agent_id: 'agent-lead', display_name: 'Lead', status: 'active' }] as GroupAgentRead[]}
+        />
+      </MemoryRouter>,
+    )
+
+    await user.click(screen.getByRole('combobox', { name: 'Turn style' }))
+    await user.click(await screen.findByRole('option', { name: 'Router' }))
+
+    for (const name of ['Moderator calls', 'Moderator timeout']) {
+      expect(screen.queryByLabelText(name)).not.toBeInTheDocument()
+    }
+    expect(screen.queryByRole('switch', { name: 'Enable moderator' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Moderator provider' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Moderator model' })).not.toBeInTheDocument()
+    // Workers can still call other members, which spends these budgets.
+    expect(screen.getByLabelText('Steps per agent')).toBeVisible()
+    expect(screen.getByLabelText('Scheduler hops')).toBeVisible()
+    expect(screen.getByLabelText('Consecutive failures')).toBeVisible()
+
+    await user.click(screen.getByRole('combobox', { name: 'Router' }))
+    await user.click(await screen.findByRole('option', { name: 'Lead' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(mocks.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ scheduler_mode: 'router', moderator_enabled: false }),
+      )
+    })
+  })
+
   it('does not mutate when numeric input is outside backend bounds', async () => {
     const user = userEvent.setup()
     renderSection()
