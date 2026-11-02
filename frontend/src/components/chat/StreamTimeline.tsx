@@ -217,6 +217,7 @@ interface AgentBlock {
   contextUsage?: ContextUsage | null
   events: StreamTimelineEvent[]
   lastAt: string
+  finished: boolean
 }
 
 interface NoticeBlock {
@@ -259,8 +260,22 @@ function eventContextUsage(event: StreamTimelineEvent): ContextUsage | null | un
   return undefined
 }
 
+function finishesAgentBlock(event: StreamTimelineEvent, completedDraftIds: Set<string>): boolean {
+  return event.type === 'agent_message'
+    || event.type === 'agent_complete'
+    || (event.type === 'response_draft' && event.status === 'finalized'
+      && event.message_id !== undefined && !completedDraftIds.has(event.message_id))
+    || event.type === 'agent_silent'
+    || event.type === 'agent_error'
+    || event.type === 'agent_handoff'
+}
+
 function buildBlocks(events: StreamTimelineEvent[], fallbackDisplayName: string): RenderBlock[] {
   const blocks: RenderBlock[] = []
+  const openBlocksByAgent = new Map<string, AgentBlock[]>()
+  const completedDraftIds = new Set(events.flatMap(event =>
+    event.type === 'agent_complete' ? [event.message_id] : [],
+  ))
   for (const event of events) {
     const agentId = eventAgentId(event)
     if (!agentId) {
@@ -270,21 +285,35 @@ function buildBlocks(events: StreamTimelineEvent[], fallbackDisplayName: string)
     }
     const displayName = 'display_name' in event ? event.display_name : fallbackDisplayName
     const contextUsage = eventContextUsage(event)
+    const finished = finishesAgentBlock(event, completedDraftIds)
     const last = blocks[blocks.length - 1]
-    if (last && last.kind === 'agent' && last.agentId === agentId) {
+    // Note: one agent can finish while the turn continues. Keep its missing
+    // tool results in that finished block, separate from its next execution.
+    if (last && last.kind === 'agent' && last.agentId === agentId && !last.finished) {
       last.events.push(event)
       last.lastAt = eventTime(event)
+      last.finished = finished
       if (displayName) last.displayName = displayName
       if (contextUsage !== undefined) last.contextUsage = contextUsage
     } else {
-      blocks.push({
+      const block: AgentBlock = {
         kind: 'agent',
         agentId,
         displayName: displayName || fallbackDisplayName,
         contextUsage,
         events: [event],
         lastAt: eventTime(event),
-      })
+        finished,
+      }
+      blocks.push(block)
+      const openBlocks = openBlocksByAgent.get(agentId) ?? []
+      openBlocks.push(block)
+      openBlocksByAgent.set(agentId, openBlocks)
+    }
+    if (finished) {
+      // Interleaved agents can split one execution across several blocks.
+      for (const block of openBlocksByAgent.get(agentId) ?? []) block.finished = true
+      openBlocksByAgent.delete(agentId)
     }
   }
   return blocks
@@ -304,6 +333,7 @@ function blockIsWaiting(block: AgentBlock): boolean {
  * a tool and is now writing should say "writing", not replay its history.
  */
 function blockStatus(block: AgentBlock): StreamStatus | null {
+  if (block.finished) return null
   if (blockIsWaiting(block)) {
     return { phase: 'preparing', since: block.events[0]?.created_at ?? block.lastAt }
   }
@@ -378,7 +408,8 @@ function AgentBlockView({
   // the last event statuses say: a turn that ends without a reply (silence,
   // error, cancellation) leaves its final reasoning/tool events on `streaming`
   // and `started`, and those would otherwise pin the bubble to "streaming".
-  const live = runStatus === 'active'
+  // A finished agent block also stops while other agents in the run continue.
+  const live = runStatus === 'active' && !block.finished
   const status = live ? blockStatus(block) : null
   const preparing = status?.phase === 'preparing'
   const reasoning: ActivityReasoningSegment[] = block.events.flatMap((event) =>
@@ -479,7 +510,7 @@ function AgentBlockView({
     (event) => !isActivityEvent(event) && event.type !== 'todo',
   )
   const renderEvent = (event: StreamTimelineEvent): ReactNode => {
-    if (event.type === 'agent_start') return null
+    if (event.type === 'agent_start' || event.type === 'agent_complete') return null
     if (event.type === 'response_draft' || event.type === 'agent_message') {
       return (
         <TextPart

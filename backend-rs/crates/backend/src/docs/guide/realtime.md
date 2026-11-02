@@ -45,6 +45,15 @@ ended run. Activity retained in a finished run or message shows missing tool
 results as unknown outcomes rather than ongoing execution or inferred success.
 This display rule does not prove that an external side effect or process stopped.
 
+Within a live multi-agent run, a formal reply (including a finalized draft with
+a persisted message id), silence, error or handoff ends that agent's activity
+block. Later work by the same agent starts a separate block; another agent's
+activity and explicit moderator scheduling remain live. Intermediate text
+segments without a message id and waits for input or approval do not end a block.
+The client records formal reply arrival after existing activity when finalizing
+drafts in place; the last text segment can precede the last tool call. This local
+completion marker is not a new server stream event or a tool result.
+
 Account history retains seven days and approximately 100,000 events per account,
 with a minute cleanup cycle. Indexed discovery selects up to 256 old events
 outside the write transaction; deletion and replay-floor advancement commit

@@ -171,6 +171,14 @@ export interface StreamAgentMessageEvent extends StreamTimelineEventBase {
   context_usage?: ContextUsage | null
 }
 
+/** Client-only boundary: finalized text can precede the last tool event. */
+export interface StreamAgentCompleteEvent extends StreamTimelineEventBase {
+  type: 'agent_complete'
+  message_id: string
+  agent_id: string
+  display_name: string
+}
+
 /** A gated tool call waiting on the user, with everything the card renders. */
 export interface StreamApprovalRequest {
   tool_call_id: string
@@ -212,6 +220,7 @@ export type StreamTimelineEvent =
   | StreamTodoEvent
   | StreamExternalRunEvent
   | StreamAgentMessageEvent
+  | StreamAgentCompleteEvent
   | StreamNoticeEvent
 
 export interface StreamRun {
@@ -1415,6 +1424,17 @@ export const useMessageStore = create<MessageState>((set, get) => ({
             }
           }
           return event
+        })
+        // Note: text is finalized in place and may precede the last tool. Mark
+        // actual message arrival separately so that tool stays in the ended step.
+        events = upsertTimelineEvent(events, {
+          id: `agent-complete:${streamId}:${message.id}`,
+          type: 'agent_complete',
+          stream_id: streamId,
+          message_id: message.id,
+          agent_id: agentId,
+          display_name: displayName ?? segments[segments.length - 1].display_name,
+          created_at: timestamp,
         })
       } else {
         const event: StreamAgentMessageEvent = {

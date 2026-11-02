@@ -4,7 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { StreamTimeline } from '@/components/chat/StreamTimeline'
 import i18n from '@/i18n'
-import type { StreamRun, StreamTimelineEvent } from '@/stores/messageStore'
+import { useMessageStore } from '@/stores/messageStore'
+import type { StreamRun, StreamTimelineEvent, StreamToolEvent } from '@/stores/messageStore'
 
 vi.mock('@/hooks/useGroupAgents', () => ({
   useGroupAgents: () => ({ data: [] }),
@@ -43,7 +44,128 @@ function run(events: StreamTimelineEvent[], status: StreamRun['status'] = 'compl
 
 afterEach(async () => {
   cleanup()
+  useMessageStore.setState(useMessageStore.getInitialState(), true)
   await i18n.changeLanguage('en-US')
+})
+
+describe('StreamTimeline per-agent completion', () => {
+  const identity = {
+    stream_id: 'stream-1', agent_id: 'agent-1', display_name: 'Researcher',
+    created_at: '2026-07-16T10:00:04Z',
+  }
+  const pendingTool: StreamToolEvent = {
+    ...identity, id: 'pending-tool', type: 'tool', tool_call_id: 'call-1',
+    tool_name: 'take_screenshot', status: 'started',
+  }
+  const reply: StreamTimelineEvent = {
+    ...identity, id: 'reply', type: 'agent_message', message_id: 'message-2', content: 'Finished reply',
+  }
+  const completions: Array<{ name: string; event: StreamTimelineEvent }> = [
+    { name: 'persisted reply', event: reply },
+    { name: 'finalized reply', event: {
+      ...identity, id: 'final-draft', type: 'response_draft', status: 'finalized',
+      message_id: 'message-2', content: 'Finished reply',
+    } },
+    { name: 'silence', event: { ...identity, id: 'silent', type: 'agent_silent', message: 'No visible reply' } },
+    { name: 'error', event: { ...identity, id: 'error', type: 'agent_error', message: 'Agent failed' } },
+    { name: 'handoff', event: { ...identity, id: 'handoff', type: 'agent_handoff', message: 'Handoff accepted' } },
+  ]
+
+  it.each(completions)('settles $name while another agent keeps running', ({ event: completion }) => {
+    render(<StreamTimeline run={run([
+      pendingTool, completion,
+      { ...pendingTool, id: 'other-tool', tool_call_id: 'call-2', agent_id: 'agent-2',
+        display_name: 'Writer', tool_name: 'Write' },
+    ], 'active')} />)
+    expect(screen.queryByText('Running take_screenshot')).not.toBeInTheDocument()
+    expect(screen.getByText('Running Write')).toBeVisible()
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    const finishedActivity = screen.getByRole('group', { name: 'Activity: 1 tool' })
+    expect(within(finishedActivity).getByText('No result received')).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Activity: 1 tool, active' })).toBeInTheDocument()
+    expect(pendingTool.status).toBe('started')
+  })
+
+  it('shows moderator scheduling after a reply with a missing tool result', () => {
+    render(<StreamTimeline moderatorEnabled run={{
+      ...run([pendingTool, reply], 'active'), moderator_active: true,
+    }} />)
+    expect(screen.getByText('Choosing the next speaker…')).toBeVisible()
+    expect(screen.queryByText('Running take_screenshot')).not.toBeInTheDocument()
+  })
+
+  it('settles earlier activity when another agent interleaves before completion', () => {
+    render(<StreamTimeline run={run([
+      pendingTool,
+      { ...pendingTool, id: 'other-tool', tool_call_id: 'call-2', agent_id: 'agent-2',
+        display_name: 'Writer', tool_name: 'Write' },
+      reply,
+    ], 'active')} />)
+    expect(screen.queryByText('Running take_screenshot')).not.toBeInTheDocument()
+    expect(screen.getByText('Running Write')).toBeVisible()
+    expect(screen.getAllByRole('status')).toHaveLength(1)
+    expect(screen.getByRole('group', { name: 'Activity: 1 tool' })).toBeInTheDocument()
+  })
+
+  it('keeps the next execution by the same agent separate from unfinished old tools', () => {
+    render(<StreamTimeline run={run([
+      pendingTool, reply,
+      { ...identity, id: 'next-start', type: 'agent_start' },
+      { ...pendingTool, id: 'next-tool', tool_call_id: 'call-2', tool_name: 'Read' },
+    ], 'active')} />)
+    expect(screen.getByText('Running Read')).toBeVisible()
+    expect(screen.getAllByText('Researcher')).toHaveLength(2)
+    expect(within(screen.getByRole('group', { name: 'Activity: 1 tool' }))
+      .getByText('No result received')).toBeInTheDocument()
+    expect(within(screen.getByRole('group', { name: 'Activity: 1 tool, active' }))
+      .getByText('started')).toBeInTheDocument()
+  })
+
+  it('keeps intermediate finalized text in the same active execution', () => {
+    render(<StreamTimeline run={run([
+      { ...identity, id: 'intermediate', type: 'response_draft', status: 'finalized', content: 'Checking…' },
+      pendingTool,
+    ], 'active')} />)
+    expect(screen.getByText('Running take_screenshot')).toBeVisible()
+    expect(screen.getAllByText('Researcher')).toHaveLength(1)
+    expect(screen.queryByText('No result received')).not.toBeInTheDocument()
+  })
+
+  it('settles tools after the last text segment when the actual final message arrives', () => {
+    useMessageStore.setState(useMessageStore.getInitialState(), true)
+    const store = useMessageStore.getState()
+    // The provider can finish without another token after a tool. The store
+    // finalizes text in place, before the last tool in the timeline.
+    store.patchStreamDraft('group-1', 'stream-1', 'agent-1', 'Finished reply', 'Researcher')
+    store.upsertStreamTool('group-1', 'stream-1', {
+      id: 'call-1', agent_id: 'agent-1', display_name: 'Researcher',
+      tool_name: 'take_screenshot', status: 'started',
+    })
+    store.finalizeStreamDraft('group-1', 'stream-1', {
+      id: 'message-2', group_id: 'group-1', thread_id: 'thread-1', sender_id: 'agent-1',
+      sender_type: 'agent', message_type: 'text', content: 'Finished reply', status: 'visible',
+      attachments: [], refs: null, context_usage: null, turn_id: null, dispatch_id: null,
+      reply_to_message_id: null, turn_summary: null, created_at: identity.created_at,
+    }, 'Researcher')
+    const snapshot = useMessageStore.getState().streamRunsByGroup['group-1']['stream-1']
+    const { rerender } = render(<StreamTimeline run={{ ...snapshot, moderator_active: true }} moderatorEnabled />)
+    expect(screen.queryByText('Running take_screenshot')).not.toBeInTheDocument()
+    expect(screen.getByText('No result received')).toBeInTheDocument()
+    expect(screen.getByText('Choosing the next speaker…')).toBeVisible()
+    expect(screen.getAllByText('Researcher')).toHaveLength(1)
+    expect(screen.getAllByText('Finished reply')).toHaveLength(1)
+    store.upsertStreamTool('group-1', 'stream-1', {
+      id: 'call-1', agent_id: 'agent-1', display_name: 'Researcher',
+      tool_name: 'take_screenshot', status: 'failed', result_summary: 'Timed out',
+    })
+    rerender(<StreamTimeline moderatorEnabled run={{
+      ...useMessageStore.getState().streamRunsByGroup['group-1']['stream-1'], moderator_active: true,
+    }} />)
+    expect(screen.getByText('failed')).toBeInTheDocument()
+    expect(screen.queryByText('No result received')).not.toBeInTheDocument()
+    expect(screen.queryByText('Running take_screenshot')).not.toBeInTheDocument()
+    expect(screen.getByText('Choosing the next speaker…')).toBeVisible()
+  })
 })
 
 describe('StreamTimeline activity rendering', () => {
