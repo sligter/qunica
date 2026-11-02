@@ -43,6 +43,8 @@ const group: GroupRead = {
   moderator_enabled: false,
   moderator_provider_id: null,
   moderator_model: null,
+  router_agent_id: null,
+  max_router_tasks: 4,
   decision_enabled: false,
   decision_scenarios: {
     moderator_selection: false,

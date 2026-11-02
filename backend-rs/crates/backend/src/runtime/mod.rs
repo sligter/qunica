@@ -9,6 +9,8 @@
 //! [`hooks`] is the seam behaviour attaches to around a step, and
 //! [`compaction`]/[`compaction_hook`] are its first consumer: keeping a thread
 //! inside the provider's context window, and recovering when it already is not.
+//!
+//! [`router`] holds the router scheduling mode's task tools and reports.
 
 pub mod agent_as_tool;
 pub mod approval;
@@ -21,6 +23,7 @@ pub mod group;
 pub mod group_scheduler;
 pub mod hooks;
 pub(crate) mod rig_driver;
+pub mod router;
 pub mod sequence;
 pub mod tool_output;
 pub mod workspace_scope;

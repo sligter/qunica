@@ -513,6 +513,7 @@ async fn acp_lifecycle_run_persists_running_and_completed_audit_rows() {
     let mut tool_start = None;
     let mut tool_result = None;
     let mut saw_usage = false;
+    let mut plan = None;
     let mut terminal_status = None;
     while let Some(event) = run.next_event().await {
         match event.kind {
@@ -521,6 +522,7 @@ async fn acp_lifecycle_run_persists_running_and_completed_audit_rows() {
             AcpEventKind::ToolCallStart => tool_start = Some(event.data),
             AcpEventKind::ToolCallResult => tool_result = Some(event.data),
             AcpEventKind::Usage => saw_usage = true,
+            AcpEventKind::Plan => plan = Some(event.data),
             AcpEventKind::Warning => {}
             AcpEventKind::Run => {
                 terminal_status = event.data["status"].as_str().map(str::to_string)
@@ -540,6 +542,14 @@ async fn acp_lifecycle_run_persists_running_and_completed_audit_rows() {
     assert_eq!(tool_result["result_summary"], "{\"ok\":true}");
     assert!(tool_result.get("tool_name").is_none());
     assert!(saw_usage, "expected a usage event");
+    // An ACP plan arrives in the `TodoWrite` checklist shape; blank entries drop.
+    assert_eq!(
+        plan.expect("expected a plan event"),
+        json!({ "todos": [
+            { "content": "read", "status": "completed" },
+            { "content": "fix", "status": "in_progress" },
+        ] })
+    );
     assert_eq!(terminal_status.as_deref(), Some("completed"));
 
     // The terminal row is `completed` with a clean exit code.
@@ -2347,6 +2357,17 @@ fn run_fake_child(mode: &str) {
                         &stdout,
                         &session_update(json!({
                             "sessionUpdate": "usage_update", "used": 5, "size": 1000,
+                        })),
+                    );
+                    write_line(
+                        &stdout,
+                        &session_update(json!({
+                            "sessionUpdate": "plan",
+                            "entries": [
+                                { "content": "read", "priority": "high", "status": "completed" },
+                                { "content": "fix", "priority": "medium", "status": "in_progress" },
+                                { "content": " ", "priority": "low", "status": "pending" },
+                            ],
                         })),
                     );
                     write_line(

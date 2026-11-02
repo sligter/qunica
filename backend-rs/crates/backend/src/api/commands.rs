@@ -332,7 +332,9 @@ async fn accept_message(
             return Err(if exists{ApiError::conflict("thread is not active")}else{ApiError::not_found("thread not found")});
         }
         thread.to_string()
-    }else if let Some(thread)=sqlx::query_scalar::<_,String>("SELECT id FROM threads WHERE group_id=? AND agent_id IS NULL AND status='active' ORDER BY updated_at DESC,created_at DESC,id DESC LIMIT 1").bind(group).fetch_optional(&mut *tx).await.map_err(db_error)?{thread}
+    // Router-dispatched tasks keep updating while they run; an untargeted
+    // message still belongs to the conversation the user talks in.
+    }else if let Some(thread)=sqlx::query_scalar::<_,String>("SELECT id FROM threads WHERE group_id=? AND agent_id IS NULL AND status='active' ORDER BY origin_thread_id IS NOT NULL,updated_at DESC,created_at DESC,id DESC LIMIT 1").bind(group).fetch_optional(&mut *tx).await.map_err(db_error)?{thread}
     else{
         let id=Uuid::new_v4().to_string();
         let title:String=prepared.content.lines().next().unwrap_or("Task").chars().take(80).collect();
@@ -340,28 +342,7 @@ async fn accept_message(
     };
     let reuse_job = waiting.as_ref().map(|(job, _)| job.as_str());
     if reuse_job.is_none() {
-        // Note: a new message on a paused task supersedes the interrupted
-        // checkpoint from a failed or disconnected turn, matching the legacy
-        // send path. A waiting job took the branch below, so this never
-        // silently answers an approval gate.
-        let superseded = sqlx::query(
-            "UPDATE threads SET status='active',updated_at=? WHERE id=? AND status='paused'",
-        )
-        .bind(&now)
-        .bind(&thread)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_error)?
-        .rows_affected();
-        if superseded == 1 {
-            sqlx::query(
-                "UPDATE messages SET status='visible' WHERE thread_id=? AND status='interrupted'",
-            )
-            .bind(&thread)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_error)?;
-        }
+        reopen_paused_thread_in_tx(&mut tx, &thread, &now).await?;
     }
     if let Some(job) = reuse_job {
         ensure_computer_effects_settled(&mut tx, &thread).await?;
@@ -401,6 +382,7 @@ async fn accept_message(
             prepared: &prepared,
             now: &now,
             reuse_job,
+            author: None,
         },
     )
     .await?;
@@ -408,6 +390,36 @@ async fn accept_message(
     drop(_guard);
     launch(state.clone());
     Ok(response)
+}
+
+/// A new message on a paused thread supersedes the interrupted checkpoint left
+/// by a failed or disconnected turn, matching the legacy send path. Callers
+/// answering a waiting job take their own branch, so this never silently
+/// answers an approval gate.
+pub(crate) async fn reopen_paused_thread_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    thread: &str,
+    now: &str,
+) -> Result<(), ApiError> {
+    let superseded = sqlx::query(
+        "UPDATE threads SET status='active',updated_at=? WHERE id=? AND status='paused'",
+    )
+    .bind(now)
+    .bind(thread)
+    .execute(&mut **tx)
+    .await
+    .map_err(db_error)?
+    .rows_affected();
+    if superseded == 1 {
+        sqlx::query(
+            "UPDATE messages SET status='visible' WHERE thread_id=? AND status='interrupted'",
+        )
+        .bind(thread)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_error)?;
+    }
+    Ok(())
 }
 
 pub(crate) struct MessageAcceptance<'a> {
@@ -419,6 +431,17 @@ pub(crate) struct MessageAcceptance<'a> {
     pub prepared: &'a PreparedMessage,
     pub now: &'a str,
     pub reuse_job: Option<&'a str>,
+    /// `None` records the owner as the sender, as every human message does.
+    pub author: Option<MessageAuthor<'a>>,
+}
+
+/// Who a server-written message is from. Router dispatches are written as the
+/// router agent and task reports as `system`, so neither reads as user input.
+pub(crate) struct MessageAuthor<'a> {
+    pub sender_type: &'a str,
+    pub sender_id: Option<&'a str>,
+    pub message_type: &'a str,
+    pub content_json: Option<String>,
 }
 
 /// Shared transaction core: timer/webhook acceptance also writes the message,
@@ -436,7 +459,22 @@ pub(crate) async fn insert_message_in_tx(
         prepared,
         now,
         reuse_job,
+        author,
     } = input;
+    let (sender_type, sender_id, message_type, content_json) = match author {
+        Some(author) => (
+            author.sender_type,
+            author.sender_id,
+            author.message_type,
+            author.content_json,
+        ),
+        None => (
+            "user",
+            Some(owner),
+            "text",
+            crate::runtime::group::user_attachment_content_json(&prepared.attachments),
+        ),
+    };
     let busy:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM group_turns WHERE thread_id=? AND status IN ('pending','running','waiting_for_user'))")
         .bind(thread).fetch_one(&mut **tx).await.map_err(db_error)?;
     // Note: queued turns sit outside the existing per-thread active index. A
@@ -466,8 +504,8 @@ pub(crate) async fn insert_message_in_tx(
     .map_err(db_error)?;
     // Note: accepting input makes it visible to clients, but only the claimant
     // may admit it into model history after the preceding worker has stopped.
-    sqlx::query("INSERT INTO messages(id,thread_id,group_id,seq,sender_type,sender_id,message_type,content,content_json,status,created_at,context_admitted) VALUES(?,?,?,?,'user',?,'text',?,?,'visible',?,0)")
-        .bind(&message).bind(thread).bind(group).bind(seq).bind(owner).bind(&prepared.content).bind(crate::runtime::group::user_attachment_content_json(&prepared.attachments)).bind(now).execute(&mut **tx).await.map_err(db_error)?;
+    sqlx::query("INSERT INTO messages(id,thread_id,group_id,seq,sender_type,sender_id,message_type,content,content_json,status,created_at,context_admitted) VALUES(?,?,?,?,?,?,?,?,?,'visible',?,0)")
+        .bind(&message).bind(thread).bind(group).bind(seq).bind(sender_type).bind(sender_id).bind(message_type).bind(&prepared.content).bind(&content_json).bind(now).execute(&mut **tx).await.map_err(db_error)?;
     sqlx::query("INSERT INTO group_turns(id,thread_id,group_id,trigger_message_id,status,scheduler_strategy,config_snapshot_json,topology_snapshot_json,created_at,updated_at) VALUES(?,?,?,?,?,'bounded','{}','{}',?,?)")
         .bind(&turn).bind(thread).bind(group).bind(&message).bind(turn_status).bind(now).bind(now).execute(&mut **tx).await.map_err(db_error)?;
     sqlx::query("UPDATE messages SET turn_id=? WHERE id=?")
@@ -476,7 +514,7 @@ pub(crate) async fn insert_message_in_tx(
         .execute(&mut **tx)
         .await
         .map_err(db_error)?;
-    let payload = json!({"message_id":message,"thread_id":thread,"content":prepared.content,"attachments":prepared.attachments,"sender_type":"user"});
+    let payload = json!({"message_id":message,"thread_id":thread,"content":prepared.content,"attachments":prepared.attachments,"sender_type":sender_type,"sender_id":sender_id,"message_type":message_type});
     sqlx::query("INSERT INTO stream_events(id,stream_id,thread_id,seq,event_id,kind,payload_json,created_at) VALUES(?,?,?,0,?,'user_message',?,?)")
         .bind(Uuid::new_v4().to_string()).bind(&stream).bind(thread).bind(format!("{stream}:0")).bind(payload.to_string()).bind(now).execute(&mut **tx).await.map_err(db_error)?;
     let response = json!({"request_id":command.request_id,"status":"accepted","job_id":job,"turn_id":turn,"stream_id":stream,"thread_id":thread});
@@ -614,26 +652,7 @@ async fn accept_cancel(
     }
     let thread:Option<String>=sqlx::query_scalar("SELECT r.thread_id FROM group_turns r JOIN groups g ON g.id=r.group_id WHERE r.id=? AND g.owner_id=? AND g.status='active'").bind(turn).bind(owner).fetch_optional(&mut *tx).await.map_err(db_error)?;
     let thread = thread.ok_or_else(|| ApiError::not_found("turn not found"))?;
-    let queued: Vec<(String, String)> = sqlx::query_as(
-        "SELECT stream_id,thread_id FROM execution_jobs WHERE turn_id=? AND status='queued'",
-    )
-    .bind(turn)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(db_error)?;
-    crate::runtime::group_scheduler::store::cancel_turn_in_tx(&mut tx, turn, &now())
-        .await
-        .map_err(|_| ApiError::internal("failed to cancel turn"))?;
-    sqlx::query("UPDATE execution_jobs SET status='cancelled',occupies_thread=CASE WHEN worker_active=0 THEN 0 ELSE occupies_thread END,updated_at=? WHERE turn_id=? AND status IN ('queued','running','waiting_for_user')").bind(now()).bind(turn).execute(&mut *tx).await.map_err(db_error)?;
-    // Note: a thread can already contain a newer approval when an old turn's
-    // cancel is delivered. The checkpoint identifies the question's own turn.
-    sqlx::query("UPDATE pending_approvals SET status='cancelled',version=version+1,updated_at=? WHERE thread_id=? AND status='pending' AND EXISTS(SELECT 1 FROM messages m,json_each(CASE WHEN json_valid(m.content_json) THEN m.content_json ELSE '{}' END,'$.tool_calls') c WHERE m.thread_id=pending_approvals.thread_id AND m.turn_id=? AND json_extract(c.value,'$.tool_call_id')=pending_approvals.tool_call_id)")
-        .bind(now()).bind(&thread).bind(turn).execute(&mut *tx).await.map_err(db_error)?;
-    for (stream, thread) in queued {
-        append_stream_terminal(&mut tx, &stream, &thread, turn, "user_cancelled", &now())
-            .await
-            .map_err(db_error)?;
-    }
+    cancel_turn_effects_in_tx(&mut tx, turn, &thread).await?;
     let response = json!({"request_id":command.request_id,"status":"accepted","turn_id":turn});
     insert_receipt(&mut tx, owner, command, digest, &response, &now()).await?;
     tx.commit().await.map_err(db_error)?;
@@ -641,6 +660,36 @@ async fn accept_cancel(
     state.active_turns.cancel(&thread, turn).await;
     launch(state.clone());
     Ok(response)
+}
+
+/// Durable half of a turn cancellation; the caller signals the live worker
+/// through the active-turn registry after committing.
+pub(crate) async fn cancel_turn_effects_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    turn: &str,
+    thread: &str,
+) -> Result<(), ApiError> {
+    let queued: Vec<(String, String)> = sqlx::query_as(
+        "SELECT stream_id,thread_id FROM execution_jobs WHERE turn_id=? AND status='queued'",
+    )
+    .bind(turn)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(db_error)?;
+    crate::runtime::group_scheduler::store::cancel_turn_in_tx(tx, turn, &now())
+        .await
+        .map_err(|_| ApiError::internal("failed to cancel turn"))?;
+    sqlx::query("UPDATE execution_jobs SET status='cancelled',occupies_thread=CASE WHEN worker_active=0 THEN 0 ELSE occupies_thread END,updated_at=? WHERE turn_id=? AND status IN ('queued','running','waiting_for_user')").bind(now()).bind(turn).execute(&mut **tx).await.map_err(db_error)?;
+    // Note: a thread can already contain a newer approval when an old turn's
+    // cancel is delivered. The checkpoint identifies the question's own turn.
+    sqlx::query("UPDATE pending_approvals SET status='cancelled',version=version+1,updated_at=? WHERE thread_id=? AND status='pending' AND EXISTS(SELECT 1 FROM messages m,json_each(CASE WHEN json_valid(m.content_json) THEN m.content_json ELSE '{}' END,'$.tool_calls') c WHERE m.thread_id=pending_approvals.thread_id AND m.turn_id=? AND json_extract(c.value,'$.tool_call_id')=pending_approvals.tool_call_id)")
+        .bind(now()).bind(thread).bind(turn).execute(&mut **tx).await.map_err(db_error)?;
+    for (stream, thread) in queued {
+        append_stream_terminal(tx, &stream, &thread, turn, "user_cancelled", &now())
+            .await
+            .map_err(db_error)?;
+    }
+    Ok(())
 }
 
 /// Release a thread whose job was interrupted by a restart. The command records
@@ -1129,6 +1178,21 @@ async fn finish_job(state: &AppState, job: &Job, outcome: TurnOutcome) -> Result
         sqlx::query("UPDATE execution_jobs SET status=?,updated_at=? WHERE id=? AND generation=? AND status='running'").bind(job_status).bind(now()).bind(&job.id).bind(job.generation).execute(&mut *tx).await?;
         sqlx::query("UPDATE group_turns SET status=?,updated_at=? WHERE id=? AND status IN ('pending','running')").bind(turn_status).bind(now()).bind(&job.turn_id).execute(&mut *tx).await?;
     }
+    // Note: the report commits with the job's terminal state, so a crash can
+    // neither lose a finished task's result nor report it twice.
+    let final_status: String = sqlx::query_scalar("SELECT status FROM execution_jobs WHERE id=?")
+        .bind(&job.id)
+        .fetch_one(&mut *tx)
+        .await?;
+    // Boxed: it embeds a full message insert, and this future sits inside
+    // every job's stack.
+    Box::pin(crate::runtime::router::report_in_tx(
+        &mut tx,
+        &job.thread_id,
+        &job.turn_id,
+        &final_status,
+    ))
+    .await?;
     sqlx::query("UPDATE execution_jobs SET worker_active=0,occupies_thread=CASE WHEN status='waiting_for_user' THEN 1 ELSE 0 END WHERE id=? AND generation=?")
         .bind(&job.id).bind(job.generation).execute(&mut *tx).await?;
     tx.commit().await?;

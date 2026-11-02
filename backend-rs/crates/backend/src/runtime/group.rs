@@ -1036,6 +1036,13 @@ async fn run_scheduled_turn(
         Ok(candidates) => candidates,
         Err(error) => return ctx.fail(&error.to_string()).await,
     };
+    let pinned = match Box::pin(thread_responder(&services.pool, &ctx.thread_id, group)).await {
+        Ok((pinned, _)) => pinned,
+        Err(error) => return ctx.fail(&error.to_string()).await,
+    };
+    if let Some(agent_id) = &pinned {
+        candidates.retain(|candidate| &candidate.agent_id == agent_id);
+    }
     let explicit_mentions = scan_mentions(&req.content, &candidates);
     if explicit_mentions.is_empty() {
         if let Some(order) = group.default_speaking_order.as_deref() {
@@ -1051,8 +1058,14 @@ async fn run_scheduled_turn(
         .iter()
         .map(|index| candidates[*index].agent_id.clone())
         .collect::<Vec<_>>();
-    let selected = select_agents(candidates, &req.content, group);
-    let automatic_scheduler = group.scheduler_mode == "automatic";
+    // Note: a pinned thread has exactly one legal responder, so neither a
+    // mention nor a response mode can pick someone else or leave it silent.
+    let selected = if pinned.is_some() {
+        candidates
+    } else {
+        select_agents(candidates, &req.content, group)
+    };
+    let automatic_scheduler = group.scheduler_mode == "automatic" && pinned.is_none();
     let automatic_step_candidates =
         if group.max_steps_per_agent == 1 && group.max_scheduler_hops == 0 {
             selected.len()
@@ -3431,6 +3444,9 @@ struct GroupRuntimeConfig {
     /// which scenarios. The endpoint itself is account-level.
     decision_enabled: bool,
     decision_scenarios: decision::DecisionScenarios,
+    /// Set in router mode: the member that answers untargeted threads.
+    router_agent_id: Option<String>,
+    max_router_tasks: i64,
 }
 
 struct InvocationContext {
@@ -4227,15 +4243,9 @@ async fn run_agent_turn_body(
     ))
     .await
     .map_err(StepErr::Db)?;
-    let invocation = Box::pin(build_invocation_context(
-        services,
-        ctx,
-        agent,
-        group,
-        scheduler.as_deref(),
-    ))
-    .await
-    .map_err(StepErr::Db)?;
+    let invocation = build_invocation_context(services, ctx, agent, group, scheduler.as_deref())
+        .await
+        .map_err(StepErr::Db)?;
     // Hooks summarize through the agent's own provider and model, so a
     // compacted span is described by the model that produced it. Built after
     // the invocation context because the tool schemas it resolved are part of
@@ -4918,7 +4928,7 @@ async fn run_agent_turn_body(
             );
             turn.phase = Some("executing_tools".into());
             persist_turn_checkpoint(ctx, agent, &content, &mut turn).await?;
-            let outcome = Box::pin(handle_agent_as_tool(
+            let outcome = handle_agent_as_tool(
                 services,
                 ctx,
                 agent,
@@ -4927,7 +4937,7 @@ async fn run_agent_turn_body(
                 call.clone(),
                 &mut turn,
                 scheduler.as_deref_mut(),
-            ))
+            )
             .await?;
             match outcome {
                 AgentAsToolOutcome::Terminal(result) => {
@@ -5617,6 +5627,27 @@ async fn run_acp_agent_turn(
                 });
                 ctx.emit(StreamEventKind::ContextUsage, payload).await?;
             }
+            AcpEventKind::Plan => {
+                // An external agent's plan is the same turn state as a native
+                // `TodoWrite` checklist: recorded on the turn so a reload keeps
+                // it, and sent as `todo_update` so the client renders one panel.
+                let todos: Vec<TodoItem> = event
+                    .data
+                    .get("todos")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+                    .unwrap_or_default();
+                turn.record_todos(todos.clone());
+                ctx.emit(
+                    StreamEventKind::TodoUpdate,
+                    json!({
+                        "agent_id": agent.agent_id,
+                        "display_name": agent.display_name,
+                        "todos": todos,
+                    }),
+                )
+                .await?;
+            }
             AcpEventKind::Warning => {
                 // A non-fatal notice from the ACP client itself (for example a
                 // session setting the runtime does not implement). It is not
@@ -6199,8 +6230,33 @@ fn interrupted_visible_content(content: &str) -> Option<String> {
     Some(content.to_string())
 }
 
+// Note: built here rather than in the caller's poll, so each nested call level
+// does not reserve this future on the shared stack.
 #[allow(clippy::too_many_arguments)]
-async fn handle_agent_as_tool(
+fn handle_agent_as_tool<'a>(
+    services: &'a RuntimeServices,
+    ctx: &'a mut StreamCtx,
+    agent: &'a Candidate,
+    group: &'a GroupRuntimeConfig,
+    handoff_depth: usize,
+    call: ToolCall,
+    turn: &'a mut TurnData,
+    scheduler: Option<&'a mut ScheduledTurnRuntime>,
+) -> Pin<Box<dyn Future<Output = Result<AgentAsToolOutcome, StepErr>> + Send + 'a>> {
+    Box::pin(handle_agent_as_tool_inner(
+        services,
+        ctx,
+        agent,
+        group,
+        handoff_depth,
+        call,
+        turn,
+        scheduler,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_agent_as_tool_inner(
     services: &RuntimeServices,
     ctx: &mut StreamCtx,
     agent: &Candidate,
@@ -7309,6 +7365,111 @@ struct GroupRuntimeRow {
     muted_agent_ids_json: Option<String>,
     decision_enabled: i64,
     decision_scenarios_json: String,
+    router_agent_id: Option<String>,
+    max_router_tasks: i64,
+}
+
+/// The part a thread gives its responder in router mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouterSeat {
+    None,
+    /// Answers the conversation and dispatches work.
+    Router,
+    /// Runs a task the router dispatched into this thread.
+    Worker,
+}
+
+/// Who must answer `thread_id`, if anyone: a dispatched task's worker, or in
+/// router mode the router for every other thread of the group.
+async fn thread_responder(
+    pool: &SqlitePool,
+    thread_id: &str,
+    group: &GroupRuntimeConfig,
+) -> anyhow::Result<(Option<String>, RouterSeat)> {
+    let assigned: Option<String> =
+        sqlx::query_scalar("SELECT assigned_agent_id FROM threads WHERE id = ?")
+            .bind(thread_id)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+    if let Some(agent_id) = assigned {
+        return Ok((Some(agent_id), RouterSeat::Worker));
+    }
+    Ok(match &group.router_agent_id {
+        Some(router) if group.conversation_kind == "group" => {
+            (Some(router.clone()), RouterSeat::Router)
+        }
+        _ => (None, RouterSeat::None),
+    })
+}
+
+/// Members the router may dispatch to: every active, unmuted member but itself.
+async fn load_router_workers(
+    pool: &SqlitePool,
+    group: &GroupRuntimeConfig,
+    router_agent_id: &str,
+) -> anyhow::Result<Vec<crate::runtime::router::RouterWorker>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT a.id, COALESCE(ga.display_name, a.name) FROM group_agents ga \
+         JOIN agents a ON a.id = ga.agent_id \
+         WHERE ga.group_id = ? AND ga.status = 'active' AND a.status = 'active' AND a.id != ? \
+         ORDER BY ga.joined_at ASC, a.id ASC",
+    )
+    .bind(&group.id)
+    .bind(router_agent_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|(agent_id, _)| !group.muted_agent_ids.contains(agent_id))
+        .map(
+            |(agent_id, display_name)| crate::runtime::router::RouterWorker {
+                agent_id,
+                display_name,
+            },
+        )
+        .collect())
+}
+
+/// The seat `agent_id` holds in `thread_id` and, for a router with someone to
+/// dispatch to, its task tools.
+async fn router_seat_tools(
+    pool: &SqlitePool,
+    services: &RuntimeServices,
+    group: &GroupRuntimeConfig,
+    thread_id: &str,
+    turn_id: &str,
+    agent_id: &str,
+) -> anyhow::Result<(
+    RouterSeat,
+    Option<crate::runtime::router::RouterTools>,
+    Vec<ToolDefinition>,
+)> {
+    let seat = match thread_responder(pool, thread_id, group).await? {
+        (Some(pinned), seat) if pinned == agent_id => seat,
+        _ => RouterSeat::None,
+    };
+    if seat != RouterSeat::Router {
+        return Ok((seat, None, Vec::new()));
+    }
+    let workers = load_router_workers(pool, group, agent_id).await?;
+    if workers.is_empty() {
+        return Ok((seat, None, Vec::new()));
+    }
+    let definitions = crate::runtime::router::tool_definitions(&workers);
+    let router = crate::runtime::router::RouterTools::new(crate::runtime::router::RouterBinding {
+        pool: pool.clone(),
+        write_lock: services.write_lock.clone(),
+        active_turns: services.active_turns.clone(),
+        owner_id: group.owner_id.clone(),
+        group_id: group.id.clone(),
+        thread_id: thread_id.to_string(),
+        turn_id: turn_id.to_string(),
+        router_agent_id: agent_id.to_string(),
+        max_tasks: group.max_router_tasks,
+        workers,
+    });
+    Ok((seat, Some(router), definitions))
 }
 
 async fn load_group_runtime_config(
@@ -7318,7 +7479,7 @@ async fn load_group_runtime_config(
     let row: Option<GroupRuntimeRow> = sqlx::query_as(
         "SELECT id, owner_id, name, conversation_kind, description, announcement, workspace_id, free_speech, \
                 proactive_mode, communication_mode, default_speaking_order_json, scheduler_mode, max_agent_steps, max_steps_per_agent, max_scheduler_hops, max_moderator_calls, max_consecutive_failures, max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, moderator_provider_id, moderator_model, muted_agent_ids_json, \
-                decision_enabled, decision_scenarios_json \
+                decision_enabled, decision_scenarios_json, router_agent_id, max_router_tasks \
          FROM groups WHERE id = ? AND status = 'active'",
     )
     .bind(group_id)
@@ -7357,6 +7518,8 @@ async fn load_group_runtime_config(
         decision_scenarios: decision::DecisionScenarios::from_json(Some(
             &row.decision_scenarios_json,
         )),
+        router_agent_id: row.router_agent_id,
+        max_router_tasks: row.max_router_tasks,
     })
 }
 
@@ -7744,7 +7907,21 @@ fn parse_string_set(raw: Option<&str>) -> HashSet<String> {
         .collect()
 }
 
-async fn build_invocation_context(
+// Note: built here rather than in the caller's poll, so the large future is not
+// reserved again on every nested AgentAsTool level's stack.
+fn build_invocation_context<'a>(
+    services: &'a RuntimeServices,
+    ctx: &'a StreamCtx,
+    agent: &'a Candidate,
+    group: &'a GroupRuntimeConfig,
+    scheduler: Option<&'a ScheduledTurnRuntime>,
+) -> Pin<Box<dyn Future<Output = anyhow::Result<InvocationContext>> + Send + 'a>> {
+    Box::pin(build_invocation_context_inner(
+        services, ctx, agent, group, scheduler,
+    ))
+}
+
+async fn build_invocation_context_inner(
     services: &RuntimeServices,
     ctx: &StreamCtx,
     agent: &Candidate,
@@ -7917,6 +8094,21 @@ async fn build_invocation_context(
     approvals.set_bypass_all(bypass_approvals(agent.tool_config_json.as_deref()));
     let executor = executor.with_approvals(approvals);
 
+    // Boxed: nested calls stack several invocation builds on one thread.
+    let (seat, router, router_tools) = Box::pin(router_seat_tools(
+        pool,
+        services,
+        group,
+        &ctx.thread_id,
+        &turn_id,
+        &agent.agent_id,
+    ))
+    .await?;
+    let executor = match router {
+        Some(router) => executor.with_router(router),
+        None => executor,
+    };
+
     let mut tools = enabled_tools
         .iter()
         .filter(|name| name.as_str() != AGENT_AS_TOOL_NAME)
@@ -7953,7 +8145,9 @@ async fn build_invocation_context(
     // so it is built here rather than from the static table: it has to name the
     // assistants this caller can actually reach.
     let mut delegation = DelegationAvailability::Unavailable;
-    if enabled_tools.iter().any(|name| name == AGENT_AS_TOOL_NAME) {
+    // Note: the router dispatches instead of calling. A synchronous `call`
+    // would hold the conversation for the helper's whole run.
+    if seat != RouterSeat::Router && enabled_tools.iter().any(|name| name == AGENT_AS_TOOL_NAME) {
         let direct_chat = group.conversation_kind == "direct";
         let caller = CallerAgent {
             agent_id: agent.agent_id.clone(),
@@ -8011,6 +8205,7 @@ async fn build_invocation_context(
                 .filter_map(tool_definition),
         );
     }
+    tools.extend(router_tools);
     // Keep the provider tool list stable across turns: `bindings()` iterates a
     // hash map, and a list that reshuffles every turn defeats prompt caching.
     tools.sort_by(|a, b| a.name.cmp(&b.name));
@@ -8028,6 +8223,7 @@ async fn build_invocation_context(
         &tools,
         delegation,
         &capability_suggestion,
+        seat,
     )
     .await?;
 
@@ -8248,6 +8444,7 @@ async fn build_agent_system_prompt(
     tools: &[ToolDefinition],
     delegation: DelegationAvailability,
     capability_suggestion: &decision::CapabilitySuggestion,
+    seat: RouterSeat,
 ) -> anyhow::Result<String> {
     let roster = load_group_roster(pool, &ctx.group_id, &agent.agent_id).await?;
     let skill_lines = if mounted_skills.is_empty() {
@@ -8337,6 +8534,13 @@ async fn build_agent_system_prompt(
     }
     if let Some(suggestion) = capability_suggestion.render() {
         sections.push(suggestion);
+    }
+    match seat {
+        RouterSeat::Router if tools.iter().any(|tool| tool.name == "DispatchTask") => {
+            sections.push(crate::runtime::router::ROUTER_PROMPT.to_string());
+        }
+        RouterSeat::Worker => sections.push(crate::runtime::router::WORKER_PROMPT.to_string()),
+        _ => {}
     }
     let acp_notes = agent.runtime_kind == "acp"
         && group.conversation_kind == "group"

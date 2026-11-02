@@ -41,6 +41,11 @@ pub struct ThreadResponse {
     title: Option<String>,
     git_branch: Option<String>,
     worktree_path: Option<String>,
+    /// The worker a router dispatched this task to, if it is a dispatched task.
+    assigned_agent_id: Option<String>,
+    origin_thread_id: Option<String>,
+    /// External topics whose trigger events this thread receives.
+    topics: Vec<String>,
     goal: Option<String>,
     status: String,
     priority: i64,
@@ -77,6 +82,9 @@ struct ThreadAccessRow {
     status: String,
     created_at: String,
     updated_at: String,
+    assigned_agent_id: Option<String>,
+    origin_thread_id: Option<String>,
+    topics_json: Option<String>,
     group_owner_id: Option<String>,
     group_status: Option<String>,
     conversation_kind: Option<String>,
@@ -116,6 +124,13 @@ impl From<ThreadAccessRow> for ThreadResponse {
             title: row.title,
             git_branch: row.git_branch,
             worktree_path: row.worktree_path,
+            assigned_agent_id: row.assigned_agent_id,
+            origin_thread_id: row.origin_thread_id,
+            topics: row
+                .topics_json
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .unwrap_or_default(),
             goal: None,
             status: row.status,
             priority: 0,
@@ -154,7 +169,8 @@ pub async fn list_group(
     .await?;
 
     let rows: Vec<ThreadAccessRow> = sqlx::query_as(
-        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.worktree_path, t.status, t.created_at, t.updated_at, \
+        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.worktree_path, t.status, t.created_at, t.updated_at, t.assigned_agent_id, t.origin_thread_id, \
+                (SELECT json_group_array(topic) FROM thread_topics WHERE thread_id = t.id) AS topics_json, \
                 g.owner_id AS group_owner_id, g.status AS group_status, \
                 g.conversation_kind AS conversation_kind \
          FROM threads t \
@@ -649,7 +665,8 @@ async fn fetch_owned_thread(
     owner_id: &str,
 ) -> Result<ThreadAccessRow, ApiError> {
     let row: Option<ThreadAccessRow> = sqlx::query_as(
-        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.worktree_path, t.status, t.created_at, t.updated_at, \
+        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.worktree_path, t.status, t.created_at, t.updated_at, t.assigned_agent_id, t.origin_thread_id, \
+                (SELECT json_group_array(topic) FROM thread_topics WHERE thread_id = t.id) AS topics_json, \
                 g.owner_id AS group_owner_id, g.status AS group_status, \
                 g.conversation_kind AS conversation_kind \
          FROM threads t \

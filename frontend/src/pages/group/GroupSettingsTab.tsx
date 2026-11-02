@@ -473,7 +473,7 @@ export function GroupSettingsTab({ group, compact = false }: GroupSettingsTabPro
           />
         </summary>
         <div className="pb-2 pt-6">
-          <GroupSchedulerSettingsSection group={group} />
+          <GroupSchedulerSettingsSection group={group} agents={groupAgents.data} />
         </div>
       </details>
 

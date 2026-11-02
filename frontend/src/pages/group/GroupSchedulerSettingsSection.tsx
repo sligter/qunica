@@ -22,21 +22,25 @@ import { ApiError } from '@/lib/api-v2/client'
 import { normalizeLanguage } from '@/i18n'
 import { formatNumber } from '@/lib/format'
 import type { GroupSchedulerConfig } from '@/lib/api-v2/types'
-import type { GroupRead, GroupUpdate } from '@/types/api'
+import type { GroupAgentRead, GroupRead, GroupUpdate } from '@/types/api'
 
 const NO_SELECTION = '__none__'
 const AUTO_MAX_AGENT_STEPS = 8
 type SchedulerMode = GroupSchedulerConfig['scheduler_mode']
 
-const schedulerModes: SchedulerMode[] = ['bounded', 'automatic']
+const schedulerModes: SchedulerMode[] = ['bounded', 'automatic', 'router']
 const schedulerModeKeys = {
   bounded: 'scheduler.boundedMode',
   automatic: 'scheduler.automaticMode',
+  router: 'scheduler.routerMode',
 } as const satisfies Record<SchedulerMode, string>
+const MAX_ROUTER_TASKS = 16
 
 const schedulerFormSchema = z
   .object({
-    scheduler_mode: z.enum(['bounded', 'automatic']),
+    scheduler_mode: z.enum(['bounded', 'automatic', 'router']),
+    router_agent_id: z.string().nullable(),
+    max_router_tasks: z.number().int().min(1, 'minOne').max(MAX_ROUTER_TASKS, 'maxRouterTasks'),
     max_agent_steps_mode: z.enum(['auto', 'custom']),
     max_agent_steps_custom: z.number().int().min(1, 'minOne'),
     max_steps_per_agent: z.number().int().min(1, 'minOne'),
@@ -55,6 +59,13 @@ const schedulerFormSchema = z
     moderator_model: z.string().nullable(),
   })
   .superRefine((values, context) => {
+    if (values.scheduler_mode === 'router' && !values.router_agent_id) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['router_agent_id'],
+        message: 'router',
+      })
+    }
     if (!values.moderator_enabled) return
 
     if (!values.moderator_provider_id?.trim()) {
@@ -77,11 +88,15 @@ type SchedulerFormValues = z.infer<typeof schedulerFormSchema>
 
 interface GroupSchedulerSettingsSectionProps {
   group: GroupRead
+  /** Members the router can be chosen from. */
+  agents?: GroupAgentRead[]
 }
 
 function groupToFormValues(group: GroupSchedulerConfig): SchedulerFormValues {
   return {
     scheduler_mode: group.scheduler_mode,
+    router_agent_id: group.router_agent_id ?? null,
+    max_router_tasks: group.max_router_tasks ?? 4,
     max_agent_steps_mode: group.max_agent_steps === null ? 'auto' : 'custom',
     max_agent_steps_custom: group.max_agent_steps ?? AUTO_MAX_AGENT_STEPS,
     max_steps_per_agent: group.max_steps_per_agent,
@@ -116,6 +131,8 @@ function FieldError({ message }: { message: string | undefined }) {
     'maxSeconds',
     'provider',
     'model',
+    'router',
+    'maxRouterTasks',
   ]
   return message ? (
     <p className="text-xs text-destructive" role="alert">
@@ -126,7 +143,10 @@ function FieldError({ message }: { message: string | undefined }) {
   ) : null
 }
 
-export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsSectionProps) {
+export function GroupSchedulerSettingsSection({
+  group,
+  agents = [],
+}: GroupSchedulerSettingsSectionProps) {
   const { t, i18n } = useTranslation(['groups', 'common'])
   const language = normalizeLanguage(i18n.resolvedLanguage ?? i18n.language) ?? 'en-US'
   const update = useUpdateGroup(group.id)
@@ -143,6 +163,10 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
   const selectedProviderId = form.watch('moderator_provider_id')
   const selectedModel = form.watch('moderator_model')
   const maxAgentStepsMode = form.watch('max_agent_steps_mode')
+  const routerAgentId = form.watch('router_agent_id')
+  const routerOptions = agents.filter(
+    (agent) => agent.status === 'active' || agent.agent_id === routerAgentId,
+  )
   const models = useProviderModels(selectedProviderId ?? undefined)
   const activeProviders = useMemo(
     () => (providers.data ?? []).filter((provider) => provider.status === 'active'),
@@ -232,6 +256,11 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
       moderator_enabled: values.moderator_enabled,
       moderator_provider_id: values.moderator_provider_id,
       moderator_model: values.moderator_model,
+      // Leaving router mode clears the router server-side, so only send the
+      // router fields while it is selected.
+      ...(values.scheduler_mode === 'router'
+        ? { router_agent_id: values.router_agent_id, max_router_tasks: values.max_router_tasks }
+        : {}),
     }
 
     try {
@@ -302,6 +331,60 @@ export function GroupSchedulerSettingsSection({ group }: GroupSchedulerSettingsS
             </SelectContent>
           </Select>
         </SettingsRow>
+
+        {schedulerMode === 'router' ? (
+          <>
+            <SettingsRow
+              label={t('scheduler.routerAgent')}
+              description={t('scheduler.routerAgentDescription')}
+            >
+              <div className="space-y-1">
+                <Select
+                  value={routerAgentId ?? NO_SELECTION}
+                  onValueChange={(value) =>
+                    updateValue('router_agent_id', value === NO_SELECTION ? null : value)
+                  }
+                  disabled={schedulerControlsDisabled}
+                >
+                  <SelectTrigger className="w-52" aria-label={t('scheduler.routerAgent')}>
+                    <SelectValue placeholder={t('scheduler.chooseRouter')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NO_SELECTION}>{t('scheduler.chooseRouter')}</SelectItem>
+                    {routerOptions.map((agent) => (
+                      <SelectItem key={agent.agent_id} value={agent.agent_id}>
+                        {agent.display_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FieldError message={form.formState.errors.router_agent_id?.message} />
+              </div>
+            </SettingsRow>
+
+            <SettingsRow
+              label={t('scheduler.maxRouterTasks')}
+              description={t('scheduler.maxRouterTasksDescription', {
+                maximum: formatNumber(MAX_ROUTER_TASKS, language),
+              })}
+              htmlFor="scheduler-max-router-tasks"
+            >
+              <div className="space-y-1">
+                <Input
+                  id="scheduler-max-router-tasks"
+                  type="number"
+                  min={1}
+                  max={MAX_ROUTER_TASKS}
+                  step={1}
+                  className="w-24"
+                  disabled={schedulerControlsDisabled}
+                  {...form.register('max_router_tasks', numericRegistration())}
+                />
+                <FieldError message={form.formState.errors.max_router_tasks?.message} />
+              </div>
+            </SettingsRow>
+          </>
+        ) : null}
 
         <SettingsRow
           label={t('scheduler.maximumSteps')}

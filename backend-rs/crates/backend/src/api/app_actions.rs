@@ -746,9 +746,9 @@ fn check_payload_rules(kind: TargetKind, payload: &Value) -> Result<(), ApiError
 
     if kind == TargetKind::Group {
         if let Some(mode) = object.get("scheduler_mode").and_then(Value::as_str) {
-            if !matches!(mode.trim(), "bounded" | "automatic") {
+            if !matches!(mode.trim(), "bounded" | "automatic" | "router") {
                 return Err(ApiError::invalid_input(
-                    "scheduler_mode must be bounded or automatic",
+                    "scheduler_mode must be bounded, automatic or router",
                 ));
             }
         }

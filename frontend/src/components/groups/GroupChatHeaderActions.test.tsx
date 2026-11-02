@@ -123,6 +123,15 @@ describe('GroupChatHeaderActions task status', () => {
     expect(names).toEqual(['ReplyingShip the API', 'Waiting for youWrite the docs'])
   })
 
+  it('labels a dispatched task with the topics it follows', async () => {
+    const dispatched = { ...thread('thread-3', 'Fix PR 7'), origin_thread_id: 'thread-1', topics: ['github:owner/repo#7'] }
+    renderSwitcher({ tasks: [...threads, dispatched] })
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Current task' }))
+
+    const options = within(screen.getByRole('group', { name: 'Active' })).getAllByRole('button').filter((button) => button.hasAttribute('aria-pressed'))
+    expect(options.at(-1)).toHaveTextContent('Fix PR 7 · Dispatched · Following github:owner/repo#7')
+  })
+
   it('says nothing about a task that is not doing anything', async () => {
     await openSwitcher()
 

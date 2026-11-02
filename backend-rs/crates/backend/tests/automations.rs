@@ -433,6 +433,234 @@ async fn webhook_replay_returns_the_original_job_and_changed_content_conflicts()
     assert_eq!(deliveries, 2);
 }
 
+async fn rotate(app: &Router, token: &str, automation: &Value) -> String {
+    let id = automation["id"].as_str().unwrap();
+    let (status, rotated) = request(
+        app,
+        "POST",
+        &format!("/api/v2/automations/{id}/secret"),
+        Some(token),
+        json!({"action":"rotate","expected_version":1}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rotated}");
+    rotated["secret"].as_str().unwrap().to_string()
+}
+
+/// Hold `thread` with an active worker so later runs stay queued and unclaimed.
+/// It leaves the thread lease alone; the first run may already hold it.
+async fn occupy(state: &AppState, owner: &str, group: &str, thread: &str) {
+    let id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO execution_jobs(id,owner_id,request_id,command_name,group_id,thread_id,turn_id,stream_id,payload_json,status,generation,occupies_thread,worker_active,created_at,updated_at) \
+         VALUES(?,?,?,'message.send',?,?,?,?,'{}','running',1,0,1,'2026-10-18T11:59:00Z','2026-10-18T11:59:00Z')",
+    )
+    .bind(&id).bind(owner).bind(&id).bind(group).bind(thread).bind(&id).bind(&id)
+    .execute(state.db.pool())
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn github_events_of_one_pull_request_share_a_thread_and_batch() {
+    let (app, state, token, owner, group) = fixture().await;
+    let automation = create(&app, &token, &group, "PR bot", json!({"kind":"github"})).await;
+    let hook = automation["hook_id"].as_str().unwrap().to_string();
+    let secret = rotate(&app, &token, &automation).await;
+    let deliver = |event: &'static str, delivery: &'static str, body: Value| {
+        let (app, hook, secret) = (app.clone(), hook.clone(), secret.clone());
+        async move {
+            let body = body.to_string().into_bytes();
+            let signature = sign_github(&secret, &body);
+            let (status, response) =
+                github_webhook(&app, &hook, event, delivery, &signature, &body).await;
+            assert_eq!(status, StatusCode::ACCEPTED, "{response}");
+            response
+        }
+    };
+    let repo = json!({"full_name": "Owner/Repo"});
+
+    let opened = deliver(
+        "pull_request",
+        "d1",
+        json!({"action":"opened","repository":repo,"pull_request":{"number":7}}),
+    )
+    .await;
+    assert_eq!(opened["route"], "home");
+    let thread = opened["thread_id"].as_str().unwrap().to_string();
+    let title: String = sqlx::query_scalar("SELECT title FROM threads WHERE id=?")
+        .bind(&thread)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(title, "PR bot · github:owner/repo#7");
+    occupy(&state, &owner, &group, &thread).await;
+
+    let comment = deliver(
+        "issue_comment",
+        "d2",
+        json!({"action":"created","repository":repo,"issue":{"number":7},"comment":{"body":"looks off"}}),
+    )
+    .await;
+    let checks = deliver(
+        "check_suite",
+        "d3",
+        json!({"action":"completed","repository":repo,"check_suite":{"conclusion":"failure","pull_requests":[{"number":7}]}}),
+    )
+    .await;
+    assert_eq!(comment["thread_id"], json!(thread));
+    assert_eq!(checks["thread_id"], json!(thread));
+    assert_eq!(
+        checks["job_id"], comment["job_id"],
+        "events before the next run join it"
+    );
+    assert_eq!(checks["batched"], true);
+    let (content, meta): (String, String) = sqlx::query_as(
+        "SELECT m.content,m.content_json FROM messages m JOIN execution_jobs j ON j.message_id=m.id WHERE j.id=?",
+    )
+    .bind(checks["job_id"].as_str())
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert!(
+        content.contains("event github:d2, topic github:owner/repo#7"),
+        "{content}"
+    );
+    assert!(
+        content.contains("event github:d3, topic github:owner/repo#7"),
+        "{content}"
+    );
+    let meta: Value = serde_json::from_str(&meta).unwrap();
+    assert_eq!(meta["topic"], "github:owner/repo#7");
+    assert!(meta["automation_events"].as_array().unwrap().len() >= 2);
+    let payload: String = sqlx::query_scalar("SELECT payload_json FROM execution_jobs WHERE id=?")
+        .bind(checks["job_id"].as_str())
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    assert!(
+        payload.contains("github:d3"),
+        "the run reads the batched text"
+    );
+
+    // A replayed delivery returns its original receipt instead of batching again.
+    let replay = deliver(
+        "check_suite",
+        "d3",
+        json!({"action":"completed","repository":repo,"check_suite":{"conclusion":"failure","pull_requests":[{"number":7}]}}),
+    )
+    .await;
+    assert_eq!(replay["job_id"], checks["job_id"]);
+
+    let other = deliver(
+        "pull_request",
+        "d4",
+        json!({"action":"opened","repository":repo,"pull_request":{"number":8}}),
+    )
+    .await;
+    assert_ne!(other["thread_id"], json!(thread));
+    let homes: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM thread_topics WHERE group_id=? AND topic='github:owner/repo#7'",
+    )
+    .bind(&group)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(homes, 1);
+    let (status, threads) = request(
+        &app,
+        "GET",
+        &format!("/api/v2/groups/{group}/threads"),
+        Some(&token),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{threads}");
+    let listed = threads
+        .as_array()
+        .or_else(|| threads["items"].as_array())
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == json!(thread))
+        .unwrap()
+        .clone();
+    assert_eq!(listed["topics"], json!(["github:owner/repo#7"]));
+}
+
+#[tokio::test]
+async fn topic_events_reach_subscribed_tasks_and_return_home_without_them() {
+    let (app, state, token, _owner, group) = fixture().await;
+    let automation = create(&app, &token, &group, "Tickets", json!({"kind":"webhook"})).await;
+    let hook = automation["hook_id"].as_str().unwrap().to_string();
+    let secret = rotate(&app, &token, &automation).await;
+    let post = |event: &'static str, topic: &'static str| {
+        let (app, hook, secret) = (app.clone(), hook.clone(), secret.clone());
+        async move {
+            let body =
+                json!({"event_id": event, "topic": topic, "payload": {"n": event}}).to_string();
+            webhook(
+                &app,
+                &hook,
+                &secret,
+                Utc::now().timestamp(),
+                body.as_bytes(),
+            )
+            .await
+        }
+    };
+
+    let (status, first) = post("e1", "ticket-9").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{first}");
+    let home = first["thread_id"].as_str().unwrap().to_string();
+
+    let task = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO threads(id,group_id,title,status,origin_thread_id,created_at,updated_at) VALUES(?,?,'Task','active',?,'now','now')")
+        .bind(&task).bind(&group).bind(&home).execute(state.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO thread_topics(thread_id,group_id,topic,created_at) VALUES(?,?,'ticket-9','now')")
+        .bind(&task).bind(&group).execute(state.db.pool()).await.unwrap();
+
+    let (status, routed) = post("e2", "ticket-9").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{routed}");
+    assert_eq!(routed["route"], "subscribers");
+    assert_eq!(routed["thread_id"], json!(task));
+    assert_eq!(routed["deliveries"].as_array().unwrap().len(), 1);
+    let content: String =
+        sqlx::query_scalar("SELECT content FROM messages WHERE thread_id=? ORDER BY seq LIMIT 1")
+            .bind(&task)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert!(content.starts_with("New event on ticket-9"), "{content}");
+    assert!(content.contains("[Untrusted webhook data;"), "{content}");
+    let job: (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT automation_id,occurrence_id FROM execution_jobs WHERE id=?")
+            .bind(routed["job_id"].as_str())
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(job.0, None, "a subscribed task's run belongs to the task");
+    assert_eq!(
+        job.1.as_ref(),
+        routed["occurrence_id"]
+            .as_str()
+            .map(str::to_string)
+            .as_ref()
+    );
+
+    sqlx::query("UPDATE threads SET status='archived' WHERE id=?")
+        .bind(&task)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let (status, back) = post("e3", "ticket-9").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{back}");
+    assert_eq!(back["route"], "home");
+    assert_eq!(back["thread_id"], json!(home));
+
+    let (status, reserved) = post("e4", "github:owner/repo#1").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{reserved}");
+}
+
 #[tokio::test]
 async fn github_delivery_uses_native_signature_and_normalized_payload_dedup() {
     let (app, state, token, _owner, group) = fixture().await;

@@ -19,12 +19,16 @@ pub const MAX_GITHUB_BYTES: usize = 1024 * 1024;
 struct Envelope {
     event_id: String,
     payload: Value,
+    #[serde(default)]
+    topic: Option<String>,
 }
 
 #[derive(Debug)]
 pub struct VerifiedWebhook {
     pub event_id: String,
     pub payload: Value,
+    /// The caller's thread key; events sharing one share a thread.
+    pub topic: Option<String>,
     pub payload_hash: String,
     pub legacy_hashes: Option<Vec<String>>,
 }
@@ -163,14 +167,32 @@ pub fn verify(
             "event_id must contain 1–128 bytes without control characters",
         ));
     }
+    // `github:` topics come only from the verified GitHub adapter.
+    let topic = match envelope.topic.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            super::topics::normalize(raw)
+                .filter(|topic| !topic.starts_with("github:"))
+                .ok_or_else(|| {
+                    ApiError::invalid_input(
+                        "topic must contain 1–200 characters without control characters and must not start with github:",
+                    )
+                })?,
+        ),
+    };
     // Note: an unsigned event-id header lets a captured valid request create
     // fresh dedup keys. Identity comes only from this authenticated JSON body.
-    let identity = serde_json::json!({"event_id":envelope.event_id,"payload":envelope.payload});
+    // A topic joins the identity only when present, so earlier digests hold.
+    let mut identity = serde_json::json!({"event_id":envelope.event_id,"payload":envelope.payload});
+    if let Some(topic) = &topic {
+        identity["topic"] = Value::String(topic.clone());
+    }
     let canonical = crate::canonical_json::to_vec(&identity)
         .map_err(|_| ApiError::invalid_input("invalid webhook payload"))?;
     Ok(VerifiedWebhook {
         event_id: envelope.event_id,
         payload: envelope.payload,
+        topic,
         payload_hash: format!("{:x}", Sha256::digest(canonical)),
         legacy_hashes: legacy_hashes(&identity),
     })
@@ -217,6 +239,35 @@ mod tests {
             1_700_000_000
         )
         .is_err());
+    }
+    #[test]
+    fn a_topic_is_signed_identity_and_absent_topics_keep_earlier_digests() {
+        let original = verify(SECRET, TIME, SIGNATURE, BODY, 1_700_000_000).unwrap();
+        assert_eq!(original.topic, None);
+        let null = br#"{"event_id":"delivery-1","payload":{"text":"fixture"},"topic":null}"#;
+        let null = verify(SECRET, TIME, &sign(null), null, 1_700_000_000).unwrap();
+        assert_eq!(null.payload_hash, original.payload_hash);
+        let topical =
+            br#"{"event_id":"delivery-1","payload":{"text":"fixture"},"topic":" ticket-9 "}"#;
+        let topical = verify(SECRET, TIME, &sign(topical), topical, 1_700_000_000).unwrap();
+        assert_eq!(topical.topic.as_deref(), Some("ticket-9"));
+        assert_ne!(topical.payload_hash, original.payload_hash);
+        for topic in [r#""""#, r#""github:o/r#1""#, "7"] {
+            let body = format!(r#"{{"event_id":"delivery-1","payload":{{}},"topic":{topic}}}"#);
+            assert_eq!(
+                verify(
+                    SECRET,
+                    TIME,
+                    &sign(body.as_bytes()),
+                    body.as_bytes(),
+                    1_700_000_000
+                )
+                .unwrap_err()
+                .code(),
+                "invalid_input",
+                "{topic}"
+            );
+        }
     }
     #[test]
     fn enforces_past_and_future_clock_skew_without_integer_overflow() {

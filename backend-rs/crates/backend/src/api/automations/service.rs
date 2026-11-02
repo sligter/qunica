@@ -372,7 +372,14 @@ struct Occurrence<'a> {
     /// Digests a pre-pin binary may have stored for this payload, matched
     /// only against `digest_version=1` rows; `None` when too many floats.
     legacy_hashes: Option<Vec<String>>,
+    /// The external thread the event belongs to; see [`super::topics`].
+    topic: Option<String>,
 }
+/// Subscribed tasks one event is delivered to.
+const MAX_TOPIC_DELIVERIES: i64 = 16;
+/// Events batched into one not-yet-started run, and that run's message size.
+const MAX_BATCHED_EVENTS: i64 = 20;
+const MAX_BATCHED_BYTES: i64 = 256 * 1024;
 async fn enqueue(
     tx: &mut Transaction<'_, Sqlite>,
     a: &Automation,
@@ -447,25 +454,95 @@ async fn enqueue(
         cancel_queued(tx, &a.id).await?;
     }
     let occurrence = Uuid::new_v4().to_string();
-    let thread = Uuid::new_v4().to_string();
-    let request = Uuid::new_v4().to_string();
     let now = event
         .now
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let snapshot = json!({"automation_id":a.id,"version":a.version,"source":event.source,"event_id":event.key,"scheduled_at":event.scheduled,"budget":decode::<Budget>(&a.budget_json)?});
+    let label = event.label.as_deref().unwrap_or("webhook");
     // Payload is ordinary user data, labelled and encoded. It never becomes
     // a system instruction and no adapter executes arbitrary filter scripts.
-    let content = if let Some(payload) = event.payload {
+    let block = event.payload.as_ref().map(|payload| {
+        let topic = event
+            .topic
+            .as_deref()
+            .map(|topic| format!(", topic {topic}"))
+            .unwrap_or_default();
         format!(
-            "{}\n\n[Untrusted {} data; automation {}, event {}]\n{}",
-            a.prompt,
-            event.label.as_deref().unwrap_or("webhook"),
-            a.id,
-            event.key,
-            payload
+            "[Untrusted {label} data; automation {}, event {}{topic}]\n{payload}",
+            a.id, event.key
         )
-    } else {
-        a.prompt.clone()
+    });
+    let target = Target {
+        occurrence: &occurrence,
+        snapshot: &snapshot,
+        now: &now,
     };
+    let mut response = match (event.topic.as_deref(), block.as_deref()) {
+        (Some(topic), Some(block)) => {
+            let entry = json!({"occurrence_id":occurrence,"event_id":event.key,"label":label});
+            route_topic(tx, a, topic, block, &entry, &target).await?
+        }
+        _ => {
+            let content = match &block {
+                Some(block) => format!("{}\n\n{block}", a.prompt),
+                None => a.prompt.clone(),
+            };
+            let thread = new_thread(tx, a, &a.name, &now).await?;
+            let response = accept(tx, a, &thread, content, None, &now).await?;
+            target.mark(tx, &response, Some(&a.id)).await?;
+            response
+        }
+    };
+    response["occurrence_id"] = json!(occurrence);
+    sqlx::query("INSERT INTO automation_occurrences(id,automation_id,automation_version,source,event_key,payload_hash,scheduled_at,job_id,response_json,created_at,digest_version) VALUES(?,?,?,?,?,?,?,?,?,?,2)")
+        .bind(&occurrence).bind(&a.id).bind(a.version).bind(event.source).bind(event.key).bind(event.hash).bind(event.scheduled).bind(response["job_id"].as_str()).bind(response.to_string()).bind(&now)
+        .execute(&mut **tx).await.map_err(db_error)?;
+    Ok(response)
+}
+
+/// Where an accepted occurrence's run is recorded.
+struct Target<'a> {
+    occurrence: &'a str,
+    snapshot: &'a Value,
+    now: &'a str,
+}
+impl Target<'_> {
+    /// Link a new run to its occurrence. `automation` is `None` for runs in a
+    /// subscribed task: they belong to that task, so they neither wait for the
+    /// automation's other occurrences nor are cancelled when it is paused.
+    async fn mark(
+        &self,
+        tx: &mut Transaction<'_, Sqlite>,
+        response: &Value,
+        automation: Option<&str>,
+    ) -> Result<(), ApiError> {
+        sqlx::query("UPDATE execution_jobs SET automation_id=?,occurrence_id=?,automation_snapshot_json=? WHERE id=?")
+            .bind(automation).bind(self.occurrence).bind(self.snapshot.to_string()).bind(response["job_id"].as_str()).execute(&mut **tx).await.map_err(db_error)?;
+        Ok(())
+    }
+}
+
+async fn new_thread(
+    tx: &mut Transaction<'_, Sqlite>,
+    a: &Automation,
+    title: &str,
+    now: &str,
+) -> Result<String, ApiError> {
+    let thread = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO threads(id,group_id,agent_id,title,status,next_seq,created_at,updated_at) VALUES(?,?,NULL,?,'active',1,?,?)")
+        .bind(&thread).bind(&a.group_id).bind(title).bind(now).bind(now).execute(&mut **tx).await.map_err(db_error)?;
+    Ok(thread)
+}
+
+/// Write the owner-authored trigger message and reserve its run.
+async fn accept(
+    tx: &mut Transaction<'_, Sqlite>,
+    a: &Automation,
+    thread: &str,
+    content: String,
+    content_json: Option<Value>,
+    now: &str,
+) -> Result<Value, ApiError> {
     let prepared = PreparedMessage {
         content,
         attachments: vec![],
@@ -473,37 +550,195 @@ async fn enqueue(
         effort_override: None,
     };
     let command = Command {
-        request_id: request,
+        request_id: Uuid::new_v4().to_string(),
         name: "message.send".into(),
         target: json!({"conversation_id":a.group_id,"thread_id":thread}),
         payload: json!({"content":prepared.content}),
     };
     let digest = commands::payload_hash(&command);
-    sqlx::query("INSERT INTO threads(id,group_id,agent_id,title,status,next_seq,created_at,updated_at) VALUES(?,?,NULL,?,'active',1,?,?)")
-        .bind(&thread).bind(&a.group_id).bind(&a.name).bind(&now).bind(&now).execute(&mut **tx).await.map_err(db_error)?;
-    let mut response = commands::insert_message_in_tx(
+    commands::insert_message_in_tx(
         tx,
         MessageAcceptance {
             owner: &a.owner_id,
             command: &command,
             digest: &digest,
             group: &a.group_id,
-            thread: &thread,
+            thread,
             prepared: &prepared,
-            now: &now,
+            now,
             reuse_job: None,
+            author: content_json.map(|meta| commands::MessageAuthor {
+                sender_type: "user",
+                sender_id: Some(&a.owner_id),
+                message_type: "text",
+                content_json: Some(meta.to_string()),
+            }),
         },
     )
+    .await
+}
+
+/// Route an event of an external topic.
+///
+/// Note: dispatched tasks subscribed to the topic get the event directly, so
+/// the router is not called once per comment or CI result on work it already
+/// handed out. Otherwise the event goes to the topic's home thread — in router
+/// mode, the router's — and the first event of a topic opens that thread.
+async fn route_topic(
+    tx: &mut Transaction<'_, Sqlite>,
+    a: &Automation,
+    topic: &str,
+    block: &str,
+    entry: &Value,
+    target: &Target<'_>,
+) -> Result<Value, ApiError> {
+    let subscribers: Vec<String> = sqlx::query_scalar(
+        "SELECT t.id FROM thread_topics s JOIN threads t ON t.id=s.thread_id \
+         WHERE s.group_id=? AND s.topic=? AND t.origin_thread_id IS NOT NULL \
+           AND t.status IN ('active','running','paused') ORDER BY s.created_at,t.id LIMIT ?",
+    )
+    .bind(&a.group_id)
+    .bind(topic)
+    .bind(MAX_TOPIC_DELIVERIES)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(db_error)?;
+    if !subscribers.is_empty() {
+        let head = format!(
+            "New event on {topic}, which this task follows. Continue the task with it; if it falls outside the task, say so in your reply."
+        );
+        let mut deliveries = Vec::with_capacity(subscribers.len());
+        for thread in &subscribers {
+            deliveries
+                .push(deliver(tx, a, thread, topic, &head, block, entry, target, None).await?);
+        }
+        let mut response = deliveries[0].clone();
+        response["route"] = json!("subscribers");
+        response["deliveries"] = deliveries
+            .iter()
+            .map(|delivery| json!({"thread_id":delivery["thread_id"],"job_id":delivery["job_id"]}))
+            .collect();
+        return Ok(response);
+    }
+    let home: Option<String> = sqlx::query_scalar(
+        "SELECT t.id FROM thread_topics s JOIN threads t ON t.id=s.thread_id \
+         WHERE s.group_id=? AND s.topic=? AND t.origin_thread_id IS NULL \
+           AND t.status IN ('active','running','paused') ORDER BY t.updated_at DESC,t.id DESC LIMIT 1",
+    )
+    .bind(&a.group_id)
+    .bind(topic)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_error)?;
+    let home = match home {
+        Some(thread) => thread,
+        None => {
+            let title: String = format!("{} · {topic}", a.name).chars().take(120).collect();
+            let thread = new_thread(tx, a, &title, target.now).await?;
+            super::topics::subscribe_in_tx(
+                tx,
+                &a.group_id,
+                &thread,
+                &[topic.to_string()],
+                target.now,
+            )
+            .await
+            .map_err(db_error)?;
+            thread
+        }
+    };
+    let mut response = deliver(
+        tx,
+        a,
+        &home,
+        topic,
+        &a.prompt,
+        block,
+        entry,
+        target,
+        Some(&a.id),
+    )
     .await?;
-    let snapshot = json!({"automation_id":a.id,"version":a.version,"source":event.source,"event_id":event.key,"scheduled_at":event.scheduled,"budget":decode::<Budget>(&a.budget_json)?});
-    sqlx::query("UPDATE execution_jobs SET automation_id=?,occurrence_id=?,automation_snapshot_json=? WHERE id=?")
-        .bind(&a.id).bind(&occurrence).bind(snapshot.to_string()).bind(response["job_id"].as_str()).execute(&mut **tx).await.map_err(db_error)?;
-    response["occurrence_id"] = json!(occurrence);
-    sqlx::query("INSERT INTO automation_occurrences(id,automation_id,automation_version,source,event_key,payload_hash,scheduled_at,job_id,response_json,created_at,digest_version) VALUES(?,?,?,?,?,?,?,?,?,?,2)")
-        .bind(&occurrence).bind(&a.id).bind(a.version).bind(event.source).bind(event.key).bind(event.hash).bind(event.scheduled).bind(response["job_id"].as_str()).bind(response.to_string()).bind(&now)
-        .execute(&mut **tx).await.map_err(db_error)?;
+    response["route"] = json!("home");
     Ok(response)
 }
+
+/// Post one topic event to `thread`, joining the thread's next run when that
+/// run has not started and carries events of the same automation and topic.
+#[allow(clippy::too_many_arguments)]
+async fn deliver(
+    tx: &mut Transaction<'_, Sqlite>,
+    a: &Automation,
+    thread: &str,
+    topic: &str,
+    head: &str,
+    block: &str,
+    entry: &Value,
+    target: &Target<'_>,
+    automation: Option<&str>,
+) -> Result<Value, ApiError> {
+    commands::reopen_paused_thread_in_tx(tx, thread, target.now).await?;
+    type Pending = (String, String, String, String, String, String, String);
+    let pending: Option<Pending> = sqlx::query_as(
+        "SELECT j.id,j.request_id,j.turn_id,j.stream_id,m.id,COALESCE(m.content,''),m.meta \
+         FROM execution_jobs j JOIN (SELECT id,content,CASE WHEN json_valid(content_json) THEN content_json ELSE '{}' END AS meta \
+             FROM messages WHERE thread_id=?1) m ON m.id=j.message_id \
+         WHERE j.thread_id=?1 AND j.status='queued' AND j.worker_active=0 \
+           AND json_extract(m.meta,'$.automation_id')=?2 AND json_extract(m.meta,'$.topic')=?3 \
+           AND json_array_length(m.meta,'$.automation_events')<?4 AND length(CAST(m.content AS BLOB))<?5 \
+         ORDER BY j.created_at DESC,j.id DESC LIMIT 1",
+    )
+    .bind(thread)
+    .bind(&a.id)
+    .bind(topic)
+    .bind(MAX_BATCHED_EVENTS)
+    .bind(MAX_BATCHED_BYTES)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_error)?;
+    if let Some((job, request, turn, stream, message, content, meta)) = pending {
+        let mut meta: Value = serde_json::from_str(&meta).unwrap_or_else(|_| json!({}));
+        if let Some(events) = meta["automation_events"].as_array_mut() {
+            events.push(entry.clone());
+        }
+        let prepared = PreparedMessage {
+            content: format!("{content}\n\n{block}"),
+            attachments: vec![],
+            model_override: None,
+            effort_override: None,
+        };
+        sqlx::query("UPDATE messages SET content=?,content_json=? WHERE id=?")
+            .bind(&prepared.content)
+            .bind(meta.to_string())
+            .bind(&message)
+            .execute(&mut **tx)
+            .await
+            .map_err(db_error)?;
+        sqlx::query("UPDATE execution_jobs SET payload_json=?,updated_at=? WHERE id=?")
+            .bind(serde_json::to_string(&prepared).unwrap())
+            .bind(target.now)
+            .bind(&job)
+            .execute(&mut **tx)
+            .await
+            .map_err(db_error)?;
+        return Ok(
+            json!({"request_id":request,"status":"accepted","job_id":job,"turn_id":turn,"stream_id":stream,"thread_id":thread,"batched":true}),
+        );
+    }
+    let meta = json!({"automation_id":a.id,"topic":topic,"automation_events":[entry]});
+    let response = accept(
+        tx,
+        a,
+        thread,
+        format!("{head}\n\n{block}"),
+        Some(meta),
+        target.now,
+    )
+    .await?;
+    target.mark(tx, &response, automation).await?;
+    Ok(response)
+}
+
 pub async fn webhook(
     State(state): State<AppState>,
     Path(hook): Path<String>,
@@ -550,6 +785,7 @@ pub async fn webhook(
                 label: None,
                 dedup_payload: false,
                 legacy_hashes: event.legacy_hashes,
+                topic: event.topic,
             }
         }
         Trigger::Github { events } => {
@@ -580,6 +816,7 @@ pub async fn webhook(
                 key: format!("github:{}", event.delivery_id),
                 hash: event.payload_hash,
                 scheduled: None,
+                topic: super::topics::github(&event.event, &event.payload),
                 payload: Some(event.payload),
                 now,
                 label: Some(format!("GitHub {}", event.event)),
@@ -685,6 +922,7 @@ pub async fn tick(
                     label: None,
                     dedup_payload: false,
                     legacy_hashes: Some(Vec::new()),
+                    topic: None,
                 },
             )
             .await;

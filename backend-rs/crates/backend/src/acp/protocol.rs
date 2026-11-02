@@ -49,6 +49,7 @@ use tokio::{
 use crate::acp::config::PermissionPolicy;
 use crate::acp::process::Tail;
 use crate::acp::{AcpAgentEvent, AcpEventKind};
+use crate::tools::todo::TodoStatus;
 
 /// The ACP protocol version this client advertises in `initialize`.
 pub const PROTOCOL_VERSION: i64 = 1;
@@ -509,6 +510,7 @@ fn event_from_update(params: &Value) -> Option<AcpAgentEvent> {
             AcpEventKind::ToolCallResult,
             tool_progress_payload(update),
         )),
+        "plan" => Some(AcpAgentEvent::new(AcpEventKind::Plan, plan_payload(update))),
         "usage_update" => Some(AcpAgentEvent::new(
             AcpEventKind::Usage,
             json!({
@@ -521,6 +523,33 @@ fn event_from_update(params: &Value) -> Option<AcpAgentEvent> {
 }
 
 /// Extract display text from a content block, mirroring Python `_content_text`.
+/// Project an ACP `plan` update onto the checklist shape `TodoWrite` uses, so
+/// an external agent's plan renders and persists exactly like a native one.
+/// Entries without text are dropped; an unknown status reads as pending.
+fn plan_payload(update: &Value) -> Value {
+    let todos: Vec<Value> = update
+        .get("entries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let content = entry.get("content").and_then(Value::as_str)?.trim();
+            if content.is_empty() {
+                return None;
+            }
+            let status = entry
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            Some(json!({
+                "content": content,
+                "status": TodoStatus::parse(status).as_str(),
+            }))
+        })
+        .collect();
+    json!({ "todos": todos })
+}
+
 fn content_text(content: Option<&Value>) -> String {
     let Some(content) = content else {
         return String::new();

@@ -248,6 +248,11 @@ fn committed_model_row(row: ConversationRow) -> Option<ConversationMessage> {
 impl From<ConversationRow> for ConversationMessage {
     fn from(row: ConversationRow) -> Self {
         let is_agent = row.sender_type == "agent";
+        let unknown_human = if row.sender_type == "system" {
+            "System"
+        } else {
+            "Unknown Human"
+        };
         let actor_id = row.sender_id.unwrap_or_default();
         let actor = if is_agent {
             let display_name = non_empty(row.group_agent_display_name)
@@ -259,7 +264,7 @@ impl From<ConversationRow> for ConversationMessage {
             }
         } else {
             let display_name = non_empty(row.human_display_name)
-                .unwrap_or_else(|| fallback_display_name(&actor_id, "Unknown Human"));
+                .unwrap_or_else(|| fallback_display_name(&actor_id, unknown_human));
             ConversationActor::Human {
                 id: actor_id,
                 display_name,

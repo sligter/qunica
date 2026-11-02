@@ -85,6 +85,9 @@ pub struct MessageResponse {
     tool_calls: Option<Value>,
     /// The agent's checklist as of the end of this turn, when it kept one.
     todos: Option<Value>,
+    /// Finished router tasks this system message reports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_reports: Option<Value>,
     turn_id: Option<String>,
     dispatch_id: Option<String>,
     reply_to_message_id: Option<String>,
@@ -187,6 +190,14 @@ impl From<MessageRow> for MessageResponse {
             Some(Value::Array(items)) if !items.is_empty() => value.get("todos").cloned(),
             _ => None,
         });
+        let task_reports = parsed
+            .as_ref()
+            .and_then(|value| match value.get("task_reports") {
+                Some(Value::Array(items)) if !items.is_empty() => {
+                    value.get("task_reports").cloned()
+                }
+                _ => None,
+            });
         let attachments = parsed
             .as_ref()
             .and_then(|value| serde_json::from_value(value["attachments"].clone()).ok())
@@ -208,6 +219,7 @@ impl From<MessageRow> for MessageResponse {
             reasoning,
             tool_calls,
             todos,
+            task_reports,
             turn_id: row.turn_id,
             dispatch_id: row.dispatch_id,
             reply_to_message_id: row.reply_to_message_id,

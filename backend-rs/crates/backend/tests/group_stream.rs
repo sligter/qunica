@@ -91,6 +91,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
     @{ jsonrpc = "2.0"; method = "session/update"; params = @{ update = @{ sessionUpdate = "usage_update"; used = 60000; size = 200000 } } } | ConvertTo-Json -Compress -Depth 8
     @{ jsonrpc = "2.0"; method = "session/update"; params = @{ update = @{ sessionUpdate = "agent_message_chunk"; content = @{ type = "text"; text = "ACP hello" } } } } | ConvertTo-Json -Compress -Depth 8
     @{ jsonrpc = "2.0"; method = "session/update"; params = @{ update = @{ sessionUpdate = "usage_update"; used = 90000; size = 200000 } } } | ConvertTo-Json -Compress -Depth 8
+    @{ jsonrpc = "2.0"; method = "session/update"; params = @{ update = @{ sessionUpdate = "plan"; entries = @(@{ content = "read"; priority = "high"; status = "completed" }, @{ content = "fix"; priority = "medium"; status = "in_progress" }) } } } | ConvertTo-Json -Compress -Depth 8
     @{ jsonrpc = "2.0"; id = $request.id; result = @{ stopReason = "end_turn" } } | ConvertTo-Json -Compress
     break
   } else {
@@ -199,6 +200,7 @@ while IFS= read -r line; do
       printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":60000,"size":200000}}}'
       printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ACP hello"}}}}'
       printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":90000,"size":200000}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"plan","entries":[{"content":"read","priority":"high","status":"completed"},{"content":"fix","priority":"medium","status":"in_progress"}]}}}'
       printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
       break
       ;;
@@ -4484,6 +4486,55 @@ async fn group_stream_bills_every_acp_usage_update_once() {
     .await
     .unwrap();
     assert_eq!(rows, vec![(150_000, 150_000)]);
+}
+
+/// An ACP `plan` update is the agent's checklist: it reaches the client as the
+/// same `todo_update` a native `TodoWrite` sends and survives on the reply.
+#[tokio::test]
+async fn group_stream_surfaces_acp_plan_as_checklist() {
+    let (app, state) = router_with_state_for_tests().await;
+    let token = register_and_login(&app, "group-acp-plan@example.com").await;
+    let owner = owner_id(&state, "group-acp-plan@example.com").await;
+    let (root, workspace) = create_local_workspace(&app, &token).await;
+    let group = create_group(&app, &token, &workspace, json!({"free_speech": true})).await;
+
+    let (command, args) = write_reporting_fake_acp_agent(root.path());
+    let agent_id = seed_acp_agent(
+        &state,
+        &owner,
+        &workspace,
+        &group,
+        "ACP",
+        json!({ "command": command, "args": args, "timeout_seconds": 10 }),
+    )
+    .await;
+
+    let events = stream_events(
+        &app,
+        &format!("/api/v2/groups/{group}/messages/stream"),
+        &token,
+        json!({"content": "run acp"}),
+    )
+    .await;
+
+    let expected = json!([
+        { "content": "read", "status": "completed" },
+        { "content": "fix", "status": "in_progress" },
+    ]);
+    let updates = payloads_of_kind(&events, StreamEventKind::TodoUpdate);
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0]["agent_id"], agent_id);
+    assert_eq!(updates[0]["todos"], expected);
+
+    let content_json: Option<String> = sqlx::query_scalar(
+        "SELECT content_json FROM messages WHERE sender_type = 'agent' AND sender_id = ?",
+    )
+    .bind(&agent_id)
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    let persisted: Value = serde_json::from_str(&content_json.expect("turn data")).unwrap();
+    assert_eq!(persisted["todos"], expected);
 }
 
 #[tokio::test]
@@ -11542,6 +11593,9 @@ mod rig_scenarios;
 
 #[path = "group_stream/engine_rollout.rs"]
 mod engine_rollout;
+
+#[path = "group_stream/router_mode.rs"]
+mod router_mode;
 
 #[tokio::test]
 async fn context_checkpoint_invalidation_respects_each_agents_cursor() {

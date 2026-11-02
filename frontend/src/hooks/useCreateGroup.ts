@@ -37,6 +37,8 @@ export function useCreateGroup() {
           moderator_enabled: input.moderator_enabled,
           moderator_provider_id: input.moderator_provider_id,
           moderator_model: input.moderator_model,
+          router_agent_id: input.router_agent_id,
+          max_router_tasks: input.max_router_tasks,
         },
         token,
       }),

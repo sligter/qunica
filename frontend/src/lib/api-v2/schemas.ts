@@ -34,7 +34,7 @@ export function parseConversationUpdatedEvent(
 }
 
 export const groupSchedulerConfigSchema: z.ZodType<GroupSchedulerConfig> = z.object({
-  scheduler_mode: z.enum(['bounded', 'automatic']),
+  scheduler_mode: z.enum(['bounded', 'automatic', 'router']),
   agent_mention_policy: z.enum(['display_only', 'bounded_schedule']),
   max_agent_steps: z.number().int().min(1).nullable(),
   max_steps_per_agent: z.number().int().min(1),
@@ -47,6 +47,8 @@ export const groupSchedulerConfigSchema: z.ZodType<GroupSchedulerConfig> = z.obj
   moderator_enabled: z.boolean(),
   moderator_provider_id: z.string().nullable(),
   moderator_model: z.string().nullable(),
+  router_agent_id: z.string().nullable(),
+  max_router_tasks: z.number().int().min(1).max(16),
 })
 
 const groupTurnStatusSchema = z.enum([

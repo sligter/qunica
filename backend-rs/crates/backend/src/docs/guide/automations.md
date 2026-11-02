@@ -1,7 +1,8 @@
 # Automations
 
 An automation starts a new task thread in one group when a clock or a signed
-webhook fires. It reuses the group's members, topology, model and tool
+webhook fires. Events about the same topic, such as one pull request, share a
+thread instead; see [Topics](#topics). It reuses the group's members, topology, model and tool
 configuration; it is not a second scheduler. The server runs the task even when
 no browser or phone is connected.
 
@@ -67,6 +68,10 @@ occurrence, thread, message, turn, job and command receipt are already committed
 Webhook payload is untrusted user data: it is labelled as such and never becomes
 a system instruction.
 
+An optional `"topic":"ticket-9"` in the same body names the event's topic
+(1–200 characters, no control characters). It is part of the signed identity.
+Topics starting with `github:` are reserved for the GitHub adapter.
+
 ## GitHub delivery
 
 Point a GitHub webhook at the same hook URL and choose the JSON content type.
@@ -85,6 +90,35 @@ Normalized identity bytes recursively sort JSON object keys while preserving
 array order and scalar encoding. This is explicit even when a dependency enables
 `serde_json/preserve_order`. Raw-body HMAC verification and stored payloads keep
 their original data; normalization applies only to a copy used for the digest.
+
+## Topics
+
+A topic is the external thread an event belongs to. GitHub deliveries get one
+from the repository and number: `github:owner/repo#7` for an issue or pull
+request, `github:owner/repo/discussions/3` for a discussion. Issue comments,
+reviews, check suites, check runs and workflow runs that name a pull request
+map to it too. Events without a number, such as `push`, have no topic.
+
+Events with a topic are routed within the automation's group:
+
+1. If dispatched tasks follow the topic, the event goes to each of them, at
+   most 16. This run belongs to the task: it is not part of the automation's
+   sequential queue, and pausing the automation does not cancel it.
+2. Otherwise it goes to the topic's thread, created by the topic's first event
+   and titled `<automation name> · <topic>`. An archived or cleared thread is
+   replaced by a new one.
+
+An event that arrives while the target thread's previous event run is still
+queued joins that run: up to 20 events and 256 KiB of text from the same
+automation and topic share one message and one model call. The receipt reports
+`"route":"subscribers"` or `"home"` and `"batched":true` when it joined a
+run. Each event keeps its own occurrence row and idempotent receipt.
+
+In [router mode](groups.md#scheduling-and-budgets) the router answers in the
+topic's thread. A task it dispatches from there follows the topic, so later
+events reach that worker without another router call; the worker's reports
+still return to the router. Cancelling the task stops it following the topic.
+Thread responses list each thread's `topics`.
 
 ## Queue and pause
 

@@ -1,5 +1,6 @@
 import { act, cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { MessageItem } from '@/components/chat/MessageItem'
@@ -291,5 +292,50 @@ describe('MessageItem', () => {
       />,
     )
     expect(messageActions.props.at(-1)?.threadId).toBe('thread-2')
+  })
+
+  it('renders router task reports as cards that open their task', () => {
+    render(
+      <MemoryRouter>
+        <MessageItem
+          message={message({
+            sender_type: 'system',
+            sender_id: null,
+            message_type: 'task_report',
+            content: 'Task report',
+            task_reports: [
+              {
+                task_id: 'task-1',
+                title: 'Build the widget',
+                assistant: 'Coder',
+                status: 'completed',
+                excerpt: 'Widget built',
+                truncated: false,
+              },
+              {
+                task_id: 'task-2',
+                title: null,
+                assistant: 'Writer',
+                status: 'waiting_for_user',
+                excerpt: '',
+                truncated: false,
+              },
+            ],
+          })}
+          groupId="group-1"
+        />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('Build the widget')).toBeVisible()
+    expect(screen.getByText('Widget built')).toBeVisible()
+    expect(screen.getByText('Done')).toBeVisible()
+    expect(screen.getByText('Untitled task')).toBeVisible()
+    expect(screen.getByText('Needs your reply')).toBeVisible()
+    const links = screen.getAllByRole('link', { name: 'Open task' })
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      '/groups/group-1?thread=task-1',
+      '/groups/group-1?thread=task-2',
+    ])
   })
 })

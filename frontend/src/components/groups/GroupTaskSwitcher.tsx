@@ -27,7 +27,10 @@ export function GroupTaskSwitcher({
   const archived = threads.filter((thread) => thread.status === 'archived')
   const title = (thread: GroupThread) => thread.title || t('tasks.untitled')
   const label = (thread: GroupThread) => [
-    title(thread), thread.git_branch, thread.status === 'archived' ? t('tasks.archived') : null,
+    title(thread), thread.git_branch,
+    thread.origin_thread_id ? t('tasks.dispatched') : null,
+    thread.origin_thread_id && thread.topics?.length ? t('tasks.following', { topics: thread.topics.join(', ') }) : null,
+    thread.status === 'archived' ? t('tasks.archived') : null,
   ].filter(Boolean).join(' · ')
 
   return (

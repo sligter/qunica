@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/lib/api-v2/client'
 import i18n from '@/i18n'
 import { GroupSchedulerSettingsSection } from '@/pages/group/GroupSchedulerSettingsSection'
-import type { GroupRead } from '@/types/api'
+import type { GroupAgentRead, GroupRead } from '@/types/api'
 
 class ResizeObserverMock {
   observe() {}
@@ -115,6 +115,8 @@ const group: GroupRead = {
   moderator_enabled: false,
   moderator_provider_id: null,
   moderator_model: null,
+  router_agent_id: null,
+  max_router_tasks: 4,
   decision_enabled: false,
   decision_scenarios: {
     moderator_selection: false,
@@ -301,6 +303,43 @@ describe('GroupSchedulerSettingsSection', () => {
         expect.objectContaining({
           moderator_provider_id: 'provider-2',
           moderator_model: 'gpt-secondary',
+        }),
+      )
+    })
+  })
+
+  it('requires a router member and saves the router fields in router mode', async () => {
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter>
+        <GroupSchedulerSettingsSection
+          group={group}
+          agents={[
+            { agent_id: 'agent-lead', display_name: 'Lead', status: 'active' },
+            { agent_id: 'agent-coder', display_name: 'Coder', status: 'active' },
+          ] as GroupAgentRead[]}
+        />
+      </MemoryRouter>,
+    )
+
+    await user.click(screen.getByRole('combobox', { name: 'Turn style' }))
+    await user.click(await screen.findByRole('option', { name: 'Router' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Choose the member who routes')).toBeVisible()
+    expect(mocks.mutateAsync).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('combobox', { name: 'Router' }))
+    await user.click(await screen.findByRole('option', { name: 'Lead' }))
+    await user.clear(screen.getByLabelText('Concurrent tasks'))
+    await user.type(screen.getByLabelText('Concurrent tasks'), '2')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(mocks.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scheduler_mode: 'router',
+          router_agent_id: 'agent-lead',
+          max_router_tasks: 2,
         }),
       )
     })

@@ -188,6 +188,8 @@ pub struct ToolExecutor {
     /// scenarios it has switched on: a second opinion on shell commands and a
     /// check on group-note status changes.
     decision: Option<DecisionGate>,
+    /// Present only for the router of a router-mode conversation.
+    router: Option<Arc<crate::runtime::router::RouterTools>>,
 }
 
 // `McpManager` holds live connections and so cannot derive `Debug`; the rest of
@@ -209,6 +211,7 @@ impl std::fmt::Debug for ToolExecutor {
             .field("approvals", &self.approvals)
             .field("shell", &self.shell.program)
             .field("decision_configured", &self.decision.is_some())
+            .field("router", &self.router.is_some())
             .finish()
     }
 }
@@ -254,6 +257,7 @@ impl ToolExecutor {
             approvals: ApprovalGrants::default(),
             shell: process_shell(),
             decision: None,
+            router: None,
         })
     }
 
@@ -277,6 +281,7 @@ impl ToolExecutor {
             approvals: ApprovalGrants::default(),
             shell: process_shell(),
             decision: None,
+            router: None,
         }
     }
 
@@ -350,6 +355,12 @@ impl ToolExecutor {
     /// read another owner's configuration by accident.
     pub fn with_app_control(mut self, context: AppControlContext) -> Self {
         self.app_control = Some(context);
+        self
+    }
+
+    /// Grant the router task tools to the router of a router-mode conversation.
+    pub(crate) fn with_router(mut self, router: crate::runtime::router::RouterTools) -> Self {
+        self.router = Some(Arc::new(router));
         self
     }
 
@@ -493,6 +504,10 @@ impl ToolExecutor {
                     | "SkillManager"
                     | "ReadGroupNotes"
                     | "EditGroupNote"
+                    | "DispatchTask"
+                    | "ListTasks"
+                    | "SendToTask"
+                    | "CancelTask"
             ) {
                 return Ok(controlled::setup_required(name,"This capability has no adapter for the selected computer; host fallback is disabled."));
             }
@@ -611,6 +626,16 @@ impl ToolExecutor {
                     action,
                     skill_name,
                 ))
+            }
+            "DispatchTask" | "ListTasks" | "SendToTask" | "CancelTask" => {
+                let Some(router) = self.router.as_ref() else {
+                    return Ok(controlled::setup_required(
+                        name,
+                        "task dispatch is only available to the router of a router-mode group",
+                    ));
+                };
+                // Boxed: the router tools write whole messages and jobs.
+                Ok(Box::pin(router.execute(name, &args)).await)
             }
             "TodoWrite" => Ok(controlled::todo_write(super::todo::parse_todos(&args))),
             "ExitPlanMode" => Ok(controlled::exit_plan_mode(arg_str(&args, "plan")?)),

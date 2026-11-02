@@ -88,6 +88,8 @@ pub enum AcpEventKind {
     ToolCallResult,
     /// A token-usage update for the turn.
     Usage,
+    /// The agent's whole plan as of now (`{"todos": [...]}`), never a delta.
+    Plan,
     /// A non-fatal notice about the run, such as a session setting the agent
     /// does not implement.
     Warning,
@@ -103,6 +105,7 @@ impl AcpEventKind {
             AcpEventKind::ToolCallStart => "tool_call_start",
             AcpEventKind::ToolCallResult => "tool_call_result",
             AcpEventKind::Usage => "usage",
+            AcpEventKind::Plan => "plan",
             AcpEventKind::Warning => "warning",
         }
     }

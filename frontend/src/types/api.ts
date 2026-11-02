@@ -766,6 +766,12 @@ export interface GroupThread {
   priority: number
   started_at: string | null
   completed_at: string | null
+  /** The worker a router-dispatched task is pinned to. */
+  assigned_agent_id?: string | null
+  /** The thread whose router dispatched this task. */
+  origin_thread_id?: string | null
+  /** External topics (a pull request, a ticket) whose trigger events this thread receives. */
+  topics?: string[]
   created_at: string
   updated_at: string
 }
@@ -935,6 +941,16 @@ export interface TodoItem {
   status: TodoStatus
 }
 
+/** One finished task a router-mode report message names. */
+export interface TaskReport {
+  task_id: string
+  title: string | null
+  assistant: string | null
+  status: 'completed' | 'failed' | 'waiting_for_user'
+  excerpt: string
+  truncated: boolean
+}
+
 export interface Message {
   id: string
   /** Server-assigned order; absent only on a local optimistic/legacy message. */
@@ -957,6 +973,8 @@ export interface Message {
   tool_calls?: MessageToolCall[] | null
   /** The agent's checklist as of the end of this turn (from `content_json`). */
   todos?: TodoItem[] | null
+  /** Router-mode task results a `task_report` system message carries. */
+  task_reports?: TaskReport[] | null
   turn_id: string | null
   dispatch_id: string | null
   reply_to_message_id: string | null

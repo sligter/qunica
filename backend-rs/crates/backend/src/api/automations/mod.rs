@@ -2,4 +2,5 @@
 pub mod schedule;
 mod service;
 pub mod signature;
+pub mod topics;
 pub use service::*;

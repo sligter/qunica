@@ -1,6 +1,7 @@
 import { memo, useMemo } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { Link } from 'react-router-dom'
 
 import { AgentAvatar } from '@/components/chat/AgentAvatar'
 import { HumanInputRequestForm } from '@/components/chat/HumanInputRequestForm'
@@ -19,7 +20,7 @@ import { normalizeLanguage } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/authStore'
 import { useMessageStore } from '@/stores/messageStore'
-import type { Message } from '@/types/api'
+import type { Message, TaskReport } from '@/types/api'
 import { useFileNavStore } from '@/stores/fileNavStore'
 import type { GroupAgentRead } from '@/types/api'
 import type { ConversationScope } from '@/hooks/useGroupMessages'
@@ -98,6 +99,9 @@ export function MessageItemView({
     return t('messages.system')
   }, [currentUser, groupAgent?.display_name, message.sender_id, message.sender_type, t])
 
+  if (message.sender_type === 'system' && message.message_type === 'task_report') {
+    return <TaskReportCards message={message} groupId={groupId} />
+  }
   if (message.sender_type === 'system') {
     return (
       <div className="my-2 text-center text-xs text-muted-foreground">
@@ -241,6 +245,66 @@ export function MessageItemView({
           />
         )}
       </div>
+    </div>
+  )
+}
+
+const taskReportStatusClass: Record<TaskReport['status'], string> = {
+  completed: 'text-emerald-600 dark:text-emerald-400',
+  failed: 'text-destructive',
+  waiting_for_user: 'text-amber-600 dark:text-amber-400',
+}
+
+/** Results of router-dispatched tasks, each linking to its task thread. */
+function TaskReportCards({ message, groupId }: { message: Message; groupId: string }) {
+  const { t } = useTranslation('chat')
+  const reports = message.task_reports ?? []
+  if (reports.length === 0) {
+    // A live echo may arrive before the structured reports are refetched.
+    return (
+      <div className="my-2 text-center text-xs text-muted-foreground">{t('taskReport.label')}</div>
+    )
+  }
+  return (
+    <div
+      id={`message-${message.id}`}
+      className="mx-auto my-2 w-full max-w-2xl space-y-2 px-3"
+      aria-label={t('taskReport.label')}
+    >
+      {reports.map((report) => (
+        <div
+          key={report.task_id}
+          className="rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-sm"
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate font-medium">
+              {report.title || t('taskReport.untitled')}
+            </span>
+            {report.assistant ? (
+              <span className="shrink-0 text-xs text-muted-foreground">{report.assistant}</span>
+            ) : null}
+            <span className={cn('ml-auto shrink-0 text-xs', taskReportStatusClass[report.status])}>
+              {t(`taskReport.status.${report.status}`)}
+            </span>
+          </div>
+          {report.excerpt ? (
+            <p className="mt-1 line-clamp-3 whitespace-pre-wrap break-words text-xs text-muted-foreground">
+              {report.excerpt}
+            </p>
+          ) : null}
+          {report.status === 'waiting_for_user' ? (
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+              {t('taskReport.waitingHint')}
+            </p>
+          ) : null}
+          <Link
+            to={`/groups/${groupId}?thread=${encodeURIComponent(report.task_id)}`}
+            className="mt-1 inline-block text-xs text-primary underline-offset-2 hover:underline"
+          >
+            {t('taskReport.open')}
+          </Link>
+        </div>
+      ))}
     </div>
   )
 }

@@ -58,7 +58,8 @@ export interface ApiErrorEnvelope {
 }
 
 export type AgentMentionPolicy = 'display_only' | 'bounded_schedule'
-export type SchedulerMode = 'bounded' | 'automatic'
+/** `router`: one member answers and hands work to task threads. */
+export type SchedulerMode = 'bounded' | 'automatic' | 'router'
 
 export interface GroupSchedulerConfig {
   scheduler_mode: SchedulerMode
@@ -74,6 +75,10 @@ export interface GroupSchedulerConfig {
   moderator_enabled: boolean
   moderator_provider_id: string | null
   moderator_model: string | null
+  /** The member that answers in router mode; `null` otherwise. */
+  router_agent_id: string | null
+  /** Dispatched tasks that may run at once in router mode. */
+  max_router_tasks: number
 }
 
 /**

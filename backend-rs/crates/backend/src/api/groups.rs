@@ -59,7 +59,7 @@ const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, auto_share_workspace_wi
      max_scheduler_hops, max_moderator_calls, max_consecutive_failures, \
      max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, \
      moderator_provider_id, moderator_model, \
-     decision_enabled, decision_scenarios_json, \
+     decision_enabled, decision_scenarios_json, router_agent_id, max_router_tasks, \
      muted_agent_ids_json, admin_agent_ids_json, muted_member_ids_json, status, \
      created_at, updated_at";
 
@@ -214,6 +214,10 @@ pub struct CreateRequest {
     #[serde(default)]
     decision_scenarios: Option<DecisionScenariosPatch>,
     #[serde(default)]
+    router_agent_id: Option<String>,
+    #[serde(default)]
+    max_router_tasks: Option<i64>,
+    #[serde(default)]
     initial_agents: Option<Vec<String>>,
 }
 
@@ -296,7 +300,15 @@ pub struct GroupTemplateConfig {
     decision_enabled: bool,
     #[serde(default)]
     decision_scenarios: DecisionScenarios,
+    #[serde(default)]
+    router_agent_id: Option<String>,
+    #[serde(default = "default_max_router_tasks")]
+    max_router_tasks: i64,
     initial_agents: Vec<String>,
+}
+
+fn default_max_router_tasks() -> i64 {
+    DEFAULT_MAX_ROUTER_TASKS
 }
 
 #[derive(Debug, Serialize)]
@@ -368,6 +380,10 @@ pub struct UpdateRequest {
     /// scenario off.
     #[serde(default, deserialize_with = "double_option")]
     decision_scenarios: Option<Option<DecisionScenariosPatch>>,
+    #[serde(default, deserialize_with = "double_option")]
+    router_agent_id: Option<Option<String>>,
+    #[serde(default)]
+    max_router_tasks: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -623,6 +639,8 @@ pub struct GroupResponse {
     moderator_model: Option<String>,
     decision_enabled: bool,
     decision_scenarios: DecisionScenarios,
+    router_agent_id: Option<String>,
+    max_router_tasks: i64,
     muted_agent_ids: Option<Vec<String>>,
     admin_agent_ids: Option<Vec<String>>,
     muted_member_ids: Option<Vec<String>>,
@@ -768,12 +786,26 @@ struct GroupRow {
     moderator_model: Option<String>,
     decision_enabled: i64,
     decision_scenarios_json: String,
+    router_agent_id: Option<String>,
+    max_router_tasks: i64,
     muted_agent_ids_json: Option<String>,
     admin_agent_ids_json: Option<String>,
     muted_member_ids_json: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
+}
+
+impl GroupRow {
+    /// The mode clients see. Router mode is stored as `bounded` plus a router
+    /// because the column's CHECK constraint predates it; see the 0052 migration.
+    fn effective_scheduler_mode(&self) -> String {
+        if self.router_agent_id.is_some() {
+            "router".to_string()
+        } else {
+            self.scheduler_mode.clone()
+        }
+    }
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -800,9 +832,21 @@ struct SchedulerConfigFields {
     moderator_enabled: i64,
     moderator_provider_id: Option<String>,
     moderator_model: Option<String>,
+    router_agent_id: Option<String>,
+    max_router_tasks: i64,
 }
 
 impl SchedulerConfigFields {
+    /// The value written to `groups.scheduler_mode`; router mode keeps
+    /// `bounded` there and is marked by `router_agent_id`.
+    fn stored_mode(&self) -> &str {
+        if self.scheduler_mode == "router" {
+            "bounded"
+        } else {
+            &self.scheduler_mode
+        }
+    }
+
     async fn for_create(
         pool: &SqlitePool,
         owner_id: &str,
@@ -826,6 +870,8 @@ impl SchedulerConfigFields {
             moderator_enabled: body.moderator_enabled.unwrap_or(false) as i64,
             moderator_provider_id: body.moderator_provider_id.clone(),
             moderator_model: body.moderator_model.clone(),
+            router_agent_id: body.router_agent_id.clone(),
+            max_router_tasks: body.max_router_tasks.unwrap_or(DEFAULT_MAX_ROUTER_TASKS),
         }
         .validate(pool, owner_id)
         .await
@@ -841,7 +887,7 @@ impl SchedulerConfigFields {
             scheduler_mode: body
                 .scheduler_mode
                 .clone()
-                .unwrap_or_else(|| existing.scheduler_mode.clone()),
+                .unwrap_or_else(|| existing.effective_scheduler_mode()),
             agent_mention_policy: existing.agent_mention_policy.clone(),
             max_agent_steps: body.max_agent_steps.unwrap_or(existing.max_agent_steps),
             max_steps_per_agent: body
@@ -875,6 +921,13 @@ impl SchedulerConfigFields {
                 .moderator_model
                 .clone()
                 .unwrap_or_else(|| existing.moderator_model.clone()),
+            router_agent_id: body
+                .router_agent_id
+                .clone()
+                .unwrap_or_else(|| existing.router_agent_id.clone()),
+            max_router_tasks: body
+                .max_router_tasks
+                .unwrap_or(existing.max_router_tasks),
         }
         .validate(pool, owner_id)
         .await
@@ -928,6 +981,27 @@ impl SchedulerConfigFields {
             return Err(ApiError::invalid_input(
                 "automatic scheduler mode requires the moderator",
             ));
+        }
+        if !(1..=MAX_ROUTER_TASKS).contains(&self.max_router_tasks) {
+            return Err(ApiError::invalid_input(format!(
+                "max_router_tasks must be between 1 and {MAX_ROUTER_TASKS}"
+            )));
+        }
+        self.router_agent_id = self
+            .router_agent_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if self.scheduler_mode == "router" {
+            let router = self.router_agent_id.as_deref().ok_or_else(|| {
+                ApiError::invalid_input("router scheduler mode requires router_agent_id")
+            })?;
+            self.router_agent_id = Some(validate_uuid(router, "router_agent_id")?);
+        } else {
+            // Leaving router mode forgets the router so the stored mode and the
+            // marker cannot disagree.
+            self.router_agent_id = None;
         }
 
         Ok(self)
@@ -1024,6 +1098,7 @@ struct GroupLlmProviderRow {
 
 impl From<GroupRow> for GroupResponse {
     fn from(row: GroupRow) -> Self {
+        let scheduler_mode = row.effective_scheduler_mode();
         Self {
             id: row.id,
             workspace_id: row.workspace_id,
@@ -1039,7 +1114,7 @@ impl From<GroupRow> for GroupResponse {
             agent_free_mention_max_dispatches: row.agent_free_mention_max_dispatches,
             communication_mode: row.communication_mode,
             default_speaking_order: parse_json_list(row.default_speaking_order_json.as_deref()),
-            scheduler_mode: row.scheduler_mode,
+            scheduler_mode,
             agent_mention_policy: row.agent_mention_policy,
             max_agent_steps: row.max_agent_steps,
             max_steps_per_agent: row.max_steps_per_agent,
@@ -1054,6 +1129,8 @@ impl From<GroupRow> for GroupResponse {
             moderator_model: row.moderator_model,
             decision_enabled: row.decision_enabled != 0,
             decision_scenarios: DecisionScenarios::from_json(Some(&row.decision_scenarios_json)),
+            router_agent_id: row.router_agent_id,
+            max_router_tasks: row.max_router_tasks,
             muted_agent_ids: parse_json_list(row.muted_agent_ids_json.as_deref()),
             admin_agent_ids: parse_json_list(row.admin_agent_ids_json.as_deref()),
             muted_member_ids: parse_json_list(row.muted_member_ids_json.as_deref()),
@@ -1187,6 +1264,8 @@ async fn apply_group_template(
         .take()
         .or(Some(config.communication_mode));
     body.scheduler_mode = body.scheduler_mode.take().or(Some(config.scheduler_mode));
+    body.router_agent_id = body.router_agent_id.take().or(config.router_agent_id);
+    body.max_router_tasks = body.max_router_tasks.or(Some(config.max_router_tasks));
     body.max_agent_steps = body.max_agent_steps.or(config.max_agent_steps);
     body.max_steps_per_agent = body
         .max_steps_per_agent
@@ -1266,6 +1345,7 @@ pub(crate) async fn create_group_template_inner(
     .fetch_all(state.db.pool())
     .await
     .map_err(|_| ApiError::internal("database error"))?;
+    let scheduler_mode = group.effective_scheduler_mode();
     let config = GroupTemplateConfig {
         description: group.description,
         announcement: group.announcement,
@@ -1275,7 +1355,7 @@ pub(crate) async fn create_group_template_inner(
         allow_agent_free_mention: group.allow_agent_free_mention != 0,
         agent_free_mention_max_dispatches: group.agent_free_mention_max_dispatches,
         communication_mode: group.communication_mode,
-        scheduler_mode: group.scheduler_mode,
+        scheduler_mode,
         agent_mention_policy: group.agent_mention_policy,
         max_agent_steps: group.max_agent_steps,
         max_steps_per_agent: group.max_steps_per_agent,
@@ -1290,6 +1370,8 @@ pub(crate) async fn create_group_template_inner(
         moderator_model: group.moderator_model,
         decision_enabled: group.decision_enabled != 0,
         decision_scenarios: DecisionScenarios::from_json(Some(&group.decision_scenarios_json)),
+        router_agent_id: group.router_agent_id,
+        max_router_tasks: group.max_router_tasks,
         initial_agents,
     };
     let id = Uuid::new_v4().to_string();
@@ -1408,6 +1490,14 @@ pub(crate) async fn create_inner(
     };
     let initial_agents =
         validate_initial_agents(state.db.pool(), body.initial_agents.as_deref(), &owner_id).await?;
+    if let Some(router) = scheduler.router_agent_id.as_deref() {
+        if !initial_agents.iter().any(|agent| agent == router) {
+            return Err(ApiError::invalid_input(
+                "router_agent_id must be one of initial_agents",
+            ));
+        }
+        validate_router_runtime(state.db.pool(), router).await?;
+    }
 
     let id = Uuid::new_v4().to_string();
     let now = now_rfc3339();
@@ -1429,9 +1519,9 @@ pub(crate) async fn create_inner(
           max_scheduler_hops, max_moderator_calls, max_consecutive_failures, \
           max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, \
           moderator_provider_id, moderator_model, decision_enabled, decision_scenarios_json, \
-          status, created_at, updated_at) \
+          router_agent_id, max_router_tasks, status, created_at, updated_at) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
-                 'active', ?, ?)",
+                 ?, ?, 'active', ?, ?)",
     )
     .bind(&id)
     .bind(&owner_id)
@@ -1445,7 +1535,7 @@ pub(crate) async fn create_inner(
     .bind(allow_agent_free_mention as i64)
     .bind(agent_free_mention_max_dispatches)
     .bind(&communication_mode)
-    .bind(&scheduler.scheduler_mode)
+    .bind(scheduler.stored_mode())
     .bind(&scheduler.agent_mention_policy)
     .bind(scheduler.max_agent_steps)
     .bind(scheduler.max_steps_per_agent)
@@ -1460,6 +1550,8 @@ pub(crate) async fn create_inner(
     .bind(&scheduler.moderator_model)
     .bind(decision_enabled as i64)
     .bind(decision_scenarios.to_json())
+    .bind(&scheduler.router_agent_id)
+    .bind(scheduler.max_router_tasks)
     .bind(&now)
     .bind(&now)
     .execute(&mut *tx)
@@ -1705,6 +1797,16 @@ pub(crate) async fn update_inner(
     let existing = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
     let scheduler =
         SchedulerConfigFields::for_update(state.db.pool(), &owner_id, &body, &existing).await?;
+    if let Some(router) = scheduler.router_agent_id.as_deref() {
+        if existing.router_agent_id.as_deref() != Some(router) {
+            load_active_group_agent(state.db.pool(), &group_id, router)
+                .await
+                .map_err(|_| {
+                    ApiError::invalid_input("router_agent_id must be an active member")
+                })?;
+            validate_router_runtime(state.db.pool(), router).await?;
+        }
+    }
 
     let name = match body.name {
         Some(ref raw) => validate_name(raw)?,
@@ -1790,7 +1892,8 @@ pub(crate) async fn update_inner(
          max_moderator_calls = ?, max_consecutive_failures = ?, max_total_failures = ?, \
          max_total_tokens = ?, turn_timeout_seconds = ?, moderator_enabled = ?, \
          moderator_provider_id = ?, moderator_model = ?, \
-         decision_enabled = ?, decision_scenarios_json = ?, updated_at = ? \
+         decision_enabled = ?, decision_scenarios_json = ?, router_agent_id = ?, \
+         max_router_tasks = ?, updated_at = ? \
          WHERE id = ? AND owner_id = ?",
     )
     .bind(&name)
@@ -1805,7 +1908,7 @@ pub(crate) async fn update_inner(
     .bind(agent_free_mention_max_dispatches)
     .bind(&communication_mode)
     .bind(&default_speaking_order_json)
-    .bind(&scheduler.scheduler_mode)
+    .bind(scheduler.stored_mode())
     .bind(&scheduler.agent_mention_policy)
     .bind(scheduler.max_agent_steps)
     .bind(scheduler.max_steps_per_agent)
@@ -1820,6 +1923,8 @@ pub(crate) async fn update_inner(
     .bind(&scheduler.moderator_model)
     .bind(decision_enabled)
     .bind(&decision_scenarios_json)
+    .bind(&scheduler.router_agent_id)
+    .bind(scheduler.max_router_tasks)
     .bind(&now)
     .bind(&group_id)
     .bind(&owner_id)
@@ -3610,6 +3715,11 @@ pub(crate) async fn remove_group_agent_inner(
     let agent_id = validate_uuid(agent_id, "agent id")?;
     let group = load_active_owned(state.db.pool(), &group_id, owner_id).await?;
     load_active_group_agent(state.db.pool(), &group_id, &agent_id).await?;
+    if group.router_agent_id.as_deref() == Some(agent_id.as_str()) {
+        return Err(ApiError::conflict(
+            "this agent is the group's router; choose another router or scheduler mode first",
+        ));
+    }
 
     let now = now_rfc3339();
     let mut tx = crate::db::begin_write(state.db.pool())
@@ -3650,6 +3760,14 @@ pub(crate) async fn remove_group_agent_in_tx(
     .map_err(|_| ApiError::internal("failed to remove group agent"))?;
 
     remove_agent_from_group_lists(tx, group_id, agent_id, now).await?;
+    // Deleting the router agent itself returns its groups to bounded mode;
+    // removing it from one group is refused earlier instead.
+    sqlx::query("UPDATE groups SET router_agent_id = NULL WHERE id = ? AND router_agent_id = ?")
+        .bind(group_id)
+        .bind(agent_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to clear group router"))?;
     // Removing the hub or the last leader would leave a topology the runtime
     // cannot schedule, so the remaining members are re-normalized.
     normalize_group_agent_topology(tx, group_id, communication_mode, now).await
@@ -6184,9 +6302,31 @@ fn validate_scheduler_mode(raw: &str) -> Result<String, ApiError> {
     match raw.trim() {
         "bounded" => Ok("bounded".to_string()),
         "automatic" => Ok("automatic".to_string()),
+        "router" => Ok("router".to_string()),
         _ => Err(ApiError::invalid_input(
-            "scheduler_mode must be bounded or automatic",
+            "scheduler_mode must be bounded, automatic or router",
         )),
+    }
+}
+
+const DEFAULT_MAX_ROUTER_TASKS: i64 = 4;
+const MAX_ROUTER_TASKS: i64 = 16;
+
+/// The router answers through host tools, which an external CLI agent does
+/// not receive, so only model-backed agents can route.
+async fn validate_router_runtime(pool: &SqlitePool, agent_id: &str) -> Result<(), ApiError> {
+    let runtime: Option<String> =
+        sqlx::query_scalar("SELECT runtime_kind FROM agents WHERE id = ? AND status = 'active'")
+            .bind(agent_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| ApiError::internal("database error"))?;
+    match runtime.as_deref() {
+        Some("llm_chat") => Ok(()),
+        Some(_) => Err(ApiError::invalid_input(
+            "the router must be a model agent, not an external CLI agent",
+        )),
+        None => Err(ApiError::invalid_input("router_agent_id must be an active agent")),
     }
 }
 

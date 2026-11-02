@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { MessagesSquare, Settings } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -39,6 +39,7 @@ export function GroupChatPage() {
   const { groupId } = useParams<{ groupId: string }>()
   const group = useGroup(groupId)
   const groupThreads = useGroupThreads(groupId)
+  const [searchParams, setSearchParams] = useSearchParams()
   const [selection, setSelection] = useState(() => ({
     groupId,
     threadId: readSelectedThreadId(groupId),
@@ -47,9 +48,23 @@ export function GroupChatPage() {
     ? selection.threadId
     : readSelectedThreadId(groupId)
   const threads = groupThreads.data ?? []
+  // Note: router-dispatched tasks are newer than the conversation that started
+  // them, so the fallback skips them to land on the main thread.
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId)
+    ?? threads.find((thread) => thread.status !== 'archived' && !thread.origin_thread_id)
     ?? threads.find((thread) => thread.status !== 'archived')
     ?? threads[0]
+  // A task report links here with `?thread=` to open that task.
+  const requestedThreadId = searchParams.get('thread')
+  useEffect(() => {
+    if (!groupId || !requestedThreadId) return
+    setSelection({ groupId, threadId: requestedThreadId })
+    persistSelectedThreadId(groupId, requestedThreadId)
+    setSearchParams((params) => {
+      params.delete('thread')
+      return params
+    }, { replace: true })
+  }, [groupId, requestedThreadId, setSearchParams])
   const groupAgents = useGroupAgents(
     groupId,
     groupThreads.data ? selectedThread?.id : null,
