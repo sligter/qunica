@@ -533,15 +533,25 @@ impl DecisionClient {
                     "state": state,
                     "questions": gateway_questions(&questions),
                 })),
-        };
-        let response = request
-            // `.json()` already set Content-Type; adding it again sends a
-            // duplicate header, which FastAPI-based servers (TypeSafe) treat
-            // as non-JSON and reject with 422.
-            .bearer_auth(&self.api_key)
-            .send()
-            .await
-            .map_err(map_reqwest_error)?;
+        }
+        // `.json()` already set Content-Type; adding it again sends a
+        // duplicate header, which FastAPI-based servers (TypeSafe) treat as
+        // non-JSON and reject with 422.
+        .bearer_auth(&self.api_key);
+        // Note: a pooled keep-alive connection the peer has already dropped
+        // fails the send before any response arrives (seen as WSAECONNABORTED
+        // on Windows). One retry gets a fresh connection; an evaluation has no
+        // side effects, so repeating it is safe. Pooling stays on because a new
+        // TLS handshake per call would slow every decision.
+        let retry = request.try_clone();
+        let response = match request.send().await {
+            Err(error) if is_stale_connection(&error) && retry.is_some() => {
+                tracing::debug!(error = %error.without_url(), "retrying decision request");
+                retry.expect("checked above").send().await
+            }
+            result => result,
+        }
+        .map_err(map_reqwest_error)?;
         let status = response.status();
         let bytes = response.bytes().await.map_err(map_reqwest_error)?;
         if !status.is_success() {
@@ -561,6 +571,11 @@ impl DecisionClient {
                 .map_err(|_| DecisionError::InvalidResponse),
         }
     }
+}
+
+/// A send that failed on the connection rather than on time or on the reply.
+fn is_stale_connection(error: &reqwest::Error) -> bool {
+    !error.is_timeout() && (error.is_request() || error.is_connect())
 }
 
 fn map_reqwest_error(error: reqwest::Error) -> DecisionError {
