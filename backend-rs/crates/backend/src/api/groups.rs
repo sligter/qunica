@@ -925,9 +925,7 @@ impl SchedulerConfigFields {
                 .router_agent_id
                 .clone()
                 .unwrap_or_else(|| existing.router_agent_id.clone()),
-            max_router_tasks: body
-                .max_router_tasks
-                .unwrap_or(existing.max_router_tasks),
+            max_router_tasks: body.max_router_tasks.unwrap_or(existing.max_router_tasks),
         }
         .validate(pool, owner_id)
         .await
@@ -1801,9 +1799,7 @@ pub(crate) async fn update_inner(
         if existing.router_agent_id.as_deref() != Some(router) {
             load_active_group_agent(state.db.pool(), &group_id, router)
                 .await
-                .map_err(|_| {
-                    ApiError::invalid_input("router_agent_id must be an active member")
-                })?;
+                .map_err(|_| ApiError::invalid_input("router_agent_id must be an active member"))?;
             validate_router_runtime(state.db.pool(), router).await?;
         }
     }
@@ -6326,7 +6322,9 @@ async fn validate_router_runtime(pool: &SqlitePool, agent_id: &str) -> Result<()
         Some(_) => Err(ApiError::invalid_input(
             "the router must be a model agent, not an external CLI agent",
         )),
-        None => Err(ApiError::invalid_input("router_agent_id must be an active agent")),
+        None => Err(ApiError::invalid_input(
+            "router_agent_id must be an active agent",
+        )),
     }
 }
 
