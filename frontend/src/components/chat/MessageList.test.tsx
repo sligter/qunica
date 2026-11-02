@@ -521,4 +521,68 @@ describe('MessageList scheduler summary integration', () => {
     expect(screen.getByTestId('message-checkpoint-approval')).toHaveTextContent('Cleanup complete.')
     expect(screen.queryByTestId('stream-timeline')).not.toBeInTheDocument()
   })
+
+  it('shows the router reply to a task report through the observed run', () => {
+    const report: Message = {
+      ...userMessage,
+      id: 'report-1',
+      sender_type: 'system',
+      sender_id: null,
+      message_type: 'task_report',
+      content: 'Task report',
+      turn_summary: null,
+    }
+    const reply: Message = {
+      ...userMessage,
+      id: 'reply-1',
+      sender_type: 'agent',
+      sender_id: 'router-1',
+      content: 'The task found no idle shutdown.',
+      status: 'visible',
+      reply_to_message_id: report.id,
+      turn_summary: null,
+    }
+    useMessageStore.setState({
+      byGroup: { 'group-1': [report, reply] },
+      warningsByGroup: {},
+      streamRunsByGroup: {
+        'group-1': {
+          'stream-report': {
+            id: 'stream-report',
+            group_id: 'group-1',
+            user_message_id: report.id,
+            status: 'completed',
+            turn_id: 'turn-report',
+            scheduler_status: 'completed',
+            moderator_active: false,
+            terminal_reason: null,
+            criticalSummaries: [],
+            created_at: '2026-07-15T10:00:00Z',
+            updated_at: '2026-07-15T10:00:02Z',
+            events: [
+              {
+                id: 'agent-message:stream-report:reply-1',
+                type: 'agent_message',
+                stream_id: 'stream-report',
+                message_id: reply.id,
+                agent_id: 'router-1',
+                display_name: 'Router',
+                content: reply.content ?? '',
+                created_at: '2026-07-15T10:00:02Z',
+                updated_at: '2026-07-15T10:00:02Z',
+              },
+            ],
+          },
+        },
+      },
+      streamRunIdByUserMessageIdByGroup: { 'group-1': { [report.id]: 'stream-report' } },
+    })
+
+    render(<MessageList groupId="group-1" />)
+
+    // The run owns the reply row, so its timeline must render under the report.
+    expect(screen.queryByTestId('message-reply-1')).not.toBeInTheDocument()
+    expect(screen.getByTestId('message-report-1')).toBeInTheDocument()
+    expect(screen.getByTestId('stream-timeline')).toBeInTheDocument()
+  })
 })

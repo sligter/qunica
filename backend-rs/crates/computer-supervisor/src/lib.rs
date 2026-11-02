@@ -173,6 +173,17 @@ impl Supervisor {
         if computer.generation != request.expected_generation {
             return Err(Error::conflict("generation_mismatch"));
         }
+        if request.only_if_idle {
+            if !matches!(request.action, Action::Stop) {
+                return Err(Error::invalid());
+            }
+            // Note: a takeover can start after the backend's idle check. Fence
+            // automatic stops inside the same lock used by lifecycle actions.
+            if computer.status != Status::Running {
+                return Err(Error::busy());
+            }
+            self.0.controls.check_idle(id, &computer.generation).await?;
+        }
         if (request.purge_home && !matches!(request.action, Action::Destroy))
             || (matches!(request.action, Action::Destroy) && request.confirm != Some(id))
         {

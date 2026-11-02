@@ -100,6 +100,56 @@ restore, so old generations cannot keep driving the restored environment.
 
 ## Resources and Runtime
 
+### Optional idle stopping and automatic wake
+
+Set **`QUNICA_COMPUTER_IDLE_SECONDS`** on the backend (or in `.env` for the
+computers Compose overlay) to unsigned whole seconds, for example `600`.
+The default is **`0`**, disabling both idle stopping and automatic wake and
+preserving explicit start/stop behavior. Invalid, negative, fractional or
+overflowing values fail backend startup. No Supervisor setting is required;
+upgrade the backend and Supervisor together for the guarded stop protocol.
+An older Supervisor rejects the added `only_if_idle` field: automatic stopping
+is skipped safely, with a warning per candidate computer every five seconds.
+
+When enabled, the backend checks every five seconds and stops a running computer
+only after elapsed idle time **exceeds** the threshold. SQLite resource and
+operation records track execution, ACP exchanges and control lease activity.
+Running or uncertain operations, active pending/running/waiting turns and human
+takeover requests/leases prevent reclamation. Live desktop connections or
+artifact reads also prevent reclamation, including view-only desktops.
+These sessions register under the lifecycle lock and
+refresh activity at most every 30 seconds; disconnect/completion releases their
+in-process occupancy without blocking explicit stop.
+When idle management is enabled, desktop connections send a WebSocket Ping every
+30 seconds and disconnect if its Pong is absent after another 30 seconds, even
+when the screen is static. With the default disabled, these activity writes and
+heartbeats are skipped.
+Unavailable or unrecognized state skips that check. First observation of an
+existing computer or a changed
+generation grants a full idle interval. Supervisor generation/control checks
+fence automatic stops against concurrent takeover; stale generations are skipped.
+
+Idle management supports **one backend replica only**. Its lifecycle mutex and
+active-session occupancy are in-process; Supervisor `check_idle` checks control
+only at that instant. Across multiple backends, a human takeover during the
+subsequent stop (up to 60 seconds) cannot be fenced by these guards.
+
+Idle stop uses the existing stop action and retains home, without snapshots.
+The next execution resolves a confirmed stopped computer by starting it once,
+then reserves the new generation before executing. Backend lifecycle admission
+serializes stop, wake and operation intent so new work waits for an ongoing
+stop. This also wakes manually stopped computers when the feature is enabled;
+viewing the desktop alone does not wake them. Running processes and browser
+sessions end on stop; only data saved in home survives.
+
+Start failures, lost responses and unexpected statuses fail the dispatch
+explicitly with diagnostics, without automatic retry or host fallback.
+Neither Supervisor `uncertain` nor unresolved uncertain operation records are
+automatically recovered: explicitly stop the computer first, then confirm any
+uncertain operation records with `turn.acknowledge_stopped` before continuing.
+A failed wake may leave no operation record; acknowledging a turn cannot clear
+Supervisor uncertainty. Restart recovery remains conservative.
+
 The owner-scoped application API provides:
 
 | Route | Behavior |

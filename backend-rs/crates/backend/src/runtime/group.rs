@@ -8560,6 +8560,9 @@ async fn build_agent_system_prompt(
     if let Some(conventions) = render_project_conventions(executor) {
         sections.push(conventions);
     }
+    let dispatches = tools
+        .iter()
+        .any(|tool| tool.name == crate::runtime::router::DISPATCH_TASK);
     if !direct_chat {
         let topology_rule = match group.communication_mode.as_str() {
             "star" => "Star: use the hub as the default coordination point; the hub splits or integrates work and spokes execute their parts.",
@@ -8572,10 +8575,27 @@ async fn build_agent_system_prompt(
         } else {
             "Any @mention you write is display-only. Writing a shared note or workspace file, or assigning work in prose, does not dispatch or notify another Agent."
         };
-        sections.push(format!(
-            "Group scheduler rules:\n- Agents are dispatched sequentially, never in the background. Finish this response to return control to the scheduler; do not poll or wait for peer output during this dispatch.\n- {mention_rule}\n- {}\n- {topology_rule}",
-            delegation.prompt_rule()
-        ));
+        // Note: each router seat gets its own rules. The sequential-dispatch
+        // and delegation rules describe `AgentAsTool`, which the router does
+        // not have; telling it "no delegation tool" next to DispatchTask made
+        // real models do dispatchable work themselves.
+        let rules = match seat {
+            RouterSeat::Router if dispatches => format!(
+                "Group scheduler rules:\n- You are the only responder in this conversation; other members never speak here. DispatchTask is your delegation tool: it starts a member on a task in its own thread, in the background, and returns immediately. Hand substantial work to a member with it instead of doing it yourself.\n- {mention_rule}"
+            ),
+            RouterSeat::Worker => format!(
+                "Group scheduler rules:\n- You are the only responder in this task thread. Finish this response to report back to the router; do not poll or wait for peer output.\n- {mention_rule}\n- {}",
+                delegation.prompt_rule()
+            ),
+            RouterSeat::Watchdog => format!(
+                "Group scheduler rules:\n- You are the only responder in this watchdog thread and cannot run other members.\n- {mention_rule}"
+            ),
+            _ => format!(
+                "Group scheduler rules:\n- Agents are dispatched sequentially, never in the background. Finish this response to return control to the scheduler; do not poll or wait for peer output during this dispatch.\n- {mention_rule}\n- {}\n- {topology_rule}",
+                delegation.prompt_rule()
+            ),
+        };
+        sections.push(rules);
     }
     let mcp_failures = render_mcp_section(executor);
     if !mcp_failures.is_empty() {
@@ -8590,7 +8610,7 @@ async fn build_agent_system_prompt(
         sections.push(suggestion);
     }
     match seat {
-        RouterSeat::Router if tools.iter().any(|tool| tool.name == "DispatchTask") => {
+        RouterSeat::Router if dispatches => {
             sections.push(crate::runtime::router::ROUTER_PROMPT.to_string());
         }
         RouterSeat::Worker => sections.push(crate::runtime::router::WORKER_PROMPT.to_string()),

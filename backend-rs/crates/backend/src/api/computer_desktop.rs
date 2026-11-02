@@ -36,6 +36,7 @@ pub async fn control(
         .computers
         .as_ref()
         .ok_or_else(|| ApiError::conflict("Supervisor unavailable"))?;
+    let _guard = client.lifecycle_lock(&id.to_string()).await;
     let result = client
         .request(
             reqwest::Method::POST,
@@ -43,6 +44,19 @@ pub async fn control(
             Some(&body),
         )
         .await;
+    if client.idle_enabled() && body["action"] != "status" {
+        if let Ok(value) = &result {
+            if let Some(generation) = value["generation"].as_str() {
+                crate::computers::idle::record_activity(
+                    state.db.pool(),
+                    &id.to_string(),
+                    generation,
+                )
+                .await
+                .map_err(|_| ApiError::internal("Computer activity storage unavailable"))?;
+            }
+        }
+    }
     if body["action"] != "status" && body["action"] != "renew" {
         sqlx::query("UPDATE computers SET revision=revision+1 WHERE id=? AND owner_id=?")
             .bind(id.to_string())
@@ -94,6 +108,7 @@ async fn connection(mut socket: WebSocket, state: AppState) {
         return;
     }
     let generation = frame["generation"].as_str().unwrap_or("").to_string();
+    let activity = client.active_use(&id.to_string()).await;
     let credential = frame["credential"].as_str().map(str::to_string);
     let path = format!("/v1/computers/{id}/call");
     let call = |request: Value| json!({"expected_generation":generation,"credential":credential,"request":request});
@@ -112,61 +127,111 @@ async fn connection(mut socket: WebSocket, state: AppState) {
     let Some(display) = value["id"].as_str() else {
         return;
     };
-    if socket
-        .send(Message::Text(json!({"type":"authenticated"}).to_string()))
-        .await
-        .is_err()
-    {
-        return;
-    }
-    let mut timer = tokio::time::interval(Duration::from_millis(75));
-    loop {
-        let mut data = None;
-        tokio::select! {
-            incoming=socket.next()=>match incoming {Some(Ok(Message::Binary(bytes)))=>data=Some(base64::engine::general_purpose::STANDARD.encode(bytes)),Some(Ok(Message::Ping(bytes)))=>{let _=socket.send(Message::Pong(bytes)).await;continue;},_=>break},
-            _=timer.tick()=>{},
+    'desktop: {
+        if client.idle_enabled() && activity.record(state.db.pool(), &generation).await.is_err() {
+            break 'desktop;
         }
-        if !auth::session_is_active(state.db.pool(), &session)
+        if socket
+            .send(Message::Text(json!({"type":"authenticated"}).to_string()))
             .await
-            .unwrap_or(false)
+            .is_err()
         {
-            break;
+            break 'desktop;
         }
-        let result = client
-            .request(
-                reqwest::Method::POST,
-                &path,
-                Some(&call(json!({"op":"rfb_exchange","id":display,"data":data}))),
-            )
-            .await;
-        let value = match result {
-            Ok(value) => value,
-            Err(error) if error.code() == "computer_busy" && data.is_none() => continue,
-            Err(_) => break,
-        };
-        if value["exit_code"] != 0 || value["truncated"] == true {
-            break;
-        }
-        let value: Value =
-            serde_json::from_str(value["stdout"].as_str().unwrap_or("")).unwrap_or(Value::Null);
-        let Some(raw) = value["data"].as_str() else {
-            break;
-        };
-        if !raw.is_empty() {
-            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw) else {
-                break;
-            };
-            if tokio::time::timeout(Duration::from_secs(2), socket.send(Message::Binary(bytes)))
+        let mut timer = tokio::time::interval(Duration::from_millis(75));
+        // Note: a static desktop sends no pixels, so send timeouts alone cannot
+        // release a disconnected viewer's idle lease. Require a Pong within 30s;
+        // keep the default-disabled path's existing WebSocket behavior.
+        let mut heartbeat = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(30),
+            Duration::from_secs(30),
+        );
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut pending_ping = None;
+        loop {
+            let mut data = None;
+            tokio::select! {
+                incoming=socket.next()=>match incoming {
+                    Some(Ok(Message::Binary(bytes)))=>data=Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+                    Some(Ok(Message::Ping(bytes)))=>{
+                        if !matches!(tokio::time::timeout(Duration::from_secs(2), socket.send(Message::Pong(bytes))).await, Ok(Ok(()))) {
+                            break;
+                        }
+                        continue;
+                    },
+                    Some(Ok(Message::Pong(bytes))) if client.idle_enabled()=>{
+                        if pending_ping.as_ref() == Some(&bytes) {
+                            pending_ping = None;
+                        }
+                        continue;
+                    },
+                    _=>break
+                },
+                _=heartbeat.tick(), if client.idle_enabled()=>{
+                    if pending_ping.is_some() {
+                        tracing::debug!(computer_id=%id, "desktop heartbeat timed out; releasing idle lease");
+                        break;
+                    }
+                    let ping = Uuid::new_v4().as_bytes().to_vec();
+                    if !matches!(tokio::time::timeout(Duration::from_secs(2), socket.send(Message::Ping(ping.clone()))).await, Ok(Ok(()))) {
+                        break;
+                    }
+                    pending_ping = Some(ping);
+                    continue;
+                },
+                _=timer.tick()=>{},
+            }
+            if !auth::session_is_active(state.db.pool(), &session)
                 .await
-                .is_err()
+                .unwrap_or(false)
             {
                 break;
             }
-        }
-        if value["closed"] == true {
-            break;
+            if client.idle_enabled() && activity.record(state.db.pool(), &generation).await.is_err()
+            {
+                break;
+            }
+            let result = client
+                .request(
+                    reqwest::Method::POST,
+                    &path,
+                    Some(&call(json!({"op":"rfb_exchange","id":display,"data":data}))),
+                )
+                .await;
+            let value = match result {
+                Ok(value) => value,
+                Err(error) if error.code() == "computer_busy" && data.is_none() => continue,
+                Err(_) => break,
+            };
+            if value["exit_code"] != 0 || value["truncated"] == true {
+                break;
+            }
+            let value: Value =
+                serde_json::from_str(value["stdout"].as_str().unwrap_or("")).unwrap_or(Value::Null);
+            let Some(raw) = value["data"].as_str() else {
+                break;
+            };
+            if !raw.is_empty() {
+                let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw) else {
+                    break;
+                };
+                if !matches!(
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        socket.send(Message::Binary(bytes))
+                    )
+                    .await,
+                    Ok(Ok(()))
+                ) {
+                    break;
+                }
+            }
+            if value["closed"] == true {
+                break;
+            }
         }
     }
+    drop(activity);
     let _ = client
         .request(
             reqwest::Method::POST,
@@ -212,6 +277,7 @@ pub async fn download(
         .computers
         .as_ref()
         .ok_or_else(|| ApiError::conflict("Supervisor unavailable"))?;
+    let activity = client.active_use(&computer).await;
     let snapshot = client
         .request(
             reqwest::Method::GET,
@@ -219,6 +285,18 @@ pub async fn download(
             None,
         )
         .await?;
+    let generation = if client.idle_enabled() {
+        let generation = snapshot["generation"]
+            .as_str()
+            .ok_or_else(|| ApiError::internal("Computer generation unavailable"))?;
+        activity
+            .record(state.db.pool(), generation)
+            .await
+            .map_err(|_| ApiError::internal("Computer activity storage unavailable"))?;
+        Some(generation)
+    } else {
+        None
+    };
     let mut file = tokio::fs::File::from_std(
         tempfile::tempfile()
             .map_err(|_| ApiError::internal("failed to stage artifact download"))?,
@@ -226,8 +304,14 @@ pub async fn download(
     let metadata = copy_artifact(&mut file, Some(size as u64), |offset| {
         let body = json!({"expected_generation":snapshot["generation"],"request":{"op":"artifact","path":path,"offset":offset}});
         let endpoint = format!("/v1/computers/{computer}/call");
+        let activity = &activity;
+        let pool = state.db.pool();
         async move {
             let value = client.request(reqwest::Method::POST, &endpoint, Some(&body)).await?;
+            if let Some(generation) = generation {
+                activity.record(pool, generation).await
+                    .map_err(|_| ApiError::internal("Computer activity storage unavailable"))?;
+            }
             if value["exit_code"] != 0 || value["truncated"] == true {
                 return Err(ApiError::conflict("Artifact read failed"));
             }
@@ -235,6 +319,7 @@ pub async fn download(
                 .map_err(|_| ApiError::internal("Artifact read failed"))
         }
     }).await?;
+    drop(activity);
     file.rewind()
         .await
         .map_err(|_| ApiError::internal("failed to read staged artifact"))?;

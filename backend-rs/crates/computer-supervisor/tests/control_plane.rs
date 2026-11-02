@@ -488,6 +488,15 @@ async fn exec_timeout_requires_confirmed_stop_and_never_retries() {
         request(&app, "GET", &path, Value::Null).await.1["status"],
         "uncertain"
     );
+    let (_, automatic) = request(
+        &app,
+        "POST",
+        &format!("{path}/actions"),
+        json!({"expected_generation":"1","action":"stop","only_if_idle":true}),
+    )
+    .await;
+    assert_eq!(automatic["error"]["code"], "computer_busy");
+    assert_eq!(driver.stops.load(Ordering::SeqCst), 0);
     for action in ["start", "rebuild"] {
         assert_eq!(
             request(
@@ -694,6 +703,13 @@ async fn docker_preserves_home_isolates_private_data_and_fences_uncertain_execs(
     )
     .await;
     assert_eq!(stopped["status"], "stopped", "{stopped}");
+    assert!(
+        docker
+            .inspect_volume(&DockerProvider::home_name(&record))
+            .await
+            .is_ok(),
+        "stop retains the named home volume"
+    );
     let (_, started) = request(
         &app,
         "POST",
@@ -750,4 +766,70 @@ async fn docker_preserves_home_isolates_private_data_and_fences_uncertain_execs(
         .inspect_volume(&DockerProvider::home_name(&record))
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn automatic_stop_rechecks_control_generation_and_uncertain_under_lock() {
+    let (_root, driver, app) = fixture();
+    let computer = spec();
+    create(&app, &computer).await;
+    let path = format!("/v1/computers/{}", computer.id);
+    let (_, lease) = request(
+        &app,
+        "POST",
+        &format!("{path}/control"),
+        json!({"expected_generation":"1","action":"request"}),
+    )
+    .await;
+    assert_eq!(lease["state"], "user_controlled");
+    let (_, result) = request(
+        &app,
+        "POST",
+        &format!("{path}/actions"),
+        json!({"expected_generation":"1","action":"stop","only_if_idle":true}),
+    )
+    .await;
+    assert_eq!(result["error"]["code"], "computer_control_held");
+    assert_eq!(driver.stops.load(Ordering::SeqCst), 0);
+    let (_, result) = request(
+        &app,
+        "POST",
+        &format!("{path}/actions"),
+        json!({"expected_generation":"0","action":"stop","only_if_idle":true}),
+    )
+    .await;
+    assert_eq!(result["error"]["code"], "generation_mismatch");
+    request(
+        &app,
+        "POST",
+        &format!("{path}/control"),
+        json!({"expected_generation":"1","action":"release","credential":lease["credential"]}),
+    )
+    .await;
+    let (_, result) = request(
+        &app,
+        "POST",
+        &format!("{path}/actions"),
+        json!({"expected_generation":"1","action":"start","only_if_idle":true}),
+    )
+    .await;
+    assert_eq!(result["error"]["code"], "invalid_input");
+    let (_, result) = request(
+        &app,
+        "POST",
+        &format!("{path}/actions"),
+        json!({"expected_generation":"1","action":"stop","only_if_idle":true}),
+    )
+    .await;
+    assert_eq!(result["status"], "stopped");
+    assert_eq!(driver.stops.load(Ordering::SeqCst), 1);
+    let (_, result) = request(
+        &app,
+        "POST",
+        &format!("{path}/actions"),
+        json!({"expected_generation":"2","action":"stop","only_if_idle":true}),
+    )
+    .await;
+    assert_eq!(result["error"]["code"], "computer_busy");
+    assert_eq!(driver.stops.load(Ordering::SeqCst), 1);
 }

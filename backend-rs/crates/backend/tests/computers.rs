@@ -23,10 +23,19 @@ const TOKEN: &str = "computer-supervisor-test-secret-with-32-bytes";
 const VENDOR_KEY: &str = "vendor-secret-must-never-reach-computer";
 #[derive(Default)]
 struct Provider {
+    starts: std::sync::atomic::AtomicUsize,
+    fail_start: std::sync::atomic::AtomicBool,
     calls: Mutex<Vec<ExecRequest>>,
     artifact: Mutex<Option<Vec<u8>>>,
     corrupt_artifact: std::sync::atomic::AtomicBool,
     artifact_size_override: std::sync::atomic::AtomicU64,
+    response_pause: Mutex<Option<Arc<ResponsePause>>>,
+}
+
+struct ResponsePause {
+    remaining: std::sync::atomic::AtomicUsize,
+    reached: tokio::sync::Notify,
+    resume: tokio::sync::Notify,
 }
 #[async_trait]
 impl ComputerProvider for Provider {
@@ -37,6 +46,11 @@ impl ComputerProvider for Provider {
         Ok(())
     }
     async fn start(&self, _: &Computer) -> Result<(), Error> {
+        self.starts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_start.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(Error::uncertain());
+        }
         Ok(())
     }
     async fn stop(&self, _: &Computer) -> Result<(), Error> {
@@ -50,6 +64,15 @@ impl ComputerProvider for Provider {
     }
     async fn execute(&self, _: &Computer, request: ExecRequest) -> Result<ExecResult, Error> {
         let mut stdout = "remote output".to_string();
+        let body = request
+            .argv
+            .last()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+        match body.as_ref().and_then(|body| body["op"].as_str()) {
+            Some("rfb_open") => stdout = json!({"id":"display"}).to_string(),
+            Some("rfb_exchange") => stdout = json!({"data":"","closed":false}).to_string(),
+            _ => {}
+        }
         if let Some(bytes) = self.artifact.lock().await.as_ref() {
             use base64::Engine;
             use sha2::{Digest, Sha256};
@@ -122,17 +145,60 @@ async fn fixture() -> (
     tempfile::TempDir,
     tokio::task::JoinHandle<()>,
 ) {
+    fixture_with_idle_seconds(0).await
+}
+
+async fn fixture_with_idle_seconds(
+    idle_seconds: u64,
+) -> (
+    Router,
+    AppState,
+    String,
+    String,
+    String,
+    String,
+    Arc<Provider>,
+    tempfile::TempDir,
+    tokio::task::JoinHandle<()>,
+) {
     let root = tempfile::tempdir().unwrap();
     let provider = Arc::new(Provider::default());
     let supervisor = Supervisor::open(root.path().into(), TOKEN, provider.clone())
         .unwrap()
-        .router();
+        .router()
+        .layer(axum::middleware::from_fn({
+            let provider = provider.clone();
+            move |request: Request<Body>, next: axum::middleware::Next| {
+                let provider = provider.clone();
+                async move {
+                    let is_call = request.uri().path().ends_with("/call");
+                    let response = next.run(request).await;
+                    if is_call {
+                        let pause = provider.response_pause.lock().await.clone();
+                        if let Some(pause) = pause {
+                            if pause
+                                .remaining
+                                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                                == 1
+                            {
+                                // The Supervisor has finished and restored Running,
+                                // but the backend has not received this chunk yet.
+                                pause.reached.notify_one();
+                                pause.resume.notified().await;
+                            }
+                        }
+                    }
+                    response
+                }
+            }
+        }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, supervisor).await.unwrap() });
     let (_, mut state) = api::router_with_state_for_tests().await;
     state.computers = Some(Arc::new(
-        SupervisorClient::new(&format!("http://{addr}"), TOKEN.into()).unwrap(),
+        SupervisorClient::with_idle_seconds(&format!("http://{addr}"), TOKEN.into(), idle_seconds)
+            .unwrap(),
     ));
     let app = api::router(state.clone());
     let (_, user) = request(
@@ -1429,4 +1495,779 @@ async fn docker_opencode_acp_uses_proxy_and_executes_tools_inside_computer() {
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }
+}
+
+async fn idle_age(state: &AppState, id: &str) {
+    sqlx::query("UPDATE computers SET last_activity_at_ms=1 WHERE id=?")
+        .bind(id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE computer_operations SET last_activity_at_ms=1 WHERE computer_id=?")
+        .bind(id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+}
+
+async fn desktop_viewer(
+    app: &Router,
+    token: &str,
+    address: std::net::SocketAddr,
+    id: &str,
+    generation: &str,
+) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
+    let (_, ticket) = request(
+        app,
+        "POST",
+        "/api/v2/realtime/tickets",
+        Some(token),
+        Value::Null,
+    )
+    .await;
+    let mut req = format!("ws://{address}/api/v2/computers/desktop")
+        .into_client_request()
+        .unwrap();
+    req.headers_mut().insert(
+        "sec-websocket-protocol",
+        "qunica.desktop.v1".parse().unwrap(),
+    );
+    let mut socket = tokio_tungstenite::connect_async(req).await.unwrap().0;
+    socket
+        .send(Message::Text(
+            json!({"ticket":ticket["ticket"],"computer_id":id,"generation":generation}).to_string(),
+        ))
+        .await
+        .unwrap();
+    socket
+}
+
+async fn desktop_authenticated(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) {
+    use futures_util::StreamExt;
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&reply.into_text().unwrap()).unwrap()["type"],
+        "authenticated"
+    );
+}
+
+async fn idle_wait_until_stopped(state: &AppState, id: &str, timeout: std::time::Duration) {
+    let client = state.computers.as_ref().unwrap();
+    tokio::time::timeout(timeout, async {
+        loop {
+            idle_age(state, id).await;
+            client.stop_idle(state.db.pool()).await.unwrap();
+            if client
+                .request(reqwest::Method::GET, &format!("/v1/computers/{id}"), None)
+                .await
+                .unwrap()["status"]
+                == "stopped"
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("desktop lease was not released before the deadline");
+}
+
+#[tokio::test]
+async fn idle_desktop_viewers_prevent_stop_without_blocking_other_computers() {
+    use futures_util::StreamExt;
+    use std::time::Duration;
+    let (app, state, token, _owner, group, _agent, provider, _root, server) =
+        fixture_with_idle_seconds(1).await;
+    let computer = create(&app, &token, &group).await;
+    let id = computer["spec"]["id"].as_str().unwrap();
+    let other = create(&app, &token, &group).await;
+    let other_id = other["spec"]["id"].as_str().unwrap();
+    let client = state.computers.as_ref().unwrap();
+    client.stop_idle(state.db.pool()).await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let desktop_server = tokio::spawn({
+        let app = app.clone();
+        async move { axum::serve(listener, app).await.unwrap() }
+    });
+    let revision: i64 = sqlx::query_scalar("SELECT revision FROM computers WHERE id=?")
+        .bind(id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_events")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    let observed: Option<String> =
+        sqlx::query_scalar("SELECT idle_observed_generation FROM computers WHERE id=?")
+            .bind(id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap();
+    let mut invalid = desktop_viewer(&app, &token, address, id, "invalid").await;
+    let reply = tokio::time::timeout(Duration::from_secs(5), invalid.next())
+        .await
+        .unwrap();
+    assert!(!matches!(
+        reply,
+        Some(Ok(tokio_tungstenite::tungstenite::Message::Text(_)))
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT idle_observed_generation FROM computers WHERE id=?"
+        )
+        .bind(id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap(),
+        observed
+    );
+    let mut viewers = Vec::new();
+    for _ in 0..2 {
+        let mut socket = desktop_viewer(&app, &token, address, id, "1").await;
+        desktop_authenticated(&mut socket).await;
+        viewers.push(socket);
+    }
+    for (computer_id, expected) in [(id, "running"), (other_id, "stopped")] {
+        idle_age(&state, computer_id).await;
+        tokio::time::timeout(Duration::from_secs(5), client.stop_idle(state.db.pool()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            client
+                .request(
+                    reqwest::Method::GET,
+                    &format!("/v1/computers/{computer_id}"),
+                    None
+                )
+                .await
+                .unwrap()["status"],
+            expected
+        );
+    }
+    // Desktop activity neither changes revision nor emits computer.changed.
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT revision FROM computers WHERE id=?")
+            .bind(id)
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap(),
+        revision
+    );
+    // The unrelated computer's stop is the sole new account event.
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM account_events")
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap(),
+        events + 1
+    );
+    for (index, mut socket) in viewers.into_iter().enumerate() {
+        socket.close(None).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let closed = provider
+                    .calls
+                    .lock()
+                    .await
+                    .iter()
+                    .filter(|call| {
+                        call.argv
+                            .last()
+                            .is_some_and(|raw| raw.contains("rfb_close"))
+                    })
+                    .count();
+                if closed > index {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        if index == 0 {
+            idle_age(&state, id).await;
+            client.stop_idle(state.db.pool()).await.unwrap();
+        } else {
+            // rfb_close can be observed before the socket/lease is dropped.
+            idle_wait_until_stopped(&state, id, Duration::from_secs(5)).await;
+        }
+        assert_eq!(
+            client
+                .request(reqwest::Method::GET, &format!("/v1/computers/{id}"), None)
+                .await
+                .unwrap()["status"],
+            if index == 0 { "running" } else { "stopped" }
+        );
+    }
+    desktop_server.abort();
+    server.abort();
+}
+
+#[tokio::test]
+async fn idle_desktop_heartbeat_releases_unread_viewer_and_keeps_pong_viewer() {
+    use futures_util::{SinkExt, StreamExt};
+    use std::{sync::atomic::Ordering, time::Duration};
+    use tokio_tungstenite::tungstenite::Message;
+    let (app, state, token, _owner, group, _agent, _provider, _root, server) =
+        fixture_with_idle_seconds(1).await;
+    let computer = create(&app, &token, &group).await;
+    let id = computer["spec"]["id"].as_str().unwrap();
+    let live = create(&app, &token, &group).await;
+    let live_id = live["spec"]["id"].as_str().unwrap();
+    let client = state.computers.as_ref().unwrap();
+    client.stop_idle(state.db.pool()).await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let desktop_server = tokio::spawn({
+        let app = app.clone();
+        async move { axum::serve(listener, app).await.unwrap() }
+    });
+    let mut unread = desktop_viewer(&app, &token, address, id, "1").await;
+    desktop_authenticated(&mut unread).await;
+    let started = tokio::time::Instant::now();
+    let mut responding = desktop_viewer(&app, &token, address, live_id, "1").await;
+    desktop_authenticated(&mut responding).await;
+    let pings = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let reader = tokio::spawn({
+        let pings = pings.clone();
+        async move {
+            while let Some(Ok(message)) = responding.next().await {
+                if let Message::Ping(bytes) = message {
+                    responding.send(Message::Pong(bytes)).await.unwrap();
+                    pings.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+    });
+    // Keep the TCP socket alive without reading: no client-side auto-Pong or
+    // close frame may mask missing server-side heartbeat detection.
+    idle_wait_until_stopped(&state, id, Duration::from_secs(65)).await;
+    assert!(started.elapsed() >= Duration::from_secs(59));
+    assert!(pings.load(Ordering::SeqCst) >= 1);
+    idle_age(&state, live_id).await;
+    client.stop_idle(state.db.pool()).await.unwrap();
+    assert_eq!(
+        client
+            .request(
+                reqwest::Method::GET,
+                &format!("/v1/computers/{live_id}"),
+                None,
+            )
+            .await
+            .unwrap()["status"],
+        "running"
+    );
+    drop(unread);
+    reader.abort();
+    idle_wait_until_stopped(&state, live_id, Duration::from_secs(5)).await;
+    desktop_server.abort();
+    server.abort();
+}
+
+#[tokio::test]
+async fn idle_artifact_download_prevents_stop_between_chunks_and_throttles_activity() {
+    use std::{sync::atomic::AtomicUsize, time::Duration};
+    let (app, state, token, owner, group, _agent, provider, _root, server) =
+        fixture_with_idle_seconds(1).await;
+    let computer = create(&app, &token, &group).await;
+    let id = computer["spec"]["id"].as_str().unwrap();
+    let client = state.computers.as_ref().unwrap();
+    client.stop_idle(state.db.pool()).await.unwrap();
+    let bytes = vec![37; 3 * 49152 + 1];
+    let artifact = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO threads(id,group_id,status,created_at,updated_at) VALUES('download-thread',?,'completed','now','now')")
+        .bind(&group).execute(state.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO group_turns(id,thread_id,group_id,status,scheduler_strategy,config_snapshot_json,topology_snapshot_json,created_at,updated_at) VALUES('download-turn','download-thread',?,'completed','bounded','{}','{}','now','now')")
+        .bind(&group).execute(state.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO computer_artifacts(id,owner_id,computer_id,turn_id,generation,path,size) VALUES(?,?,?,'download-turn','1','large.bin',?)")
+        .bind(&artifact).bind(&owner).bind(id).bind(bytes.len() as i64).execute(state.db.pool()).await.unwrap();
+    *provider.artifact.lock().await = Some(bytes.clone());
+    let pause = Arc::new(ResponsePause {
+        remaining: AtomicUsize::new(2),
+        reached: tokio::sync::Notify::new(),
+        resume: tokio::sync::Notify::new(),
+    });
+    *provider.response_pause.lock().await = Some(pause.clone());
+    sqlx::query("CREATE TABLE activity_writes (id TEXT)")
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("CREATE TRIGGER audit_download_activity AFTER UPDATE OF last_activity_at_ms ON computers BEGIN INSERT INTO activity_writes VALUES(NEW.id); END")
+        .execute(state.db.pool()).await.unwrap();
+    let download = tokio::spawn({
+        let app = app.clone();
+        let token = token.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .uri(format!("/api/v2/computer-artifacts/{artifact}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), pause.reached.notified())
+        .await
+        .unwrap();
+    // Paused after the second call completed: the Supervisor is Running, not
+    // Executing, so neither its execution lock nor recent activity masks a bug.
+    assert_eq!(
+        client
+            .request(reqwest::Method::GET, &format!("/v1/computers/{id}"), None)
+            .await
+            .unwrap()["status"],
+        "running"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM activity_writes")
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap(),
+        1
+    );
+    idle_age(&state, id).await;
+    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM account_events")
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+    client.stop_idle(state.db.pool()).await.unwrap();
+    assert_eq!(
+        client
+            .request(reqwest::Method::GET, &format!("/v1/computers/{id}"), None)
+            .await
+            .unwrap()["status"],
+        "running"
+    );
+    pause.resume.notify_one();
+    let response = tokio::time::timeout(Duration::from_secs(5), download)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), bytes.len())
+            .await
+            .unwrap()
+            .as_ref(),
+        bytes
+    );
+    // One initial write plus our forced aging: fast per-chunk activity is
+    // coalesced, and no revision/account event is generated by the transfer.
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM activity_writes")
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM account_events")
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap(),
+        events
+    );
+    client.stop_idle(state.db.pool()).await.unwrap();
+    assert_eq!(
+        client
+            .request(reqwest::Method::GET, &format!("/v1/computers/{id}"), None)
+            .await
+            .unwrap()["status"],
+        "stopped"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn idle_stop_skips_occupancy_and_control_then_concurrent_resolves_wake_once() {
+    use std::sync::atomic::Ordering;
+    let (app, state, token, owner, group, agent, provider, _root, server) =
+        fixture_with_idle_seconds(1).await;
+    let computer = create(&app, &token, &group).await;
+    let id = computer["spec"]["id"].as_str().unwrap();
+    assert_eq!(
+        bind(&app, &token, "group", &group, json!(id)).await.0,
+        StatusCode::OK
+    );
+    let client = state.computers.as_ref().unwrap();
+    client.stop_idle(state.db.pool()).await.unwrap(); // First observation grants a full interval.
+    sqlx::query("INSERT INTO threads(id,group_id,status,created_at,updated_at) VALUES('idle-thread',?,'running','now','now')").bind(&group).execute(state.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO group_turns(id,thread_id,group_id,status,scheduler_strategy,config_snapshot_json,topology_snapshot_json,created_at,updated_at) VALUES('idle-turn','idle-thread',?,'running','bounded','{}','{}','now','now')").bind(&group).execute(state.db.pool()).await.unwrap();
+    for status in [
+        "queued",
+        "pending",
+        "running",
+        "waiting_for_user",
+        "unknown",
+    ] {
+        sqlx::query("UPDATE group_turns SET status=? WHERE id='idle-turn'")
+            .bind(status)
+            .execute(state.db.pool())
+            .await
+            .unwrap();
+        idle_age(&state, id).await;
+        client.stop_idle(state.db.pool()).await.unwrap();
+        assert_eq!(
+            client
+                .request(reqwest::Method::GET, &format!("/v1/computers/{id}"), None)
+                .await
+                .unwrap()["status"],
+            "running",
+            "active {status}"
+        );
+    }
+    sqlx::query("UPDATE group_turns SET status='completed' WHERE id='idle-turn'")
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO computer_operations(id,turn_id,computer_id,status) VALUES('idle-op','idle-turn',?,'running')").bind(id).execute(state.db.pool()).await.unwrap();
+    for status in ["running", "uncertain"] {
+        sqlx::query("UPDATE computer_operations SET status=? WHERE id='idle-op'")
+            .bind(status)
+            .execute(state.db.pool())
+            .await
+            .unwrap();
+        idle_age(&state, id).await;
+        client.stop_idle(state.db.pool()).await.unwrap();
+        assert_eq!(
+            client
+                .request(reqwest::Method::GET, &format!("/v1/computers/{id}"), None)
+                .await
+                .unwrap()["status"],
+            "running",
+            "operation {status}"
+        );
+    }
+    sqlx::query("UPDATE computer_operations SET status='completed' WHERE id='idle-op'")
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    // Completion refreshes idle time, including the durable ACP lifetime intent.
+    client.stop_idle(state.db.pool()).await.unwrap();
+    assert_eq!(
+        client
+            .request(reqwest::Method::GET, &format!("/v1/computers/{id}"), None)
+            .await
+            .unwrap()["status"],
+        "running"
+    );
+    let (code, lease) = request(
+        &app,
+        "POST",
+        &format!("/api/v2/computers/{id}/control"),
+        Some(&token),
+        json!({"expected_generation":"1","action":"request"}),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{lease}");
+    idle_age(&state, id).await;
+    client.stop_idle(state.db.pool()).await.unwrap();
+    assert_eq!(
+        client
+            .request(reqwest::Method::GET, &format!("/v1/computers/{id}"), None)
+            .await
+            .unwrap()["status"],
+        "running"
+    );
+    request(
+        &app,
+        "POST",
+        &format!("/api/v2/computers/{id}/control"),
+        Some(&token),
+        json!({"expected_generation":"1","action":"release","credential":lease["credential"]}),
+    )
+    .await;
+    // A mismatched observed generation abandons reclamation and resets grace.
+    sqlx::query("UPDATE computers SET idle_observed_generation='old' WHERE id=?")
+        .bind(id)
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    idle_age(&state, id).await;
+    client.stop_idle(state.db.pool()).await.unwrap();
+    assert_eq!(
+        client
+            .request(reqwest::Method::GET, &format!("/v1/computers/{id}"), None)
+            .await
+            .unwrap()["status"],
+        "running"
+    );
+    idle_age(&state, id).await;
+    client.stop_idle(state.db.pool()).await.unwrap();
+    let stopped = client
+        .request(reqwest::Method::GET, &format!("/v1/computers/{id}"), None)
+        .await
+        .unwrap();
+    assert_eq!(stopped["status"], "stopped");
+    assert_eq!(stopped["home_present"], true);
+    sqlx::query("UPDATE group_turns SET status='running' WHERE id='idle-turn'")
+        .execute(state.db.pool())
+        .await
+        .unwrap();
+    let resolve = || {
+        ComputerExecution::resolve(
+            state.db.pool(),
+            state.computers.clone(),
+            &owner,
+            &group,
+            &agent,
+            "idle-turn",
+        )
+    };
+    let (first, second) = tokio::join!(resolve(), resolve());
+    let first = first.unwrap().unwrap();
+    assert_eq!(first.generation, "3");
+    assert_eq!(second.unwrap().unwrap().generation, "3");
+    assert_eq!(provider.starts.load(Ordering::SeqCst), 1);
+    first.execute(vec!["true".into()], 10).await.unwrap();
+    let generation: String = sqlx::query_scalar(
+        "SELECT generation FROM computer_run_bindings WHERE turn_id='idle-turn'",
+    )
+    .fetch_one(state.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(generation, "3");
+    server.abort();
+}
+
+#[tokio::test]
+async fn idle_wake_failure_is_diagnostic_and_uncertain_is_never_retried() {
+    use std::sync::atomic::Ordering;
+    let (app, state, token, owner, group, agent, provider, _root, server) =
+        fixture_with_idle_seconds(1).await;
+    let computer = create(&app, &token, &group).await;
+    let id = computer["spec"]["id"].as_str().unwrap();
+    bind(&app, &token, "group", &group, json!(id)).await;
+    request(
+        &app,
+        "POST",
+        &format!("/api/v2/computers/{id}/actions"),
+        Some(&token),
+        json!({"expected_generation":"1","action":"stop"}),
+    )
+    .await;
+    provider.fail_start.store(true, Ordering::SeqCst);
+    let error = ComputerExecution::resolve(
+        state.db.pool(),
+        state.computers.clone(),
+        &owner,
+        &group,
+        &agent,
+        "turn",
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("automatic wake failed (execution_uncertain)"),
+        "{error}"
+    );
+    assert!(
+        error.contains("explicitly stop the computer first, then confirm"),
+        "{error}"
+    );
+    let error = ComputerExecution::resolve(
+        state.db.pool(),
+        state.computers.clone(),
+        &owner,
+        &group,
+        &agent,
+        "turn",
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("explicitly stop the computer first, then confirm"),
+        "{error}"
+    );
+    assert!(
+        error.contains("turn.acknowledge_stopped if present"),
+        "{error}"
+    );
+    state
+        .computers
+        .as_ref()
+        .unwrap()
+        .stop_idle(state.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(provider.starts.load(Ordering::SeqCst), 1);
+    assert!(provider.calls.lock().await.is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn idle_default_preserves_explicit_start_behavior() {
+    use std::{sync::atomic::Ordering, time::Duration};
+    let (app, state, token, owner, group, agent, provider, _root, server) = fixture().await;
+    let computer = create(&app, &token, &group).await;
+    let id = computer["spec"]["id"].as_str().unwrap();
+    bind(&app, &token, "group", &group, json!(id)).await;
+    let client = state.computers.as_ref().unwrap();
+    assert!(!client.idle_enabled());
+    idle_age(&state, id).await;
+    // Disabled activity tracking must not add a storage failure to otherwise
+    // valid resolve, lifecycle, control, desktop or download requests.
+    sqlx::query("CREATE TRIGGER reject_disabled_activity BEFORE UPDATE OF last_activity_at_ms,idle_observed_generation ON computers BEGIN SELECT RAISE(FAIL,'idle activity must remain disabled'); END")
+        .execute(state.db.pool()).await.unwrap();
+    client.stop_idle(state.db.pool()).await.unwrap();
+    assert_eq!(
+        client
+            .request(reqwest::Method::GET, &format!("/v1/computers/{id}"), None)
+            .await
+            .unwrap()["status"],
+        "running"
+    );
+    let (status, value) = request(
+        &app,
+        "POST",
+        &format!("/api/v2/computers/{id}/actions"),
+        Some(&token),
+        json!({"expected_generation":"1","action":"stop"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let error = ComputerExecution::resolve(
+        state.db.pool(),
+        state.computers.clone(),
+        &owner,
+        &group,
+        &agent,
+        "turn",
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        error,
+        "Computer is not running; explicitly inspect and start it before continuing"
+    );
+    assert_eq!(provider.starts.load(Ordering::SeqCst), 0);
+    // An explicitly restarted computer keeps the pre-idle admission behavior
+    // for this turn's uncertain operation when the feature is disabled.
+    let (status, value) = request(
+        &app,
+        "POST",
+        &format!("/api/v2/computers/{id}/actions"),
+        Some(&token),
+        json!({"expected_generation":"2","action":"start"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    sqlx::query("INSERT INTO threads(id,group_id,status,created_at,updated_at) VALUES('default-thread',?,'running','now','now')")
+        .bind(&group).execute(state.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO group_turns(id,thread_id,group_id,status,scheduler_strategy,config_snapshot_json,topology_snapshot_json,created_at,updated_at) VALUES('turn','default-thread',?,'running','bounded','{}','{}','now','now')")
+        .bind(&group).execute(state.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO computer_operations(id,turn_id,computer_id,status) VALUES('default-op','turn',?,'uncertain')")
+        .bind(id).execute(state.db.pool()).await.unwrap();
+    let resolved = ComputerExecution::resolve(
+        state.db.pool(),
+        state.computers.clone(),
+        &owner,
+        &group,
+        &agent,
+        "turn",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(resolved.generation, "3");
+    assert_eq!(provider.starts.load(Ordering::SeqCst), 1);
+    let (status, lease) = request(
+        &app,
+        "POST",
+        &format!("/api/v2/computers/{id}/control"),
+        Some(&token),
+        json!({"expected_generation":"3","action":"request"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{lease}");
+    let (status, value) = request(
+        &app,
+        "POST",
+        &format!("/api/v2/computers/{id}/control"),
+        Some(&token),
+        json!({"expected_generation":"3","action":"release","credential":lease["credential"]}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+
+    let artifact = Uuid::new_v4().to_string();
+    let bytes = vec![37; 49153];
+    sqlx::query("INSERT INTO computer_artifacts(id,owner_id,computer_id,turn_id,generation,path,size) VALUES(?,?,?,'turn','3','default.bin',?)")
+        .bind(&artifact).bind(&owner).bind(id).bind(bytes.len() as i64).execute(state.db.pool()).await.unwrap();
+    *provider.artifact.lock().await = Some(bytes.clone());
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v2/computer-artifacts/{artifact}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), bytes.len())
+            .await
+            .unwrap()
+            .as_ref(),
+        bytes
+    );
+    *provider.artifact.lock().await = None;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let desktop_server = tokio::spawn({
+        let app = app.clone();
+        async move { axum::serve(listener, app).await.unwrap() }
+    });
+    let mut socket = desktop_viewer(&app, &token, address, id, "3").await;
+    desktop_authenticated(&mut socket).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if provider.calls.lock().await.iter().any(|call| {
+                call.argv
+                    .last()
+                    .is_some_and(|raw| raw.contains("rfb_exchange"))
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    socket.close(None).await.unwrap();
+    assert_eq!(
+        sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+            "SELECT last_activity_at_ms,idle_observed_generation FROM computers WHERE id=?"
+        )
+        .bind(id)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap(),
+        (Some(1), None)
+    );
+    desktop_server.abort();
+    server.abort();
 }

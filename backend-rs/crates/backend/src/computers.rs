@@ -1,14 +1,20 @@
 //! Narrow Supervisor client and per-invocation authorization. Never runs Docker
 //! or falls back to a local process. See docs/guide/computers.md.
 pub(crate) mod artifacts;
+pub mod idle;
 mod publication;
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use hmac::{Hmac, Mac};
 use reqwest::{Method, Url};
 use serde_json::{json, Value};
 use sha2::Sha256;
 use sqlx::SqlitePool;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::api::error::ApiError;
 
@@ -17,6 +23,9 @@ pub struct SupervisorClient {
     client: reqwest::Client,
     endpoint: Url,
     token: String,
+    idle_seconds: u64,
+    lifecycle_locks: Arc<Mutex<HashMap<String, Weak<Mutex<()>>>>>,
+    active_uses: Arc<std::sync::Mutex<HashMap<String, Weak<()>>>>,
 }
 
 impl SupervisorClient {
@@ -40,6 +49,18 @@ impl SupervisorClient {
         bytes.is_ok_and(|bytes| self.proof(id, generation).verify_slice(&bytes).is_ok())
     }
     pub fn new(endpoint: &str, token: String) -> anyhow::Result<Self> {
+        Self::with_idle_seconds(endpoint, token, 0)
+    }
+
+    pub fn with_idle_seconds(
+        endpoint: &str,
+        token: String,
+        idle_seconds: u64,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            idle_seconds <= i64::MAX as u64 / 1000,
+            "computer idle threshold is too large"
+        );
         let endpoint = Url::parse(endpoint)?;
         anyhow::ensure!(
             matches!(endpoint.scheme(), "http" | "https")
@@ -55,6 +76,9 @@ impl SupervisorClient {
             "invalid supervisor credential"
         );
         Ok(Self {
+            idle_seconds,
+            lifecycle_locks: Arc::new(Mutex::new(HashMap::new())),
+            active_uses: Arc::new(std::sync::Mutex::new(HashMap::new())),
             endpoint,
             token,
             client: reqwest::Client::builder()
@@ -66,15 +90,34 @@ impl SupervisorClient {
     }
 
     pub fn from_env() -> anyhow::Result<Option<Arc<Self>>> {
+        let idle_raw = match std::env::var("QUNICA_COMPUTER_IDLE_SECONDS") {
+            Ok(value) => Some(value),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(error) => return Err(error.into()),
+        };
+        let idle_seconds = idle::parse_seconds(idle_raw.as_deref())?;
         let Ok(endpoint) = std::env::var("QUNICA_SUPERVISOR_URL") else {
             return Ok(None);
         };
         let file = std::env::var("QUNICA_SUPERVISOR_TOKEN_FILE")?;
         let token = std::fs::read_to_string(file)?;
-        Ok(Some(Arc::new(Self::new(
+        Ok(Some(Arc::new(Self::with_idle_seconds(
             &endpoint,
             token.trim().to_string(),
+            idle_seconds,
         )?)))
+    }
+
+    pub(crate) async fn lifecycle_lock(&self, id: &str) -> OwnedMutexGuard<()> {
+        let mut locks = self.lifecycle_locks.lock().await;
+        locks.retain(|_, value| value.strong_count() > 0);
+        let lock = locks.get(id).and_then(Weak::upgrade).unwrap_or_else(|| {
+            let lock = Arc::new(Mutex::new(()));
+            locks.insert(id.to_string(), Arc::downgrade(&lock));
+            lock
+        });
+        drop(locks);
+        lock.lock_owned().await
     }
 
     pub async fn request(
@@ -195,18 +238,52 @@ impl ComputerExecution {
             valid,
             "Computer binding is unavailable or belongs to another scope"
         );
-        let value = client
+        let lifecycle = client.lifecycle_lock(&id).await;
+        let mut value = client
             .request(Method::GET, &format!("/v1/computers/{id}"), None)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e.message_text()))?;
         anyhow::ensure!(
-            value["status"] == "running",
-            "Computer is not running; explicitly inspect and start it before continuing"
-        );
-        anyhow::ensure!(
             value["spec"]["id"] == id && value["spec"]["owner_id"] == owner,
             "Computer identity does not match its binding"
         );
+        let binding_kind = value["spec"]["binding"]["kind"].as_str().unwrap_or("");
+        let binding_id = value["spec"]["binding"]["id"].as_str().unwrap_or("");
+        anyhow::ensure!(
+            (binding_kind == "team" && binding_id == group)
+                || (binding_kind == "private" && binding_id == agent),
+            "Supervisor scope does not match the execution binding"
+        );
+        // Note: waking requires a confirmed stop; preserve existing admission
+        // when idle management is disabled. Supervisor uncertainty needs an
+        // explicit stop; acknowledging a turn only clears its operation record.
+        if client.idle_enabled() {
+            let uncertain: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM computer_operations WHERE computer_id=? AND status='uncertain')")
+                .bind(&id).fetch_one(pool).await?;
+            anyhow::ensure!(!uncertain && value["status"] != "uncertain", "Computer execution is uncertain; explicitly stop the computer first, then confirm stopped operations with turn.acknowledge_stopped if present before continuing");
+        }
+        if value["status"] == "stopped" && client.idle_seconds > 0 {
+            let running: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM computer_operations WHERE computer_id=? AND status='running')")
+                .bind(&id).fetch_one(pool).await?;
+            anyhow::ensure!(!running, "Computer has an unconfirmed running operation; inspect and confirm stopped before waking");
+            let generation = value["generation"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("Computer generation missing"))?;
+            value = client.request(Method::POST, &format!("/v1/computers/{id}/actions"), Some(&json!({"expected_generation":generation,"action":"start"})))
+                .await.map_err(|e| anyhow::anyhow!("Computer automatic wake failed ({}); explicitly stop the computer first, then confirm stopped operations with turn.acknowledge_stopped if present; no retry was attempted",e.code()))?;
+            sqlx::query("UPDATE computers SET revision=revision+1 WHERE id=?")
+                .bind(&id)
+                .execute(pool)
+                .await?;
+        }
+        if client.idle_enabled() {
+            anyhow::ensure!(value["status"] == "running", "Computer is not running (status {}); inspect it before continuing; for uncertain execution, explicitly stop the computer first, then confirm stopped operations with turn.acknowledge_stopped if present",value["status"]);
+        } else {
+            anyhow::ensure!(
+                value["status"] == "running",
+                "Computer is not running; explicitly inspect and start it before continuing"
+            );
+        }
         let generation = value["generation"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Computer generation missing"))?
@@ -215,13 +292,6 @@ impl ComputerExecution {
             .request(Method::GET, "/v1/health", None)
             .await
             .map_err(|_| anyhow::anyhow!("Computer capabilities unavailable"))?;
-        let binding_kind = value["spec"]["binding"]["kind"].as_str().unwrap_or("");
-        let binding_id = value["spec"]["binding"]["id"].as_str().unwrap_or("");
-        anyhow::ensure!(
-            (binding_kind == "team" && binding_id == group)
-                || (binding_kind == "private" && binding_id == agent),
-            "Supervisor scope does not match the execution binding"
-        );
         // Note: independent task threads can run in parallel, and a private
         // Agent can appear in different groups. The computer needs its own lease.
         let mut tx = crate::db::begin_write(pool).await?;
@@ -234,6 +304,10 @@ impl ComputerExecution {
         sqlx::query("INSERT INTO computer_run_bindings(turn_id,agent_id,computer_id,generation) VALUES(?,?,?,?) ON CONFLICT DO NOTHING")
             .bind(turn).bind(agent).bind(&id).bind(&generation).execute(&mut *tx).await?;
         tx.commit().await?;
+        if client.idle_enabled() {
+            idle::record_activity(pool, &id, &generation).await?;
+        }
+        drop(lifecycle);
         let mut execution = Self {
             id,
             generation,
@@ -350,6 +424,7 @@ impl ComputerExecution {
     }
 
     async fn request_owned(&self, action: &str, body: Value) -> Result<Value, ApiError> {
+        let lifecycle = self.client.lifecycle_lock(&self.id).await;
         let mut tx = crate::db::begin_write(&self.pool)
             .await
             .map_err(|_| ApiError::internal("computer authorization unavailable"))?;
@@ -366,6 +441,7 @@ impl ComputerExecution {
         tx.commit()
             .await
             .map_err(|_| ApiError::internal("computer operation storage unavailable"))?;
+        drop(lifecycle);
         let result = self
             .client
             .request(

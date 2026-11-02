@@ -41,7 +41,7 @@ Router 是群组调度方式的第三种（API 中 `scheduler_mode = "router"`�
 - 固定应答者时跳过 `select_agents` 与 `automatic` 主持循环。
 - 回复里的文本 `@成员` 只作显示，不安排该成员接着发言（`schedules_peer_mentions` 排除 Router 模式）。否则默认的网状群组会让被提到的成员在同一线程里发言，破坏「一个线程一个应答者」。
 
-Router 回合：有可派发成员（活跃、未静音、非自己）时获得 4 个 Router 工具和 Router 提示段；不提供 `AgentAsTool`，因为同步 `call` 会占住主对话。Worker 回合获得 Worker 提示段，不获得 Router 工具。
+Router 回合：有可派发成员（活跃、未静音、非自己）时获得 4 个 Router 工具和 Router 提示段；不提供 `AgentAsTool`，因为同步 `call` 会占住主对话。Worker 回合获得 Worker 提示段，不获得 Router 工具。群调度规则按席位生成：Router 只说明 `DispatchTask` 是它的委派工具，不再注入面向 `AgentAsTool` 的「顺序调度、不在后台运行」和「无委派工具」规则（两者并存时真实模型会自己干活）；Worker 和 Watchdog 只说明自己是本线程唯一应答者。
 
 ## 4. Router 工具（`runtime/router.rs`）
 
@@ -77,7 +77,7 @@ Router 看到的报告正文把 Worker 输出包在 `<task_result untrusted="tru
 ## 6. 前端
 
 - 群设置“回合方式”增加“路由分派”，选中后显示 Router 成员选择与“并发任务数”。
-- `task_report` 系统消息渲染为任务卡片：标题、执行者、状态、摘录、“打开任务”（`/groups/:id?thread=<task_id>`）。
+- `task_report` 系统消息渲染为任务卡片：标题、执行者、状态、摘录、“打开任务”（`/groups/:id?thread=<task_id>`）。报告回合由前端旁观其流，流运行挂在报告这条系统消息上；Router 的回复由该运行的时间线展示，渲染在报告卡片下方。
 - 任务选择器为派发任务标注“派发任务”；默认选中线程时跳过派发任务，落在主对话。
 - `DispatchTask` 调用沿用通用工具卡片展示。
 - 调度设置在 Router 模式下隐藏主持模型相关项（调用次数、超时、开关、提供商、模型），因为主持模型不会运行。保存时如果隐藏的主持模型配置已不可用，就关掉它，以免挡住保存。步骤数、跳数和失败、Token 预算仍然显示：Worker 用 `AgentAsTool` 调用其他成员时会消耗这些预算。

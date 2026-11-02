@@ -140,13 +140,24 @@ pub async fn action(
     let owner = current_user_id(&headers, &state).await?;
     let id = id.to_string();
     owned(&state, &owner, &id).await?;
-    let result = configured(&state)?
+    let client = configured(&state)?;
+    let _guard = client.lifecycle_lock(&id).await;
+    let result = client
         .request(
             Method::POST,
             &format!("/v1/computers/{id}/actions"),
             Some(&body),
         )
         .await;
+    if client.idle_enabled() {
+        if let Ok(value) = &result {
+            if let Some(generation) = value["generation"].as_str() {
+                crate::computers::idle::record_activity(state.db.pool(), &id, generation)
+                    .await
+                    .map_err(db)?;
+            }
+        }
+    }
     sqlx::query("UPDATE computers SET revision=revision+1 WHERE id=? AND owner_id=?")
         .bind(&id)
         .bind(&owner)

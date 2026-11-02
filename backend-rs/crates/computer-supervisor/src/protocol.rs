@@ -63,6 +63,8 @@ pub struct ActionRequest {
     pub confirm: Option<Uuid>,
     #[serde(default)]
     pub purge_home: bool,
+    #[serde(default)]
+    pub only_if_idle: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

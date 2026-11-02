@@ -384,9 +384,14 @@ export function MessageList({
         )}
         {messages.map((m, index) => {
           if (hiddenMessageIds.has(m.id)) return null
-          const runId = streamRunIdsByUserMessageId[m.id] ?? m.id
-          const run = m.sender_type === 'user' ? streamRuns[runId] : undefined
-          const turnId = m.sender_type === 'user' ? (run?.turn_id ?? m.turn_id) : null
+          // Note: a router-mode task report is a system row that starts its own
+          // turn. Its run hides the router's reply row, so the run's timeline
+          // must render under the report or the reply shows nowhere.
+          const linkedRunId = streamRunIdsByUserMessageId[m.id]
+          const run = linkedRunId
+            ? streamRuns[linkedRunId]
+            : m.sender_type === 'user' ? streamRuns[m.id] : undefined
+          const turnId = m.sender_type === 'user' || run ? (run?.turn_id ?? m.turn_id) : null
           const schedulerStatus = run?.scheduler_status ?? m.turn_summary?.status ?? null
           return (
             <div

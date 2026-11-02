@@ -32,6 +32,13 @@ fn hash(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 impl Controls {
+    pub async fn check_idle(&self, id: Uuid, generation: &str) -> Result<(), Error> {
+        let status = self.transition(id, generation, "status", None).await?;
+        match status["state"].as_str() {
+            Some("agent_controlled" | "released") => Ok(()),
+            _ => Err(Error::conflict("computer_control_held")),
+        }
+    }
     pub fn open(root: PathBuf) -> anyhow::Result<Self> {
         let mut values = HashMap::new();
         for entry in std::fs::read_dir(&root)? {

@@ -135,6 +135,23 @@ pub async fn build_state(config: &ServerConfig) -> anyhow::Result<AppState> {
         .await
         .context("failed to recover durable jobs")?;
     api::commands::launch(state.clone());
+    if let Some(client) = state
+        .computers
+        .clone()
+        .filter(|client| client.idle_enabled())
+    {
+        let pool = state.db.pool().clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                if let Err(error) = client.stop_idle(&pool).await {
+                    tracing::warn!(%error, "computer idle sweep skipped");
+                }
+            }
+        });
+    }
     // Note: the clock is server-side and injected here, never derived from a
     // connected client. Startup uses recovery semantics so downtime coalesces
     // missed runs instead of replaying every historical occurrence.

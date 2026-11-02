@@ -6,6 +6,7 @@ services:
       QUNICA_SUPERVISOR_URL: http://qunica-supervisor:9000
       QUNICA_SUPERVISOR_TOKEN_FILE: /run/secrets/computer-supervisor-token
       QUNICA_COMPUTER_PROXY_LISTEN: 0.0.0.0:8766
+      QUNICA_COMPUTER_IDLE_SECONDS: ${QUNICA_COMPUTER_IDLE_SECONDS:-0}
     secrets:
       - computer-supervisor-token
     networks:

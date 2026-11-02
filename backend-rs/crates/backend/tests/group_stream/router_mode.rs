@@ -419,9 +419,23 @@ async fn router_dispatches_a_task_and_summarises_its_report() {
         );
     }
     assert!(!router_tools.iter().any(|tool| tool == "AgentAsTool"));
-    assert!(router_requests[0].to_string().contains("Router role:"));
+    let router_request = router_requests[0].to_string();
+    assert!(router_request.contains("Router role:"));
+    // The router must not be told it cannot delegate next to DispatchTask.
+    for stale in [
+        "no delegation tool",
+        "never in the background",
+        "Only the group scheduler or the AgentAsTool tool",
+    ] {
+        assert!(
+            !router_request.contains(stale),
+            "router prompt has {stale:?}"
+        );
+    }
+    assert!(router_request.contains("DispatchTask is your delegation tool"));
     let worker_request = worker_requests[0].to_string();
     assert!(worker_request.contains("Dispatched task:"));
+    assert!(!worker_request.contains("never in the background"));
     assert!(worker_request.contains("Build the widget"));
     assert!(
         !worker_request.contains("please build the widget"),
