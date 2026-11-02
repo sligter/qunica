@@ -123,6 +123,11 @@ Grab the build for your platform from the [latest release](https://github.com/sl
 | Android 8+ | `android-arm64-release.apk` for phones, `android-x86_64-release.apk` for emulators |
 | Headless server | `qunica-server-*` archives for Windows, macOS, and Linux |
 
+macOS builds use ad-hoc application signing, without Apple Developer ID or
+notarization; first launch may require approval in Privacy & Security. See
+[macOS signing and release checks](specs/macos-signing.md) for the v0.1.8 signing
+limitation and the fix for subsequent builds.
+
 The Android app connects to an HTTPS server for chat, approvals, parallel tasks, computer desktops and scheduled tasks. It also supports desktop QR pairing over LAN or a self-hosted TCP relay, with Noise encryption on the paired connection. Artifacts save through the system file picker. The phone does not run a backend or any agent CLI. See the [Android connection guide](android/CONNECT.md).
 
 ## First run

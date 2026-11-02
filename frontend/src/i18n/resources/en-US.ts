@@ -373,6 +373,7 @@ export const enUS = {
         failed: 'The reply failed.',
         failedDetail: 'The reply failed: {{message}}',
       },
+      watchdog: { notified: 'Watchdog: {{title}}', stopped: 'Watchdog stopped {{title}}' },
     },
     direct: {
       pickerTitle: 'Start a chat',
@@ -442,6 +443,7 @@ export const enUS = {
     },
     attachments: { uploading: 'Uploading…', uploaded: 'Uploaded', failed: 'Upload failed', workspace: 'Workspace file', unknownType: 'Unknown type', retry: 'Retry upload', remove: 'Remove attachment', open: 'Open attachment', retryNamed: 'Retry upload {{name}}', removeNamed: 'Remove {{name}}', openNamed: 'Open {{name}}', previewNamed: 'Preview {{name}}' },
     taskReport: { label: 'Task report', untitled: 'Untitled task', open: 'Open task', truncated: 'Shortened; open the task for the full reply.', status: { completed: 'Done', failed: 'Failed', waiting_for_user: 'Needs your reply' }, waitingHint: 'Answer in the task itself; the router will not answer for you.' },
+    watchdogAlert: { label: 'Watchdog', action: { notified: 'Needs attention', stopped: 'Stopped' } },
     messages: {
       workspaceIsolated: 'Own folder', workspaceOwnFolder: 'Own folder mounted',
       loadOlder: 'Load older messages', loadingOlder: 'Loading older messages…', empty: 'Start the conversation.', emptyHint: 'Try sending @AgentName hello to start.', assistantEmpty: 'What should we work on?', assistantEmptyHint: 'I can inspect your setup and organize Agents or groups. When a change needs confirmation, you decide before it runs.', assistantSuggestions: { inspect: 'Check my current setup and tell me what is missing', createAgent: 'Help me create an Agent for code review', template: 'Turn an existing group into a reusable template' }, copied: 'Copied', copy: 'Copy', copyMessage: 'Copy message', share: 'Share message to group', delete: 'Delete message', deleteTitle: 'Delete this message?', deleteDescription: 'The message is removed from the conversation. This cannot be undone.', shareTitle: 'Share to group chat', shareDescription: 'Choose another group to receive this message.', shareCopyingAttachments_one: 'Copying 1 attachment to that group…', shareCopyingAttachments_other: 'Copying {{count}} attachments to that group…', copyAttachments: 'Attachments:', loadingGroups: 'Loading groups…', noOtherGroups: 'No other groups available.', shareFailed: 'Share failed', shareFailedDetail: 'Share failed: {{message}}', deleteFailed: 'Delete failed', deleteFailedDetail: 'Delete failed: {{message}}', jumpLatest: 'Jump to latest', you: 'You', user: 'User', agent: 'Agent', system: 'System', sending: 'Sending…', interrupted: 'interrupted', continue: 'Continue', resumeFailed: 'Resume failed: {{message}}', unknownTool: 'Unknown tool', copyCode: 'Copy code block', code: 'code', warnings: { noReply: 'No one replied.', noVisibleReply: 'No visible reply', waitingForInput: 'Waiting for your input', streamWarning: 'Stream warning', streamFailed: 'Stream failed', streamCancelled: 'Stream cancelled' }, context: { usageUnknown: 'Usage unknown', provider: 'Reported by provider', previousProvider: 'Previous provider + estimate', estimated: 'Estimated (tokenizer)', hostEstimate: 'Estimated by Qunica', sourceUnknown: 'Source unknown', sourceUnknownDetail: 'Source: {{value}}', title: 'Context {{usage}}', tokens: '{{count}} tokens', outputTotal: 'Output {{output}} · Total {{total}}', cacheHit: 'Cache hit {{rate}} · {{count}} cached tokens', updated: 'Updated {{time}}', providerBinding: 'Provider', modelBinding: 'Model', notRecorded: 'Not recorded' },
@@ -629,7 +631,7 @@ export const enUS = {
   groups: {
     tasks: {
       rename: 'Rename task', renameNamed: 'Rename “{{title}}”', renameDescription: 'Change the task title while keeping its messages and Git branch binding.', renameError: 'Failed to rename task: {{message}}',
-      deleteNamed: 'Delete “{{title}}”', deleteAllArchived: 'Delete all archived', dispatched: 'Dispatched', following: 'Following {{topics}}', deleteAllArchivedTitle: 'Delete {{count}} archived tasks?', deleteAllArchivedDescription: 'These archived tasks and their messages will be removed and cannot be restored. Git branches are kept; bound worktrees are removed. Active tasks are unaffected. If deletion fails, retry the remaining tasks.',
+      deleteNamed: 'Delete “{{title}}”', deleteAllArchived: 'Delete all archived', dispatched: 'Dispatched', watchdog: 'Watchdog', following: 'Following {{topics}}', deleteAllArchivedTitle: 'Delete {{count}} archived tasks?', deleteAllArchivedDescription: 'These archived tasks and their messages will be removed and cannot be restored. Git branches are kept; bound worktrees are removed. Active tasks are unaffected. If deletion fails, retry the remaining tasks.',
       switcher: 'Current task', none: 'No task yet', active: 'Active', archived: 'Archived', untitled: 'Untitled task', loading: 'Loading tasks…',
       title: 'Task title', createTitle: 'Start a new task', createDescription: 'Give this task its own title and context.', creating: 'Creating…', createError: 'Failed to create task: {{message}}',
       gitBranch: 'Git branch (optional)', gitBranchPlaceholder: 'Existing or new branch', gitBranchHint: 'Pick a local branch, or type a new name to branch from the shared workspace.', gitBranchesLoading: 'Loading available branches…', gitBranchesUnavailable: 'Git branches are unavailable. Leave this blank to use the shared workspace.',
@@ -1272,6 +1274,11 @@ export const enUS = {
       namePlaceholder: 'Morning project check',
       prompt: 'Prompt',
       promptPlaceholder: 'What should the group do when this runs?',
+      purpose: 'Runs',
+      purposePrompt: 'A prompt in a new thread',
+      purposeWatchdog: 'Watchdog: check task progress',
+      watchdogHint: 'Needs the group in router mode. The router reviews dispatched tasks with read-only tools in one watchdog thread, alerts you about stuck or failing ones, and can stop a task that cannot finish.',
+      watchdogPrompt: 'Check the running tasks. Alert me about any task that is stalled, failing, or waiting long for my reply.',
       trigger: 'Trigger',
       kind: 'Trigger type',
       once: 'One time',

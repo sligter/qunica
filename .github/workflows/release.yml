@@ -359,11 +359,8 @@ jobs:
             --output "${tools_dir}/AppRun-x86_64"
           chmod 0755 "${tools_dir}/AppRun-x86_64"
 
-      # UPDATER_LIMITATION:
-      # tauri-action is configured to upload latest.json and .sig updater assets.
-      # The current app does not include tauri-plugin-updater or plugins.updater
-      # in tauri.conf.json, so latest.json may not be emitted until that app
-      # configuration is added in a separate app-config change.
+      # Note: Updater signatures authenticate downloads; macOS bundle signing is
+      # configured separately in tauri.conf.json and checked after packaging.
       - name: Build desktop and upload to draft release
         if: ${{ needs.validate-release.outputs.publish == 'true' }}
         uses: tauri-apps/tauri-action@v1
@@ -427,6 +424,12 @@ jobs:
           uploadUpdaterJson: true
           uploadUpdaterSignatures: true
           updaterJsonPreferNsis: true
+
+      - name: Validate macOS application signatures after packaging
+        if: ${{ contains(matrix.target, 'apple-darwin') }}
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: node scripts/check-macos-bundle.mjs "frontend/src-tauri/target/${RELEASE_TARGET}/release/bundle"
 
       - name: Validate Linux AppImage metadata
         if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}

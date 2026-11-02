@@ -334,7 +334,7 @@ async fn accept_message(
         thread.to_string()
     // Router-dispatched tasks keep updating while they run; an untargeted
     // message still belongs to the conversation the user talks in.
-    }else if let Some(thread)=sqlx::query_scalar::<_,String>("SELECT id FROM threads WHERE group_id=? AND agent_id IS NULL AND status='active' ORDER BY origin_thread_id IS NOT NULL,updated_at DESC,created_at DESC,id DESC LIMIT 1").bind(group).fetch_optional(&mut *tx).await.map_err(db_error)?{thread}
+    }else if let Some(thread)=sqlx::query_scalar::<_,String>("SELECT id FROM threads WHERE group_id=? AND agent_id IS NULL AND status='active' AND watchdog_automation_id IS NULL ORDER BY origin_thread_id IS NOT NULL,updated_at DESC,created_at DESC,id DESC LIMIT 1").bind(group).fetch_optional(&mut *tx).await.map_err(db_error)?{thread}
     else{
         let id=Uuid::new_v4().to_string();
         let title:String=prepared.content.lines().next().unwrap_or("Task").chars().take(80).collect();

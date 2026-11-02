@@ -7,6 +7,17 @@ on:
     branches: [master]
 
 jobs:
+  macos-signing:
+    name: macOS bundle signature regression
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Test real app, archive and DMG signatures
+        run: node --test scripts/test-macos-bundle.mjs
+
   android:
     uses: ./.github/workflows/android.yml
 

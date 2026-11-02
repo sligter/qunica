@@ -43,6 +43,7 @@ function main() {
   checkWorkflowShape(workflowText);
   checkUpdaterState(workflowText, requireUpdater);
   checkMacOsIcon();
+  checkMacOsSigning(workflowText);
 
   if (failures.length > 0) {
     console.error("Release workflow validation failed:");
@@ -67,6 +68,20 @@ function checkMacOsIcon() {
     const iconPath = path.join(path.dirname(TAURI_CONFIG), "icons/icon.icns");
     expect(fs.existsSync(iconPath), "frontend/src-tauri/icons/icon.icns must exist for macOS desktop bundles");
   }
+}
+
+function checkMacOsSigning(text) {
+  const config = JSON.parse(readText(TAURI_CONFIG));
+  // Note: An updater .sig or linker-only signature cannot replace the resource seal.
+  expect(config.bundle?.macOS?.signingIdentity === "-", "macOS bundles must explicitly use ad-hoc signing until Developer ID signing is configured");
+  const desktopJob = jobBlock(text, "desktop");
+  expect(desktopJob.includes("name: Validate macOS application signatures after packaging"), "desktop releases must verify packaged macOS application signatures");
+  expect(desktopJob.includes("if: ${{ contains(matrix.target, 'apple-darwin') }}"), "macOS signature checks must run for both Apple targets");
+  expect(desktopJob.includes('node scripts/check-macos-bundle.mjs "frontend/src-tauri/target/${RELEASE_TARGET}/release/bundle"'), "macOS signature checks must inspect the target's actual release bundles");
+  expect(desktopJob.indexOf("name: Validate macOS application signatures after packaging") > desktopJob.indexOf("name: Build desktop only"), "macOS signature checks must follow both publishing and dry-run builds");
+  const ci = readText(".github/workflows/ci.yml");
+  const signingJob = jobBlock(ci, "macos-signing");
+  expect(signingJob.includes("runs-on: macos-latest") && signingJob.includes("node --test scripts/test-macos-bundle.mjs"), "CI must exercise real macOS signature and tampering checks");
 }
 
 function checkWorkflowShape(text) {

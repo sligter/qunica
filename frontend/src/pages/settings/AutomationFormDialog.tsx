@@ -39,6 +39,7 @@ import { ApiError } from '@/lib/api-v2/client'
 import { cn } from '@/lib/utils'
 import type {
   AutomationConfigInput,
+  AutomationKind,
   AutomationMissedPolicy,
   AutomationRead,
   AutomationTrigger,
@@ -61,6 +62,7 @@ type DraftErrorKey =
 interface Draft {
   groupId: string
   name: string
+  purpose: AutomationKind
   prompt: string
   kind: TriggerKind
   cron: string
@@ -88,6 +90,7 @@ function emptyDraft(groupId: string): Draft {
   return {
     groupId,
     name: '',
+    purpose: 'prompt',
     prompt: '',
     kind: 'cron',
     cron: '0 9 * * *',
@@ -107,6 +110,7 @@ function draftFrom(automation: AutomationRead): Draft {
   return {
     groupId: automation.group_id,
     name: automation.name,
+    purpose: automation.kind ?? 'prompt',
     prompt: automation.prompt,
     kind: trigger.kind,
     cron: trigger.kind === 'cron' ? trigger.expression : '0 9 * * *',
@@ -177,6 +181,20 @@ export function AutomationFormDialog({
       }
       return next
     })
+  }
+
+  // A watchdog runs only on a schedule, so switching to it leaves the event
+  // triggers and suggests a check every 15 minutes.
+  const changePurpose = (purpose: AutomationKind) => {
+    const patch: Partial<Draft> = { purpose }
+    if (purpose === 'watchdog') {
+      if (draft.kind !== 'cron' && draft.kind !== 'once') {
+        patch.kind = 'cron'
+        patch.cron = '*/15 * * * *'
+      }
+      if (!draft.prompt.trim()) patch.prompt = t('fields.watchdogPrompt')
+    }
+    change(patch)
   }
 
   const kind = draft.kind
@@ -285,6 +303,7 @@ export function AutomationFormDialog({
     const config: AutomationConfigInput = {
       group_id: draft.groupId,
       name: draft.name.trim(),
+      kind: draft.purpose,
       prompt: draft.prompt.trim(),
       trigger,
       timezone: draft.timezone.trim() || browserTimezone(),
@@ -367,6 +386,28 @@ export function AutomationFormDialog({
             </FormField>
 
             <FormField
+              name="automation-purpose"
+              label={t('fields.purpose')}
+              description={draft.purpose === 'watchdog' ? t('fields.watchdogHint') : undefined}
+              className="sm:col-span-2"
+            >
+              {(props) => (
+                <Select
+                  value={draft.purpose}
+                  onValueChange={(purpose) => changePurpose(purpose as AutomationKind)}
+                >
+                  <SelectTrigger {...props}>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="prompt">{t('fields.purposePrompt')}</SelectItem>
+                    <SelectItem value="watchdog">{t('fields.purposeWatchdog')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+            </FormField>
+
+            <FormField
               name="automation-prompt"
               label={t('fields.prompt')}
               required
@@ -397,8 +438,12 @@ export function AutomationFormDialog({
                   <SelectContent>
                     <SelectItem value="cron">{t('fields.cron')}</SelectItem>
                     <SelectItem value="once">{t('fields.once')}</SelectItem>
-                    <SelectItem value="webhook">{t('fields.webhook')}</SelectItem>
-                    <SelectItem value="github">{t('fields.github')}</SelectItem>
+                    {draft.purpose === 'watchdog' ? null : (
+                      <>
+                        <SelectItem value="webhook">{t('fields.webhook')}</SelectItem>
+                        <SelectItem value="github">{t('fields.github')}</SelectItem>
+                      </>
+                    )}
                   </SelectContent>
                 </Select>
               )}

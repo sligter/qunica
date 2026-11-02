@@ -102,6 +102,9 @@ export function MessageItemView({
   if (message.sender_type === 'system' && message.message_type === 'task_report') {
     return <TaskReportCards message={message} groupId={groupId} />
   }
+  if (message.sender_type === 'system' && message.message_type === 'watchdog_alert') {
+    return <WatchdogAlertCard message={message} groupId={groupId} />
+  }
   if (message.sender_type === 'system') {
     return (
       <div className="my-2 text-center text-xs text-muted-foreground">
@@ -305,6 +308,53 @@ function TaskReportCards({ message, groupId }: { message: Message; groupId: stri
           </Link>
         </div>
       ))}
+    </div>
+  )
+}
+
+/** A watchdog check's alert about a task, linking to the task thread. */
+function WatchdogAlertCard({ message, groupId }: { message: Message; groupId: string }) {
+  const { t } = useTranslation('chat')
+  const alert = message.watchdog_alert
+  if (!alert) {
+    // A live echo may arrive before the structured alert is refetched.
+    return (
+      <div className="my-2 text-center text-xs text-muted-foreground">{message.content}</div>
+    )
+  }
+  return (
+    <div
+      id={`message-${message.id}`}
+      className="mx-auto my-2 w-full max-w-2xl px-3"
+      aria-label={t('watchdogAlert.label')}
+    >
+      <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 text-xs font-medium text-amber-700 dark:text-amber-300">
+            {t('watchdogAlert.label')}
+          </span>
+          <span className="truncate font-medium">
+            {alert.title || t('taskReport.untitled')}
+          </span>
+          <span
+            className={cn(
+              'ml-auto shrink-0 text-xs',
+              alert.action === 'stopped' ? 'text-destructive' : 'text-muted-foreground',
+            )}
+          >
+            {t(`watchdogAlert.action.${alert.action}`)}
+          </span>
+        </div>
+        <p className="mt-1 whitespace-pre-wrap break-words text-xs text-muted-foreground">
+          {alert.message}
+        </p>
+        <Link
+          to={`/groups/${groupId}?thread=${encodeURIComponent(alert.task_id)}`}
+          className="mt-1 inline-block text-xs text-primary underline-offset-2 hover:underline"
+        >
+          {t('taskReport.open')}
+        </Link>
+      </div>
     </div>
   )
 }

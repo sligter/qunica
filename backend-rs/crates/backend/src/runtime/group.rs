@@ -1036,8 +1036,18 @@ async fn run_scheduled_turn(
         Ok(candidates) => candidates,
         Err(error) => return ctx.fail(&error.to_string()).await,
     };
-    let pinned = match Box::pin(thread_responder(&services.pool, &ctx.thread_id, group)).await {
-        Ok((pinned, _)) => pinned,
+    // Note: only the router is held to the watchdog's read-only tools, so
+    // without one no other member may answer a check.
+    let responder = Box::pin(thread_responder(&services.pool, &ctx.thread_id, group))
+        .await
+        .and_then(|(pinned, seat)| match (pinned, seat) {
+            (None, RouterSeat::Watchdog) => Err(anyhow::anyhow!(
+                "A watchdog check needs the group in router mode."
+            )),
+            (pinned, _) => Ok(pinned),
+        });
+    let pinned = match responder {
+        Ok(pinned) => pinned,
         Err(error) => return ctx.fail(&error.to_string()).await,
     };
     if let Some(agent_id) = &pinned {
@@ -7377,23 +7387,36 @@ enum RouterSeat {
     Router,
     /// Runs a task the router dispatched into this thread.
     Worker,
+    /// The router running a scheduled watchdog check, with read-only tools.
+    Watchdog,
 }
 
 /// Who must answer `thread_id`, if anyone: a dispatched task's worker, or in
-/// router mode the router for every other thread of the group.
+/// router mode the router for every other thread of the group. A watchdog
+/// thread is answered by the router alone, and by no one outside router mode.
 async fn thread_responder(
     pool: &SqlitePool,
     thread_id: &str,
     group: &GroupRuntimeConfig,
 ) -> anyhow::Result<(Option<String>, RouterSeat)> {
-    let assigned: Option<String> =
-        sqlx::query_scalar("SELECT assigned_agent_id FROM threads WHERE id = ?")
-            .bind(thread_id)
-            .fetch_optional(pool)
-            .await?
-            .flatten();
+    let row: Option<(Option<String>, bool)> = sqlx::query_as(
+        "SELECT assigned_agent_id, watchdog_automation_id IS NOT NULL FROM threads WHERE id = ?",
+    )
+    .bind(thread_id)
+    .fetch_optional(pool)
+    .await?;
+    let (assigned, watchdog) = row.unwrap_or((None, false));
     if let Some(agent_id) = assigned {
         return Ok((Some(agent_id), RouterSeat::Worker));
+    }
+    if watchdog {
+        return Ok((
+            group
+                .router_agent_id
+                .clone()
+                .filter(|_| group.conversation_kind == "group"),
+            RouterSeat::Watchdog,
+        ));
     }
     Ok(match &group.router_agent_id {
         Some(router) if group.conversation_kind == "group" => {
@@ -7431,8 +7454,9 @@ async fn load_router_workers(
         .collect())
 }
 
-/// The seat `agent_id` holds in `thread_id` and, for a router with someone to
-/// dispatch to, its task tools.
+/// The seat `agent_id` holds in `thread_id` and, for the router, its task tools:
+/// dispatch when it has someone to dispatch to, recall always, and only the
+/// watchdog's tools in a watchdog thread.
 async fn router_seat_tools(
     pool: &SqlitePool,
     services: &RuntimeServices,
@@ -7449,15 +7473,29 @@ async fn router_seat_tools(
         (Some(pinned), seat) if pinned == agent_id => seat,
         _ => RouterSeat::None,
     };
-    if seat != RouterSeat::Router {
-        return Ok((seat, None, Vec::new()));
-    }
-    let workers = load_router_workers(pool, group, agent_id).await?;
-    if workers.is_empty() {
-        return Ok((seat, None, Vec::new()));
-    }
-    let definitions = crate::runtime::router::tool_definitions(&workers);
+    let (mode, workers, definitions) = match seat {
+        RouterSeat::Router => {
+            let workers = load_router_workers(pool, group, agent_id).await?;
+            let definitions = if workers.is_empty() {
+                crate::runtime::recall::tool_definitions()
+            } else {
+                crate::runtime::router::tool_definitions(&workers)
+            };
+            (
+                crate::runtime::router::TaskToolMode::Router,
+                workers,
+                definitions,
+            )
+        }
+        RouterSeat::Watchdog => (
+            crate::runtime::router::TaskToolMode::Watchdog,
+            Vec::new(),
+            crate::runtime::router::watchdog_tool_definitions(),
+        ),
+        RouterSeat::None | RouterSeat::Worker => return Ok((seat, None, Vec::new())),
+    };
     let router = crate::runtime::router::RouterTools::new(crate::runtime::router::RouterBinding {
+        mode,
         pool: pool.clone(),
         write_lock: services.write_lock.clone(),
         active_turns: services.active_turns.clone(),
@@ -7941,23 +7979,45 @@ async fn build_invocation_context_inner(
         .await?
         .unwrap_or_default()
     };
-    let computer = crate::computers::ComputerExecution::resolve(
+    // Boxed: nested calls stack several invocation builds on one thread.
+    let (seat, router, router_tools) = Box::pin(router_seat_tools(
         pool,
-        services.computers.clone(),
-        &agent.owner_id,
-        &group.id,
-        &agent.agent_id,
+        services,
+        group,
+        &ctx.thread_id,
         &turn_id,
-    )
+        &agent.agent_id,
+    ))
     .await?;
+    // Note: a watchdog check only observes. It gets none of the agent's own
+    // tools, computer, skills, workspace or MCP servers, and the executor
+    // refuses anything but its task tools, so a tool it was not offered cannot
+    // run either.
+    let watchdog = seat == RouterSeat::Watchdog;
+    let enabled_tools = if watchdog { Vec::new() } else { enabled_tools };
+    let computer = if watchdog {
+        None
+    } else {
+        crate::computers::ComputerExecution::resolve(
+            pool,
+            services.computers.clone(),
+            &agent.owner_id,
+            &group.id,
+            &agent.agent_id,
+            &turn_id,
+        )
+        .await?
+    };
     // Note: host mounts, stdio MCP processes and skill paths cannot cross a
     // computer boundary. Remote tools use only the computer's own home.
-    let mounted_skills = if computer.is_some() {
+    let mounted_skills = if computer.is_some() || watchdog {
         Vec::new()
     } else {
         load_mounted_skills(pool, agent).await?
     };
-    let workspaces = if computer.is_some() {
+    let workspaces = if watchdog {
+        ResolvedWorkspaces::default()
+    } else if computer.is_some() {
         ResolvedWorkspaces {
             notes_root: if group.conversation_kind == "group" {
                 resolve_group_workspace_root(pool, group)
@@ -7972,7 +8032,7 @@ async fn build_invocation_context_inner(
     } else {
         resolve_workspaces(pool, agent, group, &ctx.thread_id).await?
     };
-    let mcp = if computer.is_some() {
+    let mcp = if computer.is_some() || watchdog {
         McpMount::default()
     } else {
         resolve_mcp_tools(services, agent).await
@@ -8094,17 +8154,8 @@ async fn build_invocation_context_inner(
     approvals.set_bypass_all(bypass_approvals(agent.tool_config_json.as_deref()));
     let executor = executor.with_approvals(approvals);
 
-    // Boxed: nested calls stack several invocation builds on one thread.
-    let (seat, router, router_tools) = Box::pin(router_seat_tools(
-        pool,
-        services,
-        group,
-        &ctx.thread_id,
-        &turn_id,
-        &agent.agent_id,
-    ))
-    .await?;
     let executor = match router {
+        Some(router) if watchdog => executor.with_router(router).with_task_tools_only(),
         Some(router) => executor.with_router(router),
         None => executor,
     };
@@ -8540,6 +8591,9 @@ async fn build_agent_system_prompt(
             sections.push(crate::runtime::router::ROUTER_PROMPT.to_string());
         }
         RouterSeat::Worker => sections.push(crate::runtime::router::WORKER_PROMPT.to_string()),
+        RouterSeat::Watchdog => {
+            sections.push(crate::runtime::watchdog::WATCHDOG_PROMPT.to_string())
+        }
         _ => {}
     }
     let acp_notes = agent.runtime_kind == "acp"

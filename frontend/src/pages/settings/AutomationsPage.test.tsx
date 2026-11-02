@@ -37,6 +37,7 @@ function automation(overrides: Partial<AutomationRead> = {}): AutomationRead {
     id: 'automation-1',
     group_id: 'group-1',
     name: 'Morning check',
+    kind: 'prompt',
     prompt: 'Summarize the repo',
     trigger: { kind: 'cron', expression: '0 9 * * *' },
     timezone: 'UTC',
@@ -245,6 +246,35 @@ describe('AutomationsPage', () => {
           method: 'PATCH',
           body: expect.objectContaining({
             trigger: { kind: 'github', events: ['push', 'pull_request'] },
+          }),
+        }),
+      ),
+    )
+  })
+
+  it('turns an automation into a watchdog that runs only on a schedule', async () => {
+    const user = userEvent.setup()
+    await renderPage([
+      automation({ trigger: { kind: 'github', events: ['push'] }, next_run_at: null }),
+    ])
+    await user.click(await screen.findByRole('button', { name: 'Edit' }))
+    await user.click(screen.getByRole('combobox', { name: 'Runs' }))
+    await user.click(await screen.findByRole('option', { name: 'Watchdog: check task progress' }))
+    expect(screen.getByText(/Needs the group in router mode/)).toBeVisible()
+    expect(screen.getByLabelText(/Cron expression/)).toHaveValue('*/15 * * * *')
+    await user.click(screen.getByRole('combobox', { name: 'Trigger type' }))
+    expect(screen.queryByRole('option', { name: 'Webhook' })).toBeNull()
+    expect(screen.queryByRole('option', { name: 'GitHub' })).toBeNull()
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Save changes' }))
+    await waitFor(() =>
+      expect(fetchJson).toHaveBeenCalledWith(
+        '/automations/automation-1',
+        expect.objectContaining({
+          method: 'PATCH',
+          body: expect.objectContaining({
+            kind: 'watchdog',
+            trigger: { kind: 'cron', expression: '*/15 * * * *' },
           }),
         }),
       ),

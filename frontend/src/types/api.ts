@@ -770,6 +770,8 @@ export interface GroupThread {
   assigned_agent_id?: string | null
   /** The thread whose router dispatched this task. */
   origin_thread_id?: string | null
+  /** The watchdog automation whose scheduled checks run in this thread. */
+  watchdog_automation_id?: string | null
   /** External topics (a pull request, a ticket) whose trigger events this thread receives. */
   topics?: string[]
   created_at: string
@@ -951,6 +953,14 @@ export interface TaskReport {
   truncated: boolean
 }
 
+/** A watchdog check's alert about one task, posted where the task was dispatched. */
+export interface WatchdogAlert {
+  task_id: string
+  title: string | null
+  action: 'notified' | 'stopped'
+  message: string
+}
+
 export interface Message {
   id: string
   /** Server-assigned order; absent only on a local optimistic/legacy message. */
@@ -975,6 +985,8 @@ export interface Message {
   todos?: TodoItem[] | null
   /** Router-mode task results a `task_report` system message carries. */
   task_reports?: TaskReport[] | null
+  /** The task a `watchdog_alert` system message is about. */
+  watchdog_alert?: WatchdogAlert | null
   turn_id: string | null
   dispatch_id: string | null
   reply_to_message_id: string | null
@@ -1315,10 +1327,14 @@ export interface AutomationPermission {
   bypass_approvals: boolean
 }
 
+/** `watchdog` runs a read-only check of a router group's tasks on a schedule. */
+export type AutomationKind = 'prompt' | 'watchdog'
+
 export interface AutomationRead {
   id: string
   group_id: string
   name: string
+  kind: AutomationKind
   prompt: string
   trigger: AutomationTrigger
   timezone: string
@@ -1343,6 +1359,7 @@ export interface AutomationList {
 export interface AutomationConfigInput {
   group_id: string
   name: string
+  kind: AutomationKind
   prompt: string
   trigger: AutomationTrigger
   timezone: string

@@ -123,6 +123,8 @@ Qunica 没有托管服务。除了你配置的模型请求，没有任何数据�
 | Android 8+ | 手机选 `android-arm64-release.apk`，模拟器选 `android-x86_64-release.apk` |
 | 无界面服务器 | `qunica-server-*` 压缩包，支持 Windows、macOS、Linux |
 
+macOS 构建采用 ad-hoc 应用签名，尚无 Apple Developer ID 和公证，首次打开可能需要在「隐私与安全」中允许。v0.1.8 的签名缺口与后续构建的修复见 [macOS 签名及发布检查](specs/macos-signing.md)。
+
 Android 端可直连 HTTPS 服务器并使用聊天、审批、独立任务并行、电脑桌面与定时任务，也可通过局域网扫码与桌面配对，外出时使用自建 TCP 中继。桌面配对链路使用 Noise 端到端加密；交付物通过系统文件选择器保存。手机不运行后端或 Agent CLI。详见 [Android 连接指南](android/CONNECT.md)。
 
 ## 首次使用

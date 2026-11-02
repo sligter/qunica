@@ -13,7 +13,8 @@ export interface AccountSnapshot {
   server_id: string
   cursor: string
   groups: { id: string; name: string; conversation_kind: string }[]
-  threads: { id: string; group_id: string; title: string; status: string }[]
+  /** `watchdog` marks a thread whose scheduled checks need no reply notification. */
+  threads: { id: string; group_id: string; title: string; status: string; watchdog?: boolean }[]
   active_jobs: AccountJob[]
   pending_approvals: { id: string; group_id: string; thread_id: string; tool_call_id: string; version: number; action_hash: string }[]
 }

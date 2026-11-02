@@ -51,7 +51,7 @@ export function GroupChatPage() {
   // Note: router-dispatched tasks are newer than the conversation that started
   // them, so the fallback skips them to land on the main thread.
   const selectedThread = threads.find((thread) => thread.id === selectedThreadId)
-    ?? threads.find((thread) => thread.status !== 'archived' && !thread.origin_thread_id)
+    ?? threads.find((thread) => thread.status !== 'archived' && !thread.origin_thread_id && !thread.watchdog_automation_id)
     ?? threads.find((thread) => thread.status !== 'archived')
     ?? threads[0]
   // A task report links here with `?thread=` to open that task.

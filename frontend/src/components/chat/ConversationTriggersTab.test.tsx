@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({ request: vi.fn(), items: [] as AutomationRead[
 vi.mock('@/lib/api-v2/client', async () => ({ ...await vi.importActual('@/lib/api-v2/client'), fetchJson: (...args: unknown[]) => mocks.request(...args) }))
 
 function task(overrides: Partial<AutomationRead> = {}): AutomationRead {
-  return { id: 'timer-1', group_id: 'group-1', name: 'Morning briefing', prompt: 'Summarize the repo', trigger: { kind: 'cron', expression: '0 9 * * *' }, timezone: 'Asia/Shanghai', missed_policy: 'coalesce_latest', budget: { max_agent_steps: 4, max_total_tokens: 32000, turn_timeout_seconds: 60 }, enabled: true, version: 3, next_run_at: 1_800_000_000, preview: [], hook_id: 'hook-1', hook_configured: false, latest: { occurrence_id: 'occ-1', job_id: 'job-1', status: 'succeeded', error: null }, permissions: [], created_at: '2026-10-19T00:00:00Z', updated_at: '2026-10-19T00:00:00Z', ...overrides }
+  return { id: 'timer-1', group_id: 'group-1', name: 'Morning briefing', kind: 'prompt', prompt: 'Summarize the repo', trigger: { kind: 'cron', expression: '0 9 * * *' }, timezone: 'Asia/Shanghai', missed_policy: 'coalesce_latest', budget: { max_agent_steps: 4, max_total_tokens: 32000, turn_timeout_seconds: 60 }, enabled: true, version: 3, next_run_at: 1_800_000_000, preview: [], hook_id: 'hook-1', hook_configured: false, latest: { occurrence_id: 'occ-1', job_id: 'job-1', status: 'succeeded', error: null }, permissions: [], created_at: '2026-10-19T00:00:00Z', updated_at: '2026-10-19T00:00:00Z', ...overrides }
 }
 beforeEach(async () => {
   await i18n.changeLanguage('en-US')

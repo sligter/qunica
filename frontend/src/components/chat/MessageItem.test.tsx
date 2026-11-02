@@ -338,4 +338,34 @@ describe('MessageItem', () => {
       '/groups/group-1?thread=task-2',
     ])
   })
+
+  it('renders a watchdog alert as a card that opens its task', () => {
+    render(
+      <MemoryRouter>
+        <MessageItem
+          message={message({
+            sender_type: 'system',
+            sender_id: null,
+            message_type: 'watchdog_alert',
+            content: 'Watchdog stopped “Build the widget”: It keeps failing.',
+            watchdog_alert: {
+              task_id: 'task-1',
+              title: 'Build the widget',
+              action: 'stopped',
+              message: 'It keeps failing.',
+            },
+          })}
+          groupId="group-1"
+        />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('Build the widget')).toBeVisible()
+    expect(screen.getByText('It keeps failing.')).toBeVisible()
+    expect(screen.getByText('Stopped')).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Open task' })).toHaveAttribute(
+      'href',
+      '/groups/group-1?thread=task-1',
+    )
+  })
 })

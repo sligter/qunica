@@ -4,8 +4,8 @@ import { useAccountSyncStore, type AccountSnapshot } from '@/stores/accountSyncS
 import { useConversationActivityStore, selectConversationStatus } from '@/stores/conversationActivityStore'
 import { useMessageStore } from '@/stores/messageStore'
 import { ApiError } from '@/lib/api-v2/client'
-const mock = vi.hoisted(() => ({ request: vi.fn(), subscribe: vi.fn(), localRuns: new Set<string>(), localContinuationThreads: new Set<string>(), controller: new AbortController(), origin: '', sse: vi.fn(), notify: vi.fn() }))
-vi.mock('@/lib/replyNotifications', () => ({ notifyReplyOutcome: mock.notify }))
+const mock = vi.hoisted(() => ({ request: vi.fn(), subscribe: vi.fn(), localRuns: new Set<string>(), localContinuationThreads: new Set<string>(), controller: new AbortController(), origin: '', sse: vi.fn(), notify: vi.fn(), alert: vi.fn() }))
+vi.mock('@/lib/replyNotifications', () => ({ notifyReplyOutcome: mock.notify, notifyWatchdogAlert: mock.alert }))
 vi.mock('./client', async original => ({ ...await original<typeof import('./client')>(), realtimeClient: () => mock }))
 vi.mock('@microsoft/fetch-event-source', () => ({ fetchEventSource: mock.sse }))
 import { startAccountSync } from './accountSync'
@@ -19,7 +19,7 @@ function snapshot(cursor = '10'): AccountSnapshot {
 beforeEach(() => {
   mock.request.mockReset().mockResolvedValue(snapshot()); mock.subscribe.mockReset().mockReturnValue(vi.fn()); mock.sse.mockReset().mockReturnValue(new Promise(() => undefined))
   mock.localRuns.clear(); mock.localContinuationThreads.clear(); mock.controller = new AbortController(); mock.origin = ''
-  mock.notify.mockReset()
+  mock.notify.mockReset(); mock.alert.mockReset()
   useAccountSyncStore.setState(useAccountSyncStore.getInitialState(), true)
   useConversationActivityStore.setState(useConversationActivityStore.getInitialState(), true)
   useMessageStore.setState(useMessageStore.getInitialState(), true)
@@ -73,6 +73,21 @@ it('announces a fast remote job once even when it was absent from the snapshot',
   apply(event); apply(event)
   expect(mock.notify).toHaveBeenCalledOnce()
   expect(useConversationActivityStore.getState().runs).toEqual({})
+})
+
+it('stays quiet when a new watchdog check finishes and notifies its alerts instead', async () => {
+  mock.request.mockResolvedValue({ ...snapshot(), active_jobs: [] })
+  cleanup = startAccountSync('token', new QueryClient())
+  await vi.waitFor(() => expect(mock.subscribe).toHaveBeenCalled())
+  const apply = mock.subscribe.mock.calls[0][2]
+  // The check's thread is newer than the snapshot; the event itself says it is a watchdog.
+  apply({ type: 'event', cursor: '11', event_id: 'check', kind: 'job.changed', resource_id: 'check-job',
+    group_id: 'group', thread_id: 'check-thread', payload: { status: 'succeeded', stream_id: 'check-stream', watchdog: true } })
+  expect(mock.notify).not.toHaveBeenCalled()
+  apply({ type: 'event', cursor: '12', event_id: 'alert', kind: 'watchdog.alert', resource_id: 'message',
+    group_id: 'group', thread_id: 'thread', payload: { task_id: 'task', title: 'Build it', action: 'stopped', message: 'It keeps failing.' } })
+  expect(mock.alert).toHaveBeenCalledWith({ conversation_id: 'group', thread_id: 'thread' },
+    { task_id: 'task', title: 'Build it', action: 'stopped', message: 'It keeps failing.' })
 })
 
 it('uses account SSE for the saved Noise pairing with the same applied cursor', async () => {

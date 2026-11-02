@@ -190,6 +190,9 @@ pub struct ToolExecutor {
     decision: Option<DecisionGate>,
     /// Present only for the router of a router-mode conversation.
     router: Option<Arc<crate::runtime::router::RouterTools>>,
+    /// Run nothing but the router binding's own tools: a watchdog check must
+    /// stay read-only even if the model names a tool it was not offered.
+    task_tools_only: bool,
 }
 
 // `McpManager` holds live connections and so cannot derive `Debug`; the rest of
@@ -258,6 +261,7 @@ impl ToolExecutor {
             shell: process_shell(),
             decision: None,
             router: None,
+            task_tools_only: false,
         })
     }
 
@@ -282,6 +286,7 @@ impl ToolExecutor {
             shell: process_shell(),
             decision: None,
             router: None,
+            task_tools_only: false,
         }
     }
 
@@ -364,6 +369,12 @@ impl ToolExecutor {
         self
     }
 
+    /// Refuse every tool the router binding does not answer.
+    pub(crate) fn with_task_tools_only(mut self) -> Self {
+        self.task_tools_only = true;
+        self
+    }
+
     /// Bind the web-search settings resolved for this agent invocation.
     pub(crate) fn with_web_search(mut self, config: Option<WebSearchConfig>) -> Self {
         self.web_search = config;
@@ -421,6 +432,17 @@ impl ToolExecutor {
     /// panics: unknown tools and rejected requests come back as
     /// [`ToolStatus::Failed`].
     pub async fn execute(&self, name: &str, args: Value) -> ToolResult {
+        if self.task_tools_only
+            && !self
+                .router
+                .as_ref()
+                .is_some_and(|router| router.allows(name))
+        {
+            return ToolResult {
+                status: ToolStatus::Failed,
+                output: format!("{name} is not available in this thread; it is read-only"),
+            };
+        }
         match self.dispatch(name, args).await {
             Ok(result) => result,
             Err(error) => failure(error),
@@ -627,7 +649,8 @@ impl ToolExecutor {
                     skill_name,
                 ))
             }
-            "DispatchTask" | "ListTasks" | "SendToTask" | "CancelTask" => {
+            "DispatchTask" | "ListTasks" | "SendToTask" | "CancelTask" | "ReadThread"
+            | "ReadTask" | "ReadEvent" | "ReviewTasks" | "NotifyUser" | "StopTask" => {
                 let Some(router) = self.router.as_ref() else {
                     return Ok(controlled::setup_required(
                         name,

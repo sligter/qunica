@@ -67,6 +67,25 @@ export function isReplyNotificationSuppressed(
   return focused && isConversationViewed(viewed, run)
 }
 
+/** A watchdog check's alert about a task, sent unless the user is watching its conversation. */
+export function notifyWatchdogAlert(
+  target: { conversation_id: string; thread_id: string | null },
+  alert: { title?: string | null; action?: string; message?: string },
+): void {
+  if (!readReplyNotificationsEnabled()) return
+  if (isReplyNotificationSuppressed(target)) return
+  const title = alert.title?.trim() || i18n.t('chat:taskReport.untitled')
+  const heading = i18n.t(
+    alert.action === 'stopped'
+      ? 'chat:notifications.watchdog.stopped'
+      : 'chat:notifications.watchdog.notified',
+    { title },
+  )
+  void showNotification(heading, alert.message ?? '').then((result) => {
+    if (!result.ok) console.warn('Watchdog notification was not delivered:', result.error)
+  })
+}
+
 export function notifyReplyOutcome(
   run: ConversationActivityRun,
   outcome: ReplyNotificationOutcome,

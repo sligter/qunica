@@ -10,7 +10,9 @@
 //! [`compaction`]/[`compaction_hook`] are its first consumer: keeping a thread
 //! inside the provider's context window, and recovering when it already is not.
 //!
-//! [`router`] holds the router scheduling mode's task tools and reports.
+//! [`router`] holds the router scheduling mode's task tools and reports;
+//! [`recall`] reads threads, tasks and events by id, and [`watchdog`] checks
+//! task progress on a schedule.
 
 pub mod agent_as_tool;
 pub mod approval;
@@ -22,10 +24,12 @@ pub(crate) mod engine_observation;
 pub mod group;
 pub mod group_scheduler;
 pub mod hooks;
+pub mod recall;
 pub(crate) mod rig_driver;
 pub mod router;
 pub mod sequence;
 pub mod tool_output;
+pub mod watchdog;
 pub mod workspace_scope;
 
 pub use group::{

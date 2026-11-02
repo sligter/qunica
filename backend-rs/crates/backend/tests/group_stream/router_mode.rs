@@ -1,4 +1,5 @@
 use super::*;
+use qunica_backend::{api::automations, runtime::recall};
 
 fn tool_names(request: &Value) -> Vec<String> {
     request["tools"]
@@ -31,15 +32,56 @@ fn dispatched_task(messages: &[Value]) -> String {
 
 /// The JSON result of the router's tool call `call_id`.
 fn tool_result(requests: &[Value], call_id: &str) -> Option<Value> {
-    requests
+    let messages: Vec<Value> = requests
         .iter()
         .flat_map(|request| request["messages"].as_array().cloned().unwrap_or_default())
+        .collect();
+    result_in(&messages, call_id)
+}
+
+fn result_in(messages: &[Value], call_id: &str) -> Option<Value> {
+    messages
+        .iter()
         .find(|message| message["role"] == "tool" && message["tool_call_id"] == call_id)
         .and_then(|message| {
             // Tool output opens with a `status: ...` line.
             let content = wire_text(&message["content"]);
             serde_json::from_str(content.split_once('\n')?.1).ok()
         })
+}
+
+/// A watchdog check: review, then alert twice and stop the first flagged
+/// task, then summarise.
+fn watchdog_reply(messages: &[Value]) -> String {
+    let results = messages
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .count();
+    match results {
+        0 => tool_body(vec![("call-review", "ReviewTasks", json!({}))]),
+        1 => {
+            let review = result_in(messages, "call-review").expect("the review result");
+            let task = review["tasks"][0]["task_id"].clone();
+            tool_body(vec![
+                (
+                    "call-notify",
+                    "NotifyUser",
+                    json!({"task_id": task, "message": "It failed."}),
+                ),
+                (
+                    "call-notify-again",
+                    "NotifyUser",
+                    json!({"task_id": task, "message": "Still failed."}),
+                ),
+                (
+                    "call-stop",
+                    "StopTask",
+                    json!({"task_id": task, "reason": "It keeps failing."}),
+                ),
+            ])
+        }
+        _ => text_body("Checked 1 task."),
+    }
 }
 
 /// Answers by request shape rather than arrival order, because router and
@@ -68,7 +110,12 @@ async fn router_fake_provider(first_router_reply: String) -> (String, Arc<Mutex<
                     .find(|message| message["role"] == "user")
                     .map(|message| message["content"].to_string())
                     .unwrap_or_default();
-                let body = if !is_router_request(&request) {
+                let body = if tool_names(&request)
+                    .iter()
+                    .any(|name| name == "ReviewTasks")
+                {
+                    watchdog_reply(&messages)
+                } else if !is_router_request(&request) {
                     text_body("worker result 42")
                 } else if last_is_tool {
                     text_body("Started the task.")
@@ -357,7 +404,15 @@ async fn router_dispatches_a_task_and_summarises_its_report() {
     assert_eq!(router_requests.len(), 3, "dispatch, acknowledge, summarise");
     assert_eq!(worker_requests.len(), 1);
     let router_tools = tool_names(router_requests[0]);
-    for name in ["DispatchTask", "ListTasks", "SendToTask", "CancelTask"] {
+    for name in [
+        "DispatchTask",
+        "ListTasks",
+        "SendToTask",
+        "CancelTask",
+        "ReadThread",
+        "ReadTask",
+        "ReadEvent",
+    ] {
         assert!(
             router_tools.iter().any(|tool| tool == name),
             "{router_tools:?}"
@@ -609,6 +664,76 @@ async fn a_dispatched_task_follows_its_topic_and_receives_later_events() {
         assert!(first_router.contains("topic ticket-9"), "{first_router}");
     }
 
+    // Recall walks conversation -> task -> event, each naming the next id.
+    let pool = scenario.state.db.pool();
+    let group = scenario.group.as_str();
+    let home_view = recall::read_thread(pool, group, &json!({"thread_id": home}))
+        .await
+        .unwrap();
+    assert_eq!(home_view["kind"], "conversation");
+    assert_eq!(home_view["tasks"][0]["task_id"], json!(task));
+    assert!(
+        home_view["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["task_ids"] == json!([task])),
+        "task reports name their task: {home_view}"
+    );
+    let first_event = home_view["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|m| m["event_ids"][0].as_str())
+        .expect("the event message names its event")
+        .to_string();
+    assert_eq!(home_view["events"][0]["event_id"], json!(first_event));
+    let task_view = recall::read_task(pool, group, &json!({"task_id": task}))
+        .await
+        .unwrap();
+    assert_eq!(task_view["kind"], "task");
+    assert_eq!(task_view["origin"]["thread_id"], json!(home));
+    assert_eq!(task_view["assistant"], "Coder");
+    assert_eq!(task_view["latest_reply"], "worker result 42");
+    assert_eq!(task_view["topics"], json!(["ticket-9"]));
+    let later_event = task_view["events"][0]["event_id"].as_str().unwrap();
+    let event = recall::read_event(pool, group, &json!({"event_id": later_event}))
+        .await
+        .unwrap();
+    assert_eq!(event["event_key"], "ev-2");
+    assert_eq!(event["topic"], "ticket-9");
+    assert_eq!(event["route"], "subscribers");
+    assert_eq!(event["delivered_to"][0]["thread_id"], json!(task));
+    assert_eq!(event["delivered_to"][0]["kind"], "task");
+    assert_eq!(event["payload"]["untrusted"], true);
+    assert!(
+        event["payload"]["data"]
+            .as_str()
+            .unwrap()
+            .contains("\"note\":\"ev-2\""),
+        "{event}"
+    );
+    let first = recall::read_event(pool, group, &json!({"event_id": first_event}))
+        .await
+        .unwrap();
+    assert_eq!(first["delivered_to"][0]["thread_id"], json!(home));
+    assert!(first["payload"]["data"].as_str().unwrap().contains("ev-1"));
+    // Reads are scoped to the caller's group, and a conversation is not a task.
+    let other = uuid::Uuid::new_v4().to_string();
+    assert!(
+        recall::read_thread(pool, &other, &json!({"thread_id": home}))
+            .await
+            .is_err()
+    );
+    assert!(
+        recall::read_event(pool, &other, &json!({"event_id": later_event}))
+            .await
+            .is_err()
+    );
+    assert!(recall::read_task(pool, group, &json!({"task_id": home}))
+        .await
+        .is_err());
+
     // Cancelling the task hands the topic back to the router.
     scenario.say(&home, "STOP the task").await;
     let cancelled = tokio::time::timeout(Duration::from_secs(15), async {
@@ -625,4 +750,229 @@ async fn a_dispatched_task_follows_its_topic_and_receives_later_events() {
     let third = scenario.post_event(&hook, "ev-3", "ticket-9").await;
     assert_eq!(third["route"], "home");
     assert_eq!(third["thread_id"], json!(home));
+}
+
+#[tokio::test]
+async fn a_watchdog_check_reviews_tasks_alerts_the_user_and_stops_one_read_only() {
+    let dispatch = tool_body(vec![(
+        "call-dispatch",
+        "DispatchTask",
+        json!({"assistant": "Coder", "title": "Build it", "instructions": "Build the widget"}),
+    )]);
+    let scenario = router_group("watchdog", dispatch, json!({})).await;
+    let main = seed_thread(&scenario.state, &scenario.group, "active").await;
+    scenario.say(&main, "build the widget").await;
+    scenario.wait_for_summary(&main).await;
+    let pool = scenario.state.db.pool();
+    let task: String = sqlx::query_scalar("SELECT id FROM threads WHERE origin_thread_id=?")
+        .bind(&main)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    // The task's run failed just now.
+    sqlx::query("UPDATE execution_jobs SET status='failed',updated_at=? WHERE thread_id=?")
+        .bind(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+        .bind(&task)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let create = |trigger: Value| {
+        authed_json(
+            "POST",
+            "/api/v2/automations",
+            &scenario.token,
+            json!({"group_id": scenario.group, "name": "Watchdog", "kind": "watchdog",
+                "prompt": "Check the tasks.", "trigger": trigger, "timezone": "UTC"}),
+        )
+    };
+    let (status, error) = send(&scenario.app, create(json!({"kind": "webhook"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    let (status, automation) = send(
+        &scenario.app,
+        create(json!({"kind": "cron", "expression": "*/10 * * * *"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{automation}");
+    assert_eq!(automation["kind"], "watchdog");
+    let automation = automation["id"].as_str().unwrap().to_string();
+
+    // Due on the minute boundary of a schedule that runs every minute.
+    let due = chrono::Utc::now().timestamp() / 60 * 60;
+    let now = chrono::DateTime::from_timestamp(due + 3, 0).unwrap();
+    sqlx::query("UPDATE automations SET next_run_at=?,trigger_json=? WHERE id=?")
+        .bind(due)
+        .bind(json!({"kind": "cron", "expression": "* * * * *"}).to_string())
+        .bind(&automation)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        automations::tick(&scenario.state, now, false)
+            .await
+            .unwrap(),
+        1
+    );
+    let check: String = sqlx::query_scalar("SELECT id FROM threads WHERE watchdog_automation_id=?")
+        .bind(&automation)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let done = scenario
+                .messages(&check)
+                .await
+                .iter()
+                .any(|m| m.3 == "Checked 1 task.");
+            if done {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the watchdog check finishes");
+    assert!(scenario
+        .messages(&check)
+        .await
+        .iter()
+        .any(|m| m.1.as_deref() == Some(scenario.router.as_str())));
+
+    let requests = scenario.requests.lock().await;
+    let checks: Vec<&Value> = requests
+        .iter()
+        .filter(|r| tool_names(r).iter().any(|name| name == "ReviewTasks"))
+        .collect();
+    assert_eq!(checks.len(), 3, "review, act, summarise");
+    let mut tools = tool_names(checks[0]);
+    tools.sort();
+    assert_eq!(
+        tools,
+        [
+            "NotifyUser",
+            "ReadEvent",
+            "ReadTask",
+            "ReadThread",
+            "ReviewTasks",
+            "StopTask"
+        ],
+        "a watchdog gets only its read-only tools"
+    );
+    assert!(checks[0].to_string().contains("Watchdog role:"));
+    let review = tool_result(&requests, "call-review").unwrap();
+    assert_eq!(review["tasks"][0]["task_id"], json!(task));
+    assert_eq!(review["tasks"][0]["signals"], json!(["failed"]));
+    let mut notified = [
+        tool_result(&requests, "call-notify").unwrap()["status"].clone(),
+        tool_result(&requests, "call-notify-again").unwrap()["status"].clone(),
+    ];
+    notified.sort_by_key(|status| status.to_string());
+    assert_eq!(
+        notified,
+        [json!("already_notified"), json!("notified")],
+        "one alert per task inside the cooldown"
+    );
+    assert_eq!(
+        tool_result(&requests, "call-stop").unwrap()["status"],
+        "idle"
+    );
+    drop(requests);
+
+    let alerts: Vec<(String, String, i64)> = sqlx::query_as(
+        "SELECT sender_type,content_json,context_admitted FROM messages \
+         WHERE thread_id=? AND message_type='watchdog_alert' ORDER BY seq",
+    )
+    .bind(&main)
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(alerts.len(), 2, "{alerts:?}");
+    let actions: Vec<Value> = alerts
+        .iter()
+        .map(|(sender, meta, admitted)| {
+            assert_eq!(sender, "system");
+            assert_eq!(*admitted, 0, "alerts stay out of model history");
+            let meta: Value = serde_json::from_str(meta).unwrap();
+            assert_eq!(meta["watchdog_alert"]["task_id"], json!(task));
+            meta["watchdog_alert"]["action"].clone()
+        })
+        .collect();
+    assert_eq!(actions, [json!("notified"), json!("stopped")]);
+    let events: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM account_events WHERE kind='watchdog.alert'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(events, 2);
+    let quiet: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM account_events WHERE kind='job.changed' AND thread_id=?          AND json_extract(payload_json,'$.watchdog')=1)",
+    )
+    .bind(&check)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(quiet, "job events mark the watchdog thread");
+    let (status, page) = send(
+        &scenario.app,
+        authed_empty(
+            "GET",
+            &format!(
+                "/api/v2/groups/{}/messages?thread_id={main}",
+                scenario.group
+            ),
+            &scenario.token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page.to_string().contains("\"watchdog_alert\":{"), "{page}");
+
+    // Without router mode the check has no seat.
+    let (status, error) = send(
+        &scenario.app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{}", scenario.group),
+            &scenario.token,
+            json!({"scheduler_mode": "bounded"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{error}");
+    let (status, error) = send(
+        &scenario.app,
+        create(json!({"kind": "cron", "expression": "0 * * * *"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+
+    // With every other thread archived, an untargeted message still opens a
+    // new conversation instead of landing in the watchdog thread.
+    sqlx::query("UPDATE threads SET status='archived' WHERE id IN (?,?)")
+        .bind(&main)
+        .bind(&task)
+        .execute(pool)
+        .await
+        .unwrap();
+    let (status, receipt) = send(
+        &scenario.app,
+        authed_json(
+            "POST",
+            "/api/v2/commands",
+            &scenario.token,
+            json!({"request_id": uuid::Uuid::new_v4().to_string(), "name": "message.send",
+                "target": {"conversation_id": scenario.group},
+                "payload": {"content": "untargeted hello"}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{receipt}");
+    let landed: String =
+        sqlx::query_scalar("SELECT thread_id FROM messages WHERE content='untargeted hello'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_ne!(landed, check);
+    assert_ne!(landed, main);
 }

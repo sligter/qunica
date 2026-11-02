@@ -14,7 +14,7 @@ Router 是群组调度方式的第三种（API 中 `scheduler_mode = "router"`�
 - 复用现有持久化执行核心：任务线程、`execution_jobs`、`group_turns`、审批、取消、重启恢复、线程级占用都不新造。
 - Worker 结果可靠回到 Router：回报与 job 终态在同一写事务提交，崩溃不丢、不重复。
 
-非目标（后续阶段）：事件过滤、投机执行、Watchdog、多渠道、计算/状态/环境分离。
+非目标（后续阶段）：事件过滤、投机执行、多渠道、计算/状态/环境分离。Watchdog 与链式召回见 [watchdog-recall.md](watchdog-recall.md)。
 
 ## 2. 配置与存储
 

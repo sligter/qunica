@@ -44,6 +44,8 @@ pub struct ThreadResponse {
     /// The worker a router dispatched this task to, if it is a dispatched task.
     assigned_agent_id: Option<String>,
     origin_thread_id: Option<String>,
+    /// The watchdog automation whose checks run in this thread, if any.
+    watchdog_automation_id: Option<String>,
     /// External topics whose trigger events this thread receives.
     topics: Vec<String>,
     goal: Option<String>,
@@ -84,6 +86,7 @@ struct ThreadAccessRow {
     updated_at: String,
     assigned_agent_id: Option<String>,
     origin_thread_id: Option<String>,
+    watchdog_automation_id: Option<String>,
     topics_json: Option<String>,
     group_owner_id: Option<String>,
     group_status: Option<String>,
@@ -126,6 +129,7 @@ impl From<ThreadAccessRow> for ThreadResponse {
             worktree_path: row.worktree_path,
             assigned_agent_id: row.assigned_agent_id,
             origin_thread_id: row.origin_thread_id,
+            watchdog_automation_id: row.watchdog_automation_id,
             topics: row
                 .topics_json
                 .as_deref()
@@ -169,7 +173,7 @@ pub async fn list_group(
     .await?;
 
     let rows: Vec<ThreadAccessRow> = sqlx::query_as(
-        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.worktree_path, t.status, t.created_at, t.updated_at, t.assigned_agent_id, t.origin_thread_id, \
+        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.worktree_path, t.status, t.created_at, t.updated_at, t.assigned_agent_id, t.origin_thread_id, t.watchdog_automation_id, \
                 (SELECT json_group_array(topic) FROM thread_topics WHERE thread_id = t.id) AS topics_json, \
                 g.owner_id AS group_owner_id, g.status AS group_status, \
                 g.conversation_kind AS conversation_kind \
@@ -665,7 +669,7 @@ async fn fetch_owned_thread(
     owner_id: &str,
 ) -> Result<ThreadAccessRow, ApiError> {
     let row: Option<ThreadAccessRow> = sqlx::query_as(
-        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.worktree_path, t.status, t.created_at, t.updated_at, t.assigned_agent_id, t.origin_thread_id, \
+        "SELECT t.id, t.group_id, t.agent_id, t.title, t.git_branch, t.worktree_path, t.status, t.created_at, t.updated_at, t.assigned_agent_id, t.origin_thread_id, t.watchdog_automation_id, \
                 (SELECT json_group_array(topic) FROM thread_topics WHERE thread_id = t.id) AS topics_json, \
                 g.owner_id AS group_owner_id, g.status AS group_status, \
                 g.conversation_kind AS conversation_kind \

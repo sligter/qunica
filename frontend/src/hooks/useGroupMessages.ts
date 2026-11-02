@@ -100,7 +100,7 @@ function preferredGroupThreadId(groupId: string, threads: GroupThread[]): string
     // Storage availability must not block intent prefetching.
   }
   return threads.find((thread) => thread.id === storedId)?.id
-    ?? threads.find((thread) => thread.status !== 'archived' && !thread.origin_thread_id)?.id
+    ?? threads.find((thread) => thread.status !== 'archived' && !thread.origin_thread_id && !thread.watchdog_automation_id)?.id
     ?? threads.find((thread) => thread.status !== 'archived')?.id
     ?? threads[0]?.id
 }

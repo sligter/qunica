@@ -120,6 +120,34 @@ events reach that worker without another router call; the worker's reports
 still return to the router. Cancelling the task stops it following the topic.
 Thread responses list each thread's `topics`.
 
+## Watchdog
+
+Set `"kind":"watchdog"` (the default is `"prompt"`) to check a router-mode
+group's dispatched tasks on a schedule. In the editor, choose **Runs →
+Watchdog**. A watchdog takes only `once` and `cron` triggers, and its group
+must be in [router mode](groups.md#scheduling-and-budgets); otherwise saving
+returns 400. If the group leaves router mode later, the next check fails and
+the automation is paused.
+
+Every check runs in the same watchdog thread, answered by the router with
+read-only tools and nothing else: no files, shell, computer, skills or MCP.
+
+- `ReviewTasks` lists unfinished tasks and those that failed in the last day,
+  with signals computed on the server: `stalled`, `not_started`,
+  `waiting_for_user`, `awaiting_approval`, `failed` and `repeated_failures`.
+  A run counts as stalled after `stall_minutes` (default 15) with no stream
+  activity.
+- `NotifyUser` posts a `watchdog_alert` message in the conversation that
+  dispatched the task and sends a desktop notification. Each task gets at most
+  one alert an hour.
+- `StopTask` cancels the task, stops it following its topics and posts a
+  `stopped` alert.
+- `ReadThread`, `ReadTask` and `ReadEvent` read the context behind a signal.
+
+Alerts are shown to you but stay out of the router's model history. The
+check's own reply does not trigger a "reply ready" notification. See
+[the design](../../../../../../specs/watchdog-recall.md).
+
 ## Queue and pause
 
 Independent task threads in one group run concurrently, whether they came from

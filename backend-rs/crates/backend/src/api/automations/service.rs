@@ -53,9 +53,29 @@ pub struct Config {
     #[serde(default = "yes")]
     pub enabled: bool,
     pub expected_version: Option<i64>,
+    #[serde(default)]
+    pub kind: Kind,
 }
 fn yes() -> bool {
     true
+}
+
+/// What a run does: carry out the prompt, or check the group's tasks.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    #[default]
+    Prompt,
+    /// See `specs/watchdog-recall.md`.
+    Watchdog,
+}
+impl Kind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Prompt => "prompt",
+            Self::Watchdog => "watchdog",
+        }
+    }
 }
 
 #[derive(Clone, sqlx::FromRow)]
@@ -76,8 +96,9 @@ struct Automation {
     hook_secret: Option<String>,
     created_at: String,
     updated_at: String,
+    kind: String,
 }
-const SELECT:&str="SELECT id,owner_id,group_id,name,prompt,trigger_json,timezone,missed_policy,budget_json,enabled,version,next_run_at,hook_id,hook_secret,created_at,updated_at FROM automations";
+const SELECT:&str="SELECT id,owner_id,group_id,name,prompt,trigger_json,timezone,missed_policy,budget_json,enabled,version,next_run_at,hook_id,hook_secret,created_at,updated_at,kind FROM automations";
 fn db_error(error: sqlx::Error) -> ApiError {
     tracing::error!(%error,"automation database operation failed");
     ApiError::internal("automation database operation failed")
@@ -110,6 +131,13 @@ fn next_at(config: &Config, now: DateTime<Utc>) -> Result<Option<i64>, ApiError>
     {
         return Err(ApiError::invalid_input("budget exceeds supported limits"));
     }
+    if config.kind == Kind::Watchdog
+        && !matches!(config.trigger, Trigger::Once { .. } | Trigger::Cron { .. })
+    {
+        return Err(ApiError::invalid_input(
+            "a watchdog runs on a schedule; use a once or cron trigger",
+        ));
+    }
     let next = Schedule::parse(&config.trigger, &config.timezone)?
         .next_after(now)?
         .map(|at| at.timestamp());
@@ -129,6 +157,25 @@ async fn ensure_group(
         .bind(group).bind(owner).fetch_one(&mut **tx).await.map_err(db_error)?;
     if !valid {
         return Err(ApiError::not_found("active group not found"));
+    }
+    Ok(())
+}
+/// A watchdog checks the tasks a router dispatched, so its group must have one.
+async fn ensure_watchdog_group(
+    tx: &mut Transaction<'_, Sqlite>,
+    group: &str,
+) -> Result<(), ApiError> {
+    let router: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM groups WHERE id=? AND router_agent_id IS NOT NULL)",
+    )
+    .bind(group)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(db_error)?;
+    if !router {
+        return Err(ApiError::invalid_input(
+            "a watchdog needs its group in router mode",
+        ));
     }
     Ok(())
 }
@@ -162,7 +209,7 @@ async fn view(state: &AppState, a: &Automation, now: DateTime<Utc>) -> Result<Va
         .bind(&a.group_id).bind(&a.owner_id).fetch_all(state.db.pool()).await.map_err(db_error)?;
     Ok(
         json!({"id":a.id,"group_id":a.group_id,"name":a.name,"prompt":a.prompt,"trigger":trigger,"timezone":a.timezone,
-        "missed_policy":a.missed_policy,"budget":decode::<Value>(&a.budget_json)?,"enabled":a.enabled,"version":a.version,
+        "missed_policy":a.missed_policy,"kind":a.kind,"budget":decode::<Value>(&a.budget_json)?,"enabled":a.enabled,"version":a.version,
         "next_run_at":a.next_run_at,"preview":preview,"hook_id":a.hook_id,"hook_configured":a.hook_secret.is_some(),
         "latest":latest.map(|(id,job,status,error)|json!({"occurrence_id":id,"job_id":job,"status":status,"error":error})),
         "permissions":permissions.into_iter().map(|(id,name,raw)| {let v=raw.and_then(|r|serde_json::from_str::<Value>(&r).ok());json!({"agent_id":id,"name":name,"bypass_approvals":v.as_ref().and_then(|v|v.get("bypass_approvals")).and_then(Value::as_bool).unwrap_or(false)})}).collect::<Vec<_>>(),
@@ -225,6 +272,9 @@ pub async fn create(
     let now = commands::now();
     let mut tx = state.db.begin_write().await.map_err(db_error)?;
     ensure_group(&mut tx, &owner, &config.group_id).await?;
+    if config.kind == Kind::Watchdog {
+        ensure_watchdog_group(&mut tx, &config.group_id).await?;
+    }
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM automations WHERE owner_id=?")
         .bind(&owner)
         .fetch_one(&mut *tx)
@@ -233,10 +283,10 @@ pub async fn create(
     if count >= 200 {
         return Err(queue_full());
     }
-    sqlx::query("INSERT INTO automations(id,owner_id,group_id,name,prompt,trigger_json,timezone,missed_policy,budget_json,enabled,next_run_at,hook_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    sqlx::query("INSERT INTO automations(id,owner_id,group_id,name,prompt,trigger_json,timezone,missed_policy,budget_json,enabled,next_run_at,hook_id,created_at,updated_at,kind) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
         .bind(&id).bind(&owner).bind(&config.group_id).bind(config.name.trim()).bind(config.prompt.trim())
         .bind(serde_json::to_string(&config.trigger).unwrap()).bind(&config.timezone).bind(serde_json::to_value(config.missed_policy).unwrap().as_str().unwrap())
-        .bind(serde_json::to_string(&config.budget).unwrap()).bind(config.enabled).bind(next).bind(Uuid::new_v4().to_string()).bind(&now).bind(&now)
+        .bind(serde_json::to_string(&config.budget).unwrap()).bind(config.enabled).bind(next).bind(Uuid::new_v4().to_string()).bind(&now).bind(&now).bind(config.kind.as_str())
         .execute(&mut *tx).await.map_err(db_error)?;
     tx.commit().await.map_err(db_error)?;
     Ok((
@@ -254,10 +304,13 @@ pub async fn update(
     let next = next_at(&config, Utc::now())?;
     let mut tx = state.db.begin_write().await.map_err(db_error)?;
     ensure_group(&mut tx, &owner, &config.group_id).await?;
-    let changed=sqlx::query("UPDATE automations SET group_id=?,name=?,prompt=?,trigger_json=?,timezone=?,missed_policy=?,budget_json=?,enabled=?,version=version+1,next_run_at=?,updated_at=? WHERE id=? AND owner_id=? AND version=?")
+    if config.kind == Kind::Watchdog {
+        ensure_watchdog_group(&mut tx, &config.group_id).await?;
+    }
+    let changed=sqlx::query("UPDATE automations SET group_id=?,name=?,prompt=?,trigger_json=?,timezone=?,missed_policy=?,budget_json=?,enabled=?,version=version+1,next_run_at=?,updated_at=?,kind=? WHERE id=? AND owner_id=? AND version=?")
         .bind(&config.group_id).bind(config.name.trim()).bind(config.prompt.trim()).bind(serde_json::to_string(&config.trigger).unwrap())
         .bind(&config.timezone).bind(serde_json::to_value(config.missed_policy).unwrap().as_str().unwrap()).bind(serde_json::to_string(&config.budget).unwrap())
-        .bind(config.enabled).bind(next).bind(commands::now()).bind(&id).bind(&owner).bind(config.expected_version)
+        .bind(config.enabled).bind(next).bind(commands::now()).bind(config.kind.as_str()).bind(&id).bind(&owner).bind(config.expected_version)
         .execute(&mut *tx).await.map_err(db_error)?.rows_affected();
     if changed != 1 {
         return Err(ApiError::conflict(
@@ -297,6 +350,7 @@ pub async fn toggle(
         budget: decode(&a.budget_json)?,
         enabled: body.enabled,
         expected_version: Some(body.expected_version),
+        kind: decode(&format!("\"{}\"", a.kind))?,
     };
     update(State(state), headers, Path(id), Json(config)).await
 }
@@ -438,6 +492,15 @@ async fn enqueue(
         return Err(ApiError::conflict("automation is paused"));
     }
     ensure_group(tx, &a.owner_id, &a.group_id).await?;
+    let watchdog = a.kind == Kind::Watchdog.as_str();
+    if watchdog {
+        if event.source != "timer" {
+            return Err(ApiError::invalid_input(
+                "a watchdog runs only on its schedule",
+            ));
+        }
+        ensure_watchdog_group(tx, &a.group_id).await?;
+    }
     let queued: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM execution_jobs WHERE owner_id=? AND status='queued'",
     )
@@ -478,6 +541,13 @@ async fn enqueue(
         now: &now,
     };
     let mut response = match (event.topic.as_deref(), block.as_deref()) {
+        _ if watchdog => {
+            let thread = watchdog_thread(tx, a, &now).await?;
+            let content = format!("Watchdog check at {now}.\n\n{}", a.prompt);
+            let response = accept(tx, a, &thread, content, None, &now).await?;
+            target.mark(tx, &response, Some(&a.id)).await?;
+            response
+        }
         (Some(topic), Some(block)) => {
             let entry = json!({"occurrence_id":occurrence,"event_id":event.key,"label":label});
             route_topic(tx, a, topic, block, &entry, &target).await?
@@ -494,6 +564,9 @@ async fn enqueue(
         }
     };
     response["occurrence_id"] = json!(occurrence);
+    if let Some(topic) = &event.topic {
+        response["topic"] = json!(topic);
+    }
     sqlx::query("INSERT INTO automation_occurrences(id,automation_id,automation_version,source,event_key,payload_hash,scheduled_at,job_id,response_json,created_at,digest_version) VALUES(?,?,?,?,?,?,?,?,?,?,2)")
         .bind(&occurrence).bind(&a.id).bind(a.version).bind(event.source).bind(event.key).bind(event.hash).bind(event.scheduled).bind(response["job_id"].as_str()).bind(response.to_string()).bind(&now)
         .execute(&mut **tx).await.map_err(db_error)?;
@@ -531,6 +604,40 @@ async fn new_thread(
     let thread = Uuid::new_v4().to_string();
     sqlx::query("INSERT INTO threads(id,group_id,agent_id,title,status,next_seq,created_at,updated_at) VALUES(?,?,NULL,?,'active',1,?,?)")
         .bind(&thread).bind(&a.group_id).bind(title).bind(now).bind(now).execute(&mut **tx).await.map_err(db_error)?;
+    Ok(thread)
+}
+
+/// The thread a watchdog's checks share, opened on its first run or after the
+/// previous one was archived or cleared.
+///
+/// Note: one thread keeps every check's findings in one place, and the timer
+/// path already cancels a check that has not started when the next one is due,
+/// so checks never pile up behind a slow one.
+async fn watchdog_thread(
+    tx: &mut Transaction<'_, Sqlite>,
+    a: &Automation,
+    now: &str,
+) -> Result<String, ApiError> {
+    let existing: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM threads WHERE watchdog_automation_id=? AND group_id=? \
+           AND status IN ('active','running','paused') ORDER BY created_at DESC,id DESC LIMIT 1",
+    )
+    .bind(&a.id)
+    .bind(&a.group_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(db_error)?;
+    if let Some(thread) = existing {
+        commands::reopen_paused_thread_in_tx(tx, &thread, now).await?;
+        return Ok(thread);
+    }
+    let thread = new_thread(tx, a, &a.name, now).await?;
+    sqlx::query("UPDATE threads SET watchdog_automation_id=? WHERE id=?")
+        .bind(&a.id)
+        .bind(&thread)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_error)?;
     Ok(thread)
 }
 

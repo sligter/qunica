@@ -29,6 +29,7 @@ export function GroupTaskSwitcher({
   const label = (thread: GroupThread) => [
     title(thread), thread.git_branch,
     thread.origin_thread_id ? t('tasks.dispatched') : null,
+    thread.watchdog_automation_id ? t('tasks.watchdog') : null,
     thread.origin_thread_id && thread.topics?.length ? t('tasks.following', { topics: thread.topics.join(', ') }) : null,
     thread.status === 'archived' ? t('tasks.archived') : null,
   ].filter(Boolean).join(' · ')

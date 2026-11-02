@@ -88,6 +88,9 @@ pub struct MessageResponse {
     /// Finished router tasks this system message reports.
     #[serde(skip_serializing_if = "Option::is_none")]
     task_reports: Option<Value>,
+    /// The task a watchdog check alerted the user about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    watchdog_alert: Option<Value>,
     turn_id: Option<String>,
     dispatch_id: Option<String>,
     reply_to_message_id: Option<String>,
@@ -198,6 +201,12 @@ impl From<MessageRow> for MessageResponse {
                 }
                 _ => None,
             });
+        let watchdog_alert = parsed
+            .as_ref()
+            .and_then(|value| match value.get("watchdog_alert") {
+                Some(Value::Object(_)) => value.get("watchdog_alert").cloned(),
+                _ => None,
+            });
         let attachments = parsed
             .as_ref()
             .and_then(|value| serde_json::from_value(value["attachments"].clone()).ok())
@@ -220,6 +229,7 @@ impl From<MessageRow> for MessageResponse {
             tool_calls,
             todos,
             task_reports,
+            watchdog_alert,
             turn_id: row.turn_id,
             dispatch_id: row.dispatch_id,
             reply_to_message_id: row.reply_to_message_id,
