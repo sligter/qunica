@@ -28,7 +28,12 @@ Router 是群组调度方式的第三种（API 中 `scheduler_mode = "router"`�
 校验（`api/groups.rs`）：
 
 - Router 模式必须给出 `router_agent_id`；切到其他模式时清空。
-- Router 必须是该群活跃成员，且运行时为 `llm_chat`（ACP Agent 无法使用 Router 工具）。创建群时须在 `initial_agents` 中。
+- Router 必须是该群活跃成员，且运行时为 `llm_chat`。创建群时须在 `initial_agents` 中。
+  - 理由：4 个 Router 工具由宿主的模型工具循环声明并执行，派发受理在同一写事务内结束 Router 回合。ACP Agent 在外部进程里跑自己的工具循环，宿主只能经本地 MCP 桥暴露工具，却无法在派发后结束外部回合，也无法保持会话复用与回报注入的一致，因此不桥接。
+  - 三处校验：创建群、修改群（换 Router 时）与修改 Agent（`api/agents.rs::update_inner`：把现役 Router 从 `llm_chat` 改成其他运行时返回 409）。只校验群侧时，改 Agent 运行时即可绕过。三处都在 `BEGIN IMMEDIATE` 写事务内读取对方状态，「群设 Router」与「Agent 换运行时」并发时只有一个生效。
+  - 成员列表的 `router_capable`（运行时为 `llm_chat`）供前端过滤 Router 下拉：不可选成员置灰并附说明。
+  - 历史数据不迁移：`router_agent_id` 已指向非 `llm_chat` 成员的群保持原样。清空它会把群静默改回 bounded，让所有成员重新开始应答，迁移又无法征得用户确认。这类 Router 仍是唯一应答者；改群其他字段或原样提交该 Router 照常保存（只在换 Router 时校验）。前端照常显示它并提示需重选，重选或换模式之前不能保存 Router 设置；一旦换掉就不能再选回。
+  - 运行时兜底：非 `llm_chat` 成员若仍落在 Router 席位，提示词不声称有 `DispatchTask`，改为「唯一应答者、无委派工具、自己完成」；没有可派发成员的 Router 同样如此。Watchdog 席位同理不注入 Watchdog 提示段。实际上 ACP Router 的巡检在启动外部进程前就会失败：巡检不挂任何工作区，而 ACP 必须有工作区，这也保证巡检不会带上 ACP 自己的写工具。
 - 从群中移除当前 Router 返回 409，需先换 Router 或换模式；删除该 Agent 本身时自动清空 `router_agent_id`。
 - 模板复制有效模式、`router_agent_id` 与 `max_router_tasks`。
 

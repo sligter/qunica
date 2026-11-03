@@ -133,6 +133,7 @@ function FieldError({ message }: { message: string | undefined }) {
     'provider',
     'model',
     'router',
+    'routerRuntime',
     'maxRouterTasks',
   ]
   return message ? (
@@ -168,6 +169,12 @@ export function GroupSchedulerSettingsSection({
   const routerOptions = agents.filter(
     (agent) => agent.status === 'active' || agent.agent_id === routerAgentId,
   )
+  // Older servers omit the flag; the server still rejects an unusable router.
+  const canRoute = (agent: GroupAgentRead) => agent.router_capable !== false
+  const selectedRouterCannotRoute = routerOptions.some(
+    (agent) => agent.agent_id === routerAgentId && !canRoute(agent),
+  )
+  const someMemberCannotRoute = routerOptions.some((agent) => !canRoute(agent))
   const models = useProviderModels(selectedProviderId ?? undefined)
   const activeProviders = useMemo(
     () => (providers.data ?? []).filter((provider) => provider.status === 'active'),
@@ -237,6 +244,12 @@ export function GroupSchedulerSettingsSection({
     setTopologyError(false)
 
     const routerMode = values.scheduler_mode === 'router'
+    // A router saved before the runtime check stays visible but must be
+    // replaced before router settings can be saved again.
+    if (routerMode && selectedRouterCannotRoute) {
+      form.setError('router_agent_id', { message: 'routerRuntime' })
+      return
+    }
     if (values.moderator_enabled && !routerMode && !selectedProviderIsActive) {
       form.setError('moderator_provider_id', {
         message: 'provider',
@@ -358,12 +371,27 @@ export function GroupSchedulerSettingsSection({
                   <SelectContent>
                     <SelectItem value={NO_SELECTION}>{t('scheduler.chooseRouter')}</SelectItem>
                     {routerOptions.map((agent) => (
-                      <SelectItem key={agent.agent_id} value={agent.agent_id}>
-                        {agent.display_name}
+                      <SelectItem
+                        key={agent.agent_id}
+                        value={agent.agent_id}
+                        disabled={!canRoute(agent)}
+                      >
+                        {canRoute(agent)
+                          ? agent.display_name
+                          : t('scheduler.routerUnsupportedOption', { name: agent.display_name })}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                {selectedRouterCannotRoute && !form.formState.errors.router_agent_id ? (
+                  <p className="text-xs text-destructive" role="alert">
+                    {t('scheduler.validation.routerRuntime')}
+                  </p>
+                ) : someMemberCannotRoute ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t('scheduler.routerRuntimeHint')}
+                  </p>
+                ) : null}
                 <FieldError message={form.formState.errors.router_agent_id?.message} />
               </div>
             </SettingsRow>

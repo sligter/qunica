@@ -523,6 +523,448 @@ async fn router_mode_is_stored_as_bounded_and_guards_its_router() {
 }
 
 #[tokio::test]
+async fn the_router_cannot_switch_to_an_acp_runtime() {
+    let scenario = router_group("acp-switch", text_body("unused"), json!({})).await;
+    let RouterGroup {
+        app,
+        token,
+        router,
+        worker,
+        ..
+    } = &scenario;
+    let to_acp = json!({"runtime_kind": "acp", "acp_runtime": {"command": "claude-acp"}});
+
+    let (status, error) = send(
+        app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/agents/{router}"),
+            token,
+            to_acp.clone(),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    let (status, body) = send(
+        app,
+        authed_json(
+            "PATCH",
+            &format!("/api/v2/agents/{router}"),
+            token,
+            json!({"name": "Lead renamed"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "other router edits still pass: {body}"
+    );
+    assert_eq!(body["runtime_kind"], "llm_chat");
+
+    // A member that is not the router may switch either way, and cannot be
+    // made the router while it is an ACP agent.
+    for body in [to_acp, json!({"runtime_kind": "llm_chat"})] {
+        let (status, updated) = send(
+            app,
+            authed_json(
+                "PATCH",
+                &format!("/api/v2/agents/{worker}"),
+                token,
+                body.clone(),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body} -> {updated}");
+        assert_eq!(updated["runtime_kind"], body["runtime_kind"]);
+        if body["runtime_kind"] == "acp" {
+            let (status, error) = send(
+                app,
+                authed_json(
+                    "PATCH",
+                    &format!("/api/v2/groups/{}", scenario.group),
+                    token,
+                    json!({"router_agent_id": worker}),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+        }
+    }
+}
+
+/// Choosing a router and switching that member to ACP each check the other
+/// inside their write transaction, so racing them leaves exactly one applied.
+#[tokio::test]
+async fn racing_a_router_choice_against_an_acp_switch_applies_only_one() {
+    let scenario = router_group("acp-race", text_body("unused"), json!({})).await;
+    let RouterGroup {
+        app,
+        state,
+        token,
+        group,
+        router,
+        worker,
+        ..
+    } = &scenario;
+    for round in 0..6 {
+        let choose = authed_json(
+            "PATCH",
+            &format!("/api/v2/groups/{group}"),
+            token,
+            json!({"router_agent_id": worker}),
+        );
+        let switch = authed_json(
+            "PATCH",
+            &format!("/api/v2/agents/{worker}"),
+            token,
+            json!({"runtime_kind": "acp", "acp_runtime": {"command": "claude-acp"}}),
+        );
+        let ((chose, chose_body), (switched, switch_body)) =
+            tokio::join!(send(app, choose), send(app, switch));
+        let applied = [chose, switched]
+            .iter()
+            .filter(|status| **status == StatusCode::OK)
+            .count();
+        assert_eq!(
+            applied, 1,
+            "round {round}: {chose} {chose_body} / {switched} {switch_body}"
+        );
+        let (routing, runtime): (Option<String>, String) = sqlx::query_as(
+            "SELECT g.router_agent_id, a.runtime_kind FROM groups g, agents a \
+             WHERE g.id=? AND a.id=?",
+        )
+        .bind(group)
+        .bind(worker)
+        .fetch_one(state.db.pool())
+        .await
+        .unwrap();
+        assert!(
+            !(routing.as_deref() == Some(worker.as_str()) && runtime == "acp"),
+            "round {round}: an ACP router was stored"
+        );
+
+        // Reset: the original router routes and the worker is a model agent.
+        sqlx::query("UPDATE groups SET router_agent_id=? WHERE id=?")
+            .bind(router)
+            .bind(group)
+            .execute(state.db.pool())
+            .await
+            .unwrap();
+        let (status, body) = send(
+            app,
+            authed_json(
+                "PATCH",
+                &format!("/api/v2/agents/{worker}"),
+                token,
+                json!({"runtime_kind": "llm_chat"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+}
+
+/// A fake ACP agent that saves its `session/prompt` request to `log`.
+#[cfg(windows)]
+fn write_recording_fake_acp_agent(
+    root: &std::path::Path,
+    log: &std::path::Path,
+) -> (String, Vec<String>) {
+    let script = root.join("recording-fake-acp.ps1");
+    std::fs::write(
+        &script,
+        format!(
+            r#"
+while (($line = [Console]::In.ReadLine()) -ne $null) {{
+  $request = $line | ConvertFrom-Json
+  if ($request.method -eq "initialize") {{
+    @{{ jsonrpc = "2.0"; id = $request.id; result = @{{}} }} | ConvertTo-Json -Compress
+  }} elseif ($request.method -eq "session/new") {{
+    @{{ jsonrpc = "2.0"; id = $request.id; result = @{{ sessionId = "s1" }} }} | ConvertTo-Json -Compress
+  }} elseif ($request.method -eq "session/prompt") {{
+    [System.IO.File]::WriteAllText('{}', $line)
+    @{{ jsonrpc = "2.0"; method = "session/update"; params = @{{ update = @{{ sessionUpdate = "agent_message_chunk"; content = @{{ type = "text"; text = "ACP hello" }} }} }} }} | ConvertTo-Json -Compress -Depth 8
+    @{{ jsonrpc = "2.0"; id = $request.id; result = @{{ stopReason = "end_turn" }} }} | ConvertTo-Json -Compress
+    break
+  }} else {{
+    @{{ jsonrpc = "2.0"; id = $request.id; result = @{{}} }} | ConvertTo-Json -Compress
+  }}
+}}
+"#,
+            log.display()
+        ),
+    )
+    .unwrap();
+    (
+        "powershell".to_string(),
+        vec![
+            "-NoProfile".to_string(),
+            "-ExecutionPolicy".to_string(),
+            "Bypass".to_string(),
+            "-File".to_string(),
+            script.to_string_lossy().to_string(),
+        ],
+    )
+}
+
+/// A fake ACP agent that saves its `session/prompt` request to `log`.
+#[cfg(not(windows))]
+fn write_recording_fake_acp_agent(
+    root: &std::path::Path,
+    log: &std::path::Path,
+) -> (String, Vec<String>) {
+    let script = root.join("recording-fake-acp.sh");
+    std::fs::write(
+        &script,
+        format!(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{}}}}'
+      ;;
+    *'"method":"session/new"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s1"}}}}'
+      ;;
+    *'"method":"session/prompt"'*)
+      printf '%s' "$line" > '{}'
+      printf '%s\n' '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"ACP hello"}}}}}}}}'
+      printf '%s\n' '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}'
+      break
+      ;;
+    *)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{}}}}'
+      ;;
+  esac
+done
+"#,
+            log.display()
+        ),
+    )
+    .unwrap();
+    ("sh".to_string(), vec![script.to_string_lossy().to_string()])
+}
+
+/// Seat a recording ACP agent as the router, as data written before the
+/// runtime checks could. Returns its id and where it saves its prompt.
+async fn seat_legacy_acp_router(scenario: &RouterGroup) -> (String, std::path::PathBuf) {
+    let pool = scenario.state.db.pool();
+    let (owner, workspace): (String, String) =
+        sqlx::query_as("SELECT owner_id, workspace_id FROM groups WHERE id=?")
+            .bind(&scenario.group)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let log = scenario._root.path().join("acp-prompt.json");
+    let (command, args) = write_recording_fake_acp_agent(scenario._root.path(), &log);
+    let acp = seed_acp_agent(
+        &scenario.state,
+        &owner,
+        &workspace,
+        &scenario.group,
+        "Shell",
+        json!({ "command": command, "args": args, "timeout_seconds": 10 }),
+    )
+    .await;
+    sqlx::query("UPDATE groups SET router_agent_id=? WHERE id=?")
+        .bind(&acp)
+        .bind(&scenario.group)
+        .execute(pool)
+        .await
+        .unwrap();
+    (acp, log)
+}
+
+async fn wait_for_reply_from(scenario: &RouterGroup, thread: &str, agent: &str) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let replied: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM messages WHERE thread_id=? AND sender_id=?",
+            )
+            .bind(thread)
+            .bind(agent)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+            if replied > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the ACP agent replies");
+}
+
+/// Data written before the agent-side guard can still seat an ACP router. It
+/// never receives the task tools, so its prompt must not offer DispatchTask.
+#[tokio::test]
+async fn an_acp_router_seat_is_not_told_it_can_dispatch() {
+    let scenario = router_group("acp-seat", text_body("unused"), json!({})).await;
+    let (acp, log) = seat_legacy_acp_router(&scenario).await;
+
+    let main = seed_thread(&scenario.state, &scenario.group, "active").await;
+    scenario.say(&main, "please build the widget").await;
+    wait_for_reply_from(&scenario, &main, &acp).await;
+
+    let prompt = std::fs::read_to_string(&log).unwrap();
+    assert!(!prompt.contains("DispatchTask"), "got: {prompt}");
+    assert!(
+        prompt.contains("You have no delegation tool here"),
+        "got: {prompt}"
+    );
+    assert!(
+        !prompt.contains("Agents are dispatched sequentially"),
+        "got: {prompt}"
+    );
+}
+
+/// A legacy ACP router is not migrated away: the group keeps its single
+/// responder, members report who can route, and the router can be replaced.
+#[tokio::test]
+async fn a_legacy_acp_router_stays_until_replaced_and_is_flagged() {
+    let scenario = router_group("acp-legacy", text_body("unused"), json!({})).await;
+    let (acp, _) = seat_legacy_acp_router(&scenario).await;
+    let RouterGroup {
+        app,
+        token,
+        group,
+        router,
+        ..
+    } = &scenario;
+    let uri = format!("/api/v2/groups/{group}");
+
+    let (status, members) = send(app, authed_empty("GET", &format!("{uri}/agents"), token)).await;
+    assert_eq!(status, StatusCode::OK, "{members}");
+    let capable = |id: &str| {
+        members
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|member| member["agent_id"] == id)
+            .map(|member| member["router_capable"].clone())
+    };
+    assert_eq!(capable(&acp), Some(json!(false)));
+    assert_eq!(capable(router), Some(json!(true)));
+
+    // Other settings still save, and the stored router is left as it was.
+    for body in [
+        json!({"name": "Renamed"}),
+        json!({"scheduler_mode": "router", "router_agent_id": acp, "max_router_tasks": 2}),
+    ] {
+        let (status, updated) = send(app, authed_json("PATCH", &uri, token, body.clone())).await;
+        assert_eq!(status, StatusCode::OK, "{body} -> {updated}");
+        assert_eq!(updated["router_agent_id"], json!(acp));
+    }
+
+    let (status, updated) = send(
+        app,
+        authed_json("PATCH", &uri, token, json!({"router_agent_id": router})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["router_agent_id"], json!(router));
+    let (status, error) = send(
+        app,
+        authed_json("PATCH", &uri, token, json!({"router_agent_id": acp})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "once replaced it cannot come back: {error}"
+    );
+}
+
+/// A watchdog check strips every workspace, and an ACP agent cannot start
+/// without one, so a legacy ACP router's check fails before the external
+/// process ever sees a prompt or brings its own write tools.
+#[tokio::test]
+async fn a_legacy_acp_router_watchdog_check_fails_without_reaching_the_agent() {
+    let scenario = router_group("acp-watchdog", text_body("unused"), json!({})).await;
+    let (acp, log) = seat_legacy_acp_router(&scenario).await;
+    let pool = scenario.state.db.pool();
+    let (status, automation) = send(
+        &scenario.app,
+        authed_json(
+            "POST",
+            "/api/v2/automations",
+            &scenario.token,
+            json!({"group_id": scenario.group, "name": "Watchdog", "kind": "watchdog",
+                "prompt": "Check the tasks.", "trigger": {"kind": "cron", "expression": "*/10 * * * *"},
+                "timezone": "UTC"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{automation}");
+    let automation = automation["id"].as_str().unwrap().to_string();
+    let due = chrono::Utc::now().timestamp() / 60 * 60;
+    sqlx::query("UPDATE automations SET next_run_at=?,trigger_json=? WHERE id=?")
+        .bind(due)
+        .bind(json!({"kind": "cron", "expression": "* * * * *"}).to_string())
+        .bind(&automation)
+        .execute(pool)
+        .await
+        .unwrap();
+    let now = chrono::DateTime::from_timestamp(due + 3, 0).unwrap();
+    assert_eq!(
+        automations::tick(&scenario.state, now, false)
+            .await
+            .unwrap(),
+        1
+    );
+    let check: String = sqlx::query_scalar("SELECT id FROM threads WHERE watchdog_automation_id=?")
+        .bind(&automation)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let (status, reason): (String, Option<String>) =
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let turn: Option<(String, Option<String>)> = sqlx::query_as(
+                    "SELECT status, termination_reason FROM group_turns \
+                     WHERE thread_id=? AND status NOT IN ('pending','queued','running')",
+                )
+                .bind(&check)
+                .fetch_optional(pool)
+                .await
+                .unwrap();
+                if let Some(turn) = turn {
+                    break turn;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the watchdog check ends");
+    let errors: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT error FROM execution_jobs WHERE thread_id=? \
+         UNION ALL SELECT failure_code FROM agent_dispatches d \
+         JOIN group_turns t ON t.id=d.turn_id WHERE t.thread_id=?",
+    )
+    .bind(&check)
+    .bind(&check)
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "failed", "{reason:?}");
+    assert!(
+        errors.contains(&Some("provider_failure".to_string())),
+        "{errors:?}"
+    );
+    let replies: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE thread_id=? AND sender_id=?")
+            .bind(&check)
+            .bind(&acp)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(replies, 0);
+    assert!(!log.exists(), "the ACP agent was prompted");
+}
+
+#[tokio::test]
 async fn router_dispatches_a_task_and_summarises_its_report() {
     let dispatch = tool_body(vec![(
         "call-dispatch",

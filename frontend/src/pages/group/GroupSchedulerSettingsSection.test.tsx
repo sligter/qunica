@@ -345,6 +345,68 @@ describe('GroupSchedulerSettingsSection', () => {
     })
   })
 
+  it('offers external CLI members as routers only disabled, with a note', async () => {
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter>
+        <GroupSchedulerSettingsSection
+          group={group}
+          agents={[
+            { agent_id: 'agent-lead', display_name: 'Lead', status: 'active', router_capable: true },
+            { agent_id: 'agent-cli', display_name: 'Shell', status: 'active', router_capable: false },
+          ] as GroupAgentRead[]}
+        />
+      </MemoryRouter>,
+    )
+
+    await user.click(screen.getByRole('combobox', { name: 'Turn style' }))
+    await user.click(await screen.findByRole('option', { name: 'Router' }))
+    expect(
+      screen.getByText('External CLI agents cannot use the router tools, so they cannot route.'),
+    ).toBeVisible()
+    await user.click(screen.getByRole('combobox', { name: 'Router' }))
+    expect(
+      await screen.findByRole('option', { name: 'Shell (external CLI, cannot route)' }),
+    ).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('option', { name: 'Lead' })).not.toHaveAttribute('aria-disabled')
+  })
+
+  it('keeps a saved external CLI router visible and requires choosing another', async () => {
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter>
+        <GroupSchedulerSettingsSection
+          group={{ ...group, scheduler_mode: 'router', router_agent_id: 'agent-cli' }}
+          agents={[
+            { agent_id: 'agent-lead', display_name: 'Lead', status: 'active', router_capable: true },
+            { agent_id: 'agent-cli', display_name: 'Shell', status: 'active', router_capable: false },
+          ] as GroupAgentRead[]}
+        />
+      </MemoryRouter>,
+    )
+    const reselect =
+      'This router is an external CLI agent and cannot dispatch tasks. Choose another member or turn style.'
+
+    expect(screen.getByRole('combobox', { name: 'Router' })).toHaveTextContent(
+      'Shell (external CLI, cannot route)',
+    )
+    expect(screen.getByRole('alert')).toHaveTextContent(reselect)
+    await user.clear(screen.getByLabelText('Concurrent tasks'))
+    await user.type(screen.getByLabelText('Concurrent tasks'), '2')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText(reselect)).toBeVisible()
+    expect(mocks.mutateAsync).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('combobox', { name: 'Router' }))
+    await user.click(await screen.findByRole('option', { name: 'Lead' }))
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => {
+      expect(mocks.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ router_agent_id: 'agent-lead', max_router_tasks: 2 }),
+      )
+    })
+  })
+
   it('hides moderator settings in router mode and keeps them from blocking a save', async () => {
     const user = userEvent.setup()
     render(

@@ -72,6 +72,7 @@ const GROUP_AGENT_COLUMNS: &str = "group_agents.group_id, group_agents.agent_id,
        WHERE llm_providers.id = agents.provider_id \
          AND llm_providers.owner_id = agents.owner_id AND llm_providers.status = 'active' \
      ) THEN 1 ELSE 0 END AS prompt_enhancement_available, \
+     CASE WHEN agents.runtime_kind = 'llm_chat' THEN 1 ELSE 0 END AS router_capable, \
      (SELECT json_extract(messages.content_json, '$.context_usage') \
       FROM messages JOIN threads ON threads.id = messages.thread_id \
       WHERE messages.group_id = group_agents.group_id \
@@ -678,6 +679,9 @@ pub struct GroupAgentResponse {
     /// Derived from `workspace_mode`, kept so older clients keep working.
     share_group_workspace: bool,
     prompt_enhancement_available: bool,
+    /// Whether this member's runtime can use the router tools; see
+    /// `validate_router_runtime`.
+    router_capable: bool,
     context_usage: Option<Value>,
     status: String,
     joined_at: String,
@@ -1033,6 +1037,7 @@ struct GroupAgentRow {
     status: String,
     joined_at: String,
     prompt_enhancement_available: i64,
+    router_capable: i64,
     context_usage_json: Option<String>,
 }
 
@@ -1166,6 +1171,7 @@ impl From<GroupAgentRow> for GroupAgentResponse {
             workspace_mode: workspace_mode.as_str().to_string(),
             share_group_workspace: workspace_mode.uses_group_workspace(),
             prompt_enhancement_available: row.prompt_enhancement_available != 0,
+            router_capable: row.router_capable != 0,
             context_usage,
             status: row.status,
             joined_at: row.joined_at,
@@ -1499,7 +1505,6 @@ pub(crate) async fn create_inner(
                 "router_agent_id must be one of initial_agents",
             ));
         }
-        validate_router_runtime(state.db.pool(), router).await?;
     }
 
     let id = Uuid::new_v4().to_string();
@@ -1512,6 +1517,9 @@ pub(crate) async fn create_inner(
     let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group create transaction"))?;
+    if let Some(router) = scheduler.router_agent_id.as_deref() {
+        validate_router_runtime(&mut tx, router).await?;
+    }
 
     sqlx::query(
         "INSERT INTO groups \
@@ -1800,13 +1808,14 @@ pub(crate) async fn update_inner(
     let existing = load_active_owned(state.db.pool(), &group_id, &owner_id).await?;
     let scheduler =
         SchedulerConfigFields::for_update(state.db.pool(), &owner_id, &body, &existing).await?;
-    if let Some(router) = scheduler.router_agent_id.as_deref() {
-        if existing.router_agent_id.as_deref() != Some(router) {
-            load_active_group_agent(state.db.pool(), &group_id, router)
-                .await
-                .map_err(|_| ApiError::invalid_input("router_agent_id must be an active member"))?;
-            validate_router_runtime(state.db.pool(), router).await?;
-        }
+    let new_router = scheduler
+        .router_agent_id
+        .as_deref()
+        .filter(|router| existing.router_agent_id.as_deref() != Some(*router));
+    if let Some(router) = new_router {
+        load_active_group_agent(state.db.pool(), &group_id, router)
+            .await
+            .map_err(|_| ApiError::invalid_input("router_agent_id must be an active member"))?;
     }
 
     let name = match body.name {
@@ -1883,6 +1892,9 @@ pub(crate) async fn update_inner(
     let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start group update transaction"))?;
+    if let Some(router) = new_router {
+        validate_router_runtime(&mut tx, router).await?;
+    }
     sqlx::query(
         "UPDATE groups SET \
          name = ?, description = ?, announcement = ?, avatar_url = ?, workspace_id = ?, auto_share_workspace_with_new_agents = ?, free_speech = ?, \
@@ -6315,11 +6327,18 @@ const MAX_ROUTER_TASKS: i64 = 16;
 
 /// The router answers through host tools, which an external CLI agent does
 /// not receive, so only model-backed agents can route.
-async fn validate_router_runtime(pool: &SqlitePool, agent_id: &str) -> Result<(), ApiError> {
+// Note: router tools run in the host's model tool loop, which an ACP agent never
+// enters; `agents::update_inner` guards the same rule from the agent side. Both
+// read inside their write transaction so the two cannot interleave. See
+// `specs/router-worker.md` section 2.
+async fn validate_router_runtime(
+    tx: &mut Transaction<'_, Sqlite>,
+    agent_id: &str,
+) -> Result<(), ApiError> {
     let runtime: Option<String> =
         sqlx::query_scalar("SELECT runtime_kind FROM agents WHERE id = ? AND status = 'active'")
             .bind(agent_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut **tx)
             .await
             .map_err(|_| ApiError::internal("database error"))?;
     match runtime.as_deref() {

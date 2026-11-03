@@ -876,6 +876,25 @@ pub(crate) async fn update_inner(
     let mut tx = crate::db::begin_write(state.db.pool())
         .await
         .map_err(|_| ApiError::internal("failed to start agent update transaction"))?;
+    // Note: group create/update only validate the router when it is chosen, so
+    // switching a router's runtime here would bypass that check; see
+    // `specs/router-worker.md` section 2.
+    if existing.runtime_kind == RUNTIME_LLM_CHAT && runtime_kind != RUNTIME_LLM_CHAT {
+        let routes: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM groups \
+             WHERE router_agent_id = ? AND owner_id = ? AND status = 'active')",
+        )
+        .bind(&agent_id)
+        .bind(&owner_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal("failed to check router groups"))?;
+        if routes != 0 {
+            return Err(ApiError::conflict(
+                "this agent is the group's router; choose another router or scheduler mode first",
+            ));
+        }
+    }
     sqlx::query(
         "UPDATE agents SET \
          name = ?, description = ?, avatar_url = ?, system_prompt = ?, runtime_kind = ?, workspace_id = ?, \

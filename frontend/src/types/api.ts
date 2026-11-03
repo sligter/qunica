@@ -719,6 +719,8 @@ export interface GroupAgentRead {
   /** Derived from `workspace_mode`: true unless the agent is isolated. */
   share_group_workspace: boolean
   prompt_enhancement_available?: boolean
+  /** False for external CLI agents, which cannot use the router's task tools. */
+  router_capable?: boolean
   context_usage: ContextUsage | null
   status: string
   joined_at: string
