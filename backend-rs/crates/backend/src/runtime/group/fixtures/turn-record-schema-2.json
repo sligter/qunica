@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "execution_id": "legacy-execution",
+  "checkpoint_version": 7,
+  "phase": "tools_pending",
+  "history_cursor": 17,
+  "effort_override": "max",
+  "response_segments": ["Before approval", "After thinking"],
+  "reasoning": ["Exact thinking\nwith whitespace  "],
+  "assistant_turns": [{
+    "role": "assistant",
+    "content": "Before approval",
+    "reasoning_content": "Exact thinking\nwith whitespace  ",
+    "reasoning_signature": "test-signature+/=",
+    "native_content": {"anthropic": [
+      {"type": "thinking", "thinking": "Exact thinking\nwith whitespace  ", "signature": "test-signature+/=", "opaque": {"nested": [null, 3, "x"]}},
+      {"type": "redacted_thinking", "data": "test-encrypted+/="}
+    ]},
+    "tool_calls": [
+      {"id": "approved-call", "name": "Bash", "args": {"command": "echo fixture", "ratio": 1.25}, "provider_metadata": {"thoughtSignature": "test-call-signature", "unknown": [false, null]}},
+      {"id": "next-call", "name": "Read", "args": {"file_path": "note.txt"}}
+    ]
+  }],
+  "tool_calls": [
+    {
+      "tool_call_id": "approved-call", "tool_name": "Bash", "status": "approval_required",
+      "args_summary": "display summary", "result_summary": null,
+      "args": {"command": "echo fixture", "ratio": 1.25}, "result": null,
+      "provider_metadata": {"thoughtSignature": "test-call-signature", "unknown": [false, null]},
+      "model_output": null,
+      "approval_request": {"rule": "shell.command", "capability": "run command", "reason": "fixture approval", "tool_name": "Bash", "subject": "echo fixture"}
+    },
+    {
+      "tool_call_id": "next-call", "tool_name": "Read", "status": "pending",
+      "args_summary": "next display summary", "result_summary": null,
+      "args": {"file_path": "note.txt"}, "result": null,
+      "provider_metadata": null, "model_output": null, "approval_request": null
+    }
+  ],
+  "todos": [{"content": "Keep the accepted batch", "status": "in_progress"}],
+  "context_usage": {"input_tokens": 123, "cached_input_tokens": null, "unknown": {"raw": [3, 2, 1]}}
+}

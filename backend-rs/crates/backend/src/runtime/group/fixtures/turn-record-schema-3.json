@@ -1,0 +1,36 @@
+{
+  "schema_version": 3,
+  "execution_id": "rig-execution",
+  "checkpoint_version": 19,
+  "phase": "tools_pending",
+  "history_cursor": 42,
+  "effort_override": "xhigh",
+  "response_segments": ["Visible answer"],
+  "reasoning": ["Private thinking"],
+  "assistant_turns": [{
+    "role": "assistant",
+    "content": "Visible answer",
+    "reasoning_content": "Private thinking",
+    "reasoning_signature": "test-rig-signature",
+    "native_content": {"rig": {"opaque_fixture": [
+      {"signature": "test-signature", "encrypted": "test-encrypted-content", "order": [2, 1]},
+      {"unknown": {"null": null, "float": 1.25}}
+    ]}},
+    "tool_calls": [{"id": "done-call", "name": "Read", "args": {"file_path": "note.txt"}, "provider_metadata": {"unknown": {"value": "exact"}}}]
+  }],
+  "tool_calls": [{
+    "tool_call_id": "done-call", "tool_name": "Read", "status": "completed",
+    "args_summary": "UI args", "result_summary": "UI summary",
+    "args": {"file_path": "note.txt"}, "result": "Full result\nwith whitespace  ",
+    "provider_metadata": {"unknown": {"value": "exact"}},
+    "model_output": "status: Completed\nExact provider output  ", "approval_request": null
+  }],
+  "todos": [],
+  "context_usage": null,
+  "driver_checkpoint": {
+    "attempt_id": "attempt-9", "phase": "tools_pending",
+    "attempts": 9, "failed_attempts": 3, "completion_calls": 6,
+    "input_tokens": 1000, "output_tokens": 234, "total_tokens": 1234,
+    "attempt_input_tokens": 100, "attempt_output_tokens": 23, "attempt_total_tokens": 123
+  }
+}

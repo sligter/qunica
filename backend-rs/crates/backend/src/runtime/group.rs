@@ -22,6 +22,10 @@
 //! runtime keeps running to a replayable terminal state so reconnect can
 //! converge from the client's last event id.
 
+#[cfg(test)]
+#[path = "group/turn_record_tests.rs"]
+mod turn_record_tests;
+
 use super::rig_driver::{DriverBudgetExhausted, DriverCheckpoint, TurnEngine};
 #[cfg(test)]
 use std::collections::BTreeMap;
