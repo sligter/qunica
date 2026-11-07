@@ -22,9 +22,7 @@
 //! runtime keeps running to a replayable terminal state so reconnect can
 //! converge from the client's last event id.
 
-#[cfg(test)]
-#[path = "group/turn_record_tests.rs"]
-mod turn_record_tests;
+mod turn_record;
 
 use super::rig_driver::{DriverBudgetExhausted, DriverCheckpoint, TurnEngine};
 #[cfg(test)]
@@ -111,10 +109,6 @@ const MAX_NATIVE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_NATIVE_IMAGE_TOTAL_BYTES: u64 = 12 * 1024 * 1024;
 const MAX_PROJECT_CONVENTIONS_CHARS: usize = 6_000;
 use crate::runtime::sequence::{NewMessage, SequenceAllocator};
-
-/// Schema version for the structured `content_json` payload persisted on agent
-/// messages. Bump when the shape changes so readers can migrate old rows.
-const CONTENT_JSON_SCHEMA_VERSION: i64 = 3;
 
 /// A proactive agent replies with exactly this marker to stay silent.
 pub const SILENT_MARKER: &str = "<SILENT>";
@@ -3619,22 +3613,6 @@ struct TurnData {
 }
 
 impl TurnData {
-    fn from_content_json(content_json: Option<&str>) -> anyhow::Result<Self> {
-        let Some(raw) = content_json else {
-            return Ok(Self::default());
-        };
-        let value: Value = serde_json::from_str(raw)?;
-        if let Some(version) = value.get("schema_version") {
-            anyhow::ensure!(
-                version
-                    .as_i64()
-                    .is_some_and(|version| (1..=CONTENT_JSON_SCHEMA_VERSION).contains(&version)),
-                "unsupported agent checkpoint schema"
-            );
-        }
-        Ok(serde_json::from_value(value)?)
-    }
-
     fn push_response(&mut self, text: &str, new_segment: bool) {
         if new_segment || self.response_segments.is_empty() {
             self.response_segments.push(text.to_string());
@@ -3880,62 +3858,6 @@ impl TurnData {
             && self.todos.is_empty()
             && self.context_usage.is_none()
             && self.driver_checkpoint.is_none()
-    }
-
-    /// Serialize to the versioned `content_json` schema, or `None` when empty so
-    /// plain-text messages keep a `NULL` column.
-    fn to_content_json(&self) -> Option<String> {
-        if self.is_empty() && self.effort_override.is_none() && self.driver_checkpoint.is_none() {
-            return None;
-        }
-        let reasoning: Vec<&String> = self
-            .reasoning
-            .iter()
-            .filter(|segment| !segment.is_empty())
-            .collect();
-        let response_segments: Vec<&String> = self
-            .response_segments
-            .iter()
-            .filter(|segment| !segment.is_empty())
-            .collect();
-        let tool_calls: Vec<Value> = self
-            .tool_calls
-            .iter()
-            .map(|call| {
-                json!({
-                    "tool_call_id": call.tool_call_id,
-                    "tool_name": call.tool_name,
-                    "status": call.status,
-                    "args_summary": call.args_summary,
-                    "result_summary": call.result_summary,
-                    "args": call.args,
-                    "result": call.result,
-                    "approval_request": call.approval_request,
-                    "provider_metadata": call.provider_metadata,
-                    "model_output": call.model_output,
-                })
-            })
-            .collect();
-        let mut payload = json!({
-            "schema_version": if self.driver_checkpoint.is_some() { CONTENT_JSON_SCHEMA_VERSION } else { 2 },
-            "response_segments": response_segments,
-            "reasoning": reasoning,
-            "tool_calls": tool_calls,
-            "todos": self.todos,
-            "context_usage": self.context_usage,
-            "execution_id": self.execution_id,
-            "checkpoint_version": self.checkpoint_version,
-            "phase": self.phase,
-            "history_cursor": self.history_cursor,
-            "assistant_turns": self.assistant_turns,
-        });
-        if let Some(checkpoint) = &self.driver_checkpoint {
-            payload["driver_checkpoint"] = json!(checkpoint);
-        }
-        if let Some(effort) = self.effort_override {
-            payload["effort_override"] = json!(effort);
-        }
-        serde_json::to_string(&payload).ok()
     }
 }
 
