@@ -11591,6 +11591,9 @@ async fn a_resume_that_stops_at_a_second_gate_asks_again_instead_of_failing() {
 #[path = "group_stream/rig_scenarios.rs"]
 mod rig_scenarios;
 
+#[path = "group_stream/scheduled_terminal.rs"]
+mod scheduled_terminal;
+
 #[path = "group_stream/engine_rollout.rs"]
 mod engine_rollout;
 

@@ -24,6 +24,10 @@
 
 mod turn_record;
 
+#[cfg(test)]
+#[path = "group/scheduled_terminal_tests.rs"]
+mod scheduled_terminal_tests;
+
 use super::rig_driver::{DriverBudgetExhausted, DriverCheckpoint, TurnEngine};
 #[cfg(test)]
 use std::collections::BTreeMap;
