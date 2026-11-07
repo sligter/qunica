@@ -22,7 +22,12 @@
 //! runtime keeps running to a replayable terminal state so reconnect can
 //! converge from the client's last event id.
 
+mod scheduled_terminal;
 mod turn_record;
+
+use scheduled_terminal::{
+    cancel_scheduled_turn, emit_turn_terminal, fail_scheduled_persistence, finish_scheduled_turn,
+};
 
 #[cfg(test)]
 #[path = "group/scheduled_terminal_tests.rs"]
@@ -1869,61 +1874,16 @@ async fn run_scheduled_turn(
             {
                 return fail_scheduled_persistence(ctx, &store, &turn_id).await;
             }
-            let (status, reason, outcome) = match status {
-                TurnStatus::Silence if had_visible => {
-                    (TurnStatus::Completed, None, TurnOutcome::Completed)
-                }
-                // Nothing was said because a dispatch failed, not because the
-                // agents chose to stay quiet. Filing that as "completed
-                // silently" puts a green check on a provider fault.
-                TurnStatus::Silence if scheduler_runtime.budget.total_failures() > 0 => {
-                    (TurnStatus::Failed, None, TurnOutcome::Error)
-                }
-                TurnStatus::Completed => {
-                    (TurnStatus::Completed, Some(reason), TurnOutcome::Completed)
-                }
-                _ => (status, Some(reason), TurnOutcome::Silence),
-            };
-            if let Err(_error) = store
-                .transition_turn(
-                    &turn_id,
-                    TurnStatus::Running,
-                    status,
-                    reason.map(TurnReason::as_str),
-                )
-                .await
-            {
-                tracing::error!(turn_id, "failed to persist scheduled turn completion");
-                return fail_scheduled_persistence(ctx, &store, &turn_id).await;
-            }
-            if matches!(outcome, TurnOutcome::Silence) {
-                match ctx
-                    .emit_durable_event(
-                        StreamEventKind::Silence,
-                        json!({
-                            "turn_id": turn_id,
-                        }),
-                    )
-                    .await
-                {
-                    Ok(()) => {}
-                    Err(StepErr::Cancelled) => return Ok(TurnOutcome::Cancelled),
-                    Err(StepErr::Db(_) | StepErr::SchedulerPersistence) => {
-                        return fail_scheduled_persistence(ctx, &store, &turn_id).await;
-                    }
-                }
-            }
-            if let Err(error) =
-                emit_turn_terminal(ctx, &turn_id, status, reason, &scheduler_runtime.budget).await
-            {
-                return match error {
-                    StepErr::Cancelled => Ok(TurnOutcome::Cancelled),
-                    StepErr::Db(_) | StepErr::SchedulerPersistence => {
-                        fail_scheduled_persistence(ctx, &store, &turn_id).await
-                    }
-                };
-            }
-            return Ok(outcome);
+            return finish_scheduled_turn(
+                ctx,
+                &store,
+                &turn_id,
+                status,
+                reason,
+                &scheduler_runtime.budget,
+                had_visible,
+            )
+            .await;
         };
         if dispatch.selection_reason == SelectionReason::UserMention {
             pending_user_mentions.retain(|agent_id| agent_id != &dispatch.target_agent_id);
@@ -2772,42 +2732,6 @@ async fn emit_speaker_selected(
     .await
 }
 
-async fn emit_turn_terminal(
-    ctx: &mut StreamCtx,
-    turn_id: &str,
-    status: TurnStatus,
-    reason: Option<TurnReason>,
-    budget: &TurnBudget,
-) -> Result<(), StepErr> {
-    let kind = match status {
-        TurnStatus::BudgetExhausted | TurnStatus::FailureBudgetExhausted => {
-            StreamEventKind::TurnBudgetExhausted
-        }
-        TurnStatus::Cancelled => StreamEventKind::TurnCancelled,
-        TurnStatus::Superseded => StreamEventKind::TurnSuperseded,
-        // A queued turn has not started, so it cannot have produced a terminal
-        // event; reaching this path would mean the scheduler skipped a claim.
-        TurnStatus::Queued | TurnStatus::Pending | TurnStatus::Running => {
-            return Err(StepErr::SchedulerPersistence);
-        }
-        TurnStatus::WaitingForUser
-        | TurnStatus::Completed
-        | TurnStatus::Silence
-        | TurnStatus::Failed => StreamEventKind::TurnCompleted,
-    };
-    ctx.emit_scheduler_terminal(
-        kind,
-        json!({
-            "turn_id": turn_id,
-            "status": status.as_str(),
-            "reason": reason.map(TurnReason::as_str),
-            "budget": turn_budget_payload(budget),
-        }),
-        turn_id,
-    )
-    .await
-}
-
 fn budget_limits_payload(limits: &BudgetLimits) -> Value {
     json!({
         "unbounded": false,
@@ -3057,105 +2981,6 @@ fn cancellation_requested(ctx: &StreamCtx) -> bool {
             .cancellation
             .as_ref()
             .is_some_and(|flag| flag.load(Ordering::Acquire))
-}
-
-async fn cancel_scheduled_turn(
-    ctx: &mut StreamCtx,
-    store: &SchedulerStore,
-    turn_id: &str,
-) -> Result<TurnOutcome, Cancelled> {
-    ctx.scheduled_dispatch = None;
-    let turn = match store.cancel_turn(turn_id).await {
-        Ok(turn) => turn,
-        Err(_error) => {
-            tracing::error!(turn_id, "failed to persist cancelled scheduler turn status");
-            return fail_scheduled_persistence(ctx, store, turn_id).await;
-        }
-    };
-    let kind = match turn.status {
-        TurnStatus::Cancelled => StreamEventKind::TurnCancelled,
-        TurnStatus::Superseded => StreamEventKind::TurnSuperseded,
-        _ if is_terminal_scheduler_turn(turn.status) => StreamEventKind::TurnCompleted,
-        _ => {
-            tracing::error!(
-                turn_id,
-                status = turn.status.as_str(),
-                "scheduler cancellation left a non-terminal turn"
-            );
-            return fail_scheduled_persistence(ctx, store, turn_id).await;
-        }
-    };
-    if ctx
-        .emit_scheduler_terminal(
-            kind,
-            json!({
-                "turn_id": turn.id,
-                "status": turn.status.as_str(),
-                "reason": turn.termination_reason.map(TurnReason::as_str),
-                "budget": {
-                    "agent_steps": turn.agent_steps,
-                    "moderator_calls": turn.moderator_calls,
-                    "consecutive_failures": turn.consecutive_failures,
-                    "total_failures": turn.total_failures,
-                    "total_tokens": turn.total_tokens,
-                },
-            }),
-            turn_id,
-        )
-        .await
-        .is_err()
-    {
-        return fail_scheduled_persistence(ctx, store, turn_id).await;
-    }
-    Ok(TurnOutcome::Cancelled)
-}
-
-fn is_terminal_scheduler_turn(status: TurnStatus) -> bool {
-    matches!(
-        status,
-        TurnStatus::Completed
-            | TurnStatus::Silence
-            | TurnStatus::BudgetExhausted
-            | TurnStatus::FailureBudgetExhausted
-            | TurnStatus::Cancelled
-            | TurnStatus::Superseded
-            | TurnStatus::Failed
-    )
-}
-
-async fn fail_scheduled_persistence(
-    ctx: &mut StreamCtx,
-    store: &SchedulerStore,
-    turn_id: &str,
-) -> Result<TurnOutcome, Cancelled> {
-    tracing::error!(turn_id, "scheduler persistence operation failed");
-    match store.load_turn_trace(turn_id).await {
-        Ok(trace) if !is_terminal_scheduler_turn(trace.turn.status) => {
-            if store
-                .transition_turn(
-                    turn_id,
-                    trace.turn.status,
-                    TurnStatus::Failed,
-                    Some(TurnReason::PersistenceFailed.as_str()),
-                )
-                .await
-                .is_err()
-            {
-                tracing::error!(
-                    turn_id,
-                    "failed to terminalize scheduler turn after persistence error"
-                );
-            }
-        }
-        Ok(_) => {}
-        Err(_) => {
-            tracing::error!(
-                turn_id,
-                "failed to load scheduler turn after persistence error"
-            );
-        }
-    }
-    ctx.fail("scheduler persistence failed").await
 }
 
 /// The topology a turn will actually run under, plus why it differs from the
