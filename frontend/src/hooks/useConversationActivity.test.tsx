@@ -1,11 +1,12 @@
 import type { ReactNode } from 'react'
-import { act, renderHook } from '@testing-library/react'
+import { act, cleanup, renderHook } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useSendMessageStream } from '@/hooks/useSendMessageStream'
 import i18n from '@/i18n'
 import type { ApiV2SseHandlers } from '@/lib/api-v2/sse'
+import { clearReplyNotificationWindows } from '@/lib/replyNotifications'
 import { useAuthStore } from '@/stores/authStore'
 import {
   selectConversationStatus,
@@ -89,6 +90,7 @@ function threadStatus() {
 
 describe('useSendMessageStream conversation activity', () => {
   beforeEach(async () => {
+    clearReplyNotificationWindows()
     vi.useRealTimers()
     mocks.streams.length = 0
     mocks.fetchJson.mockReset()
@@ -104,6 +106,12 @@ describe('useSendMessageStream conversation activity', () => {
       conversation: 'Platform',
       thread: 'Ship the API',
     })
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearReplyNotificationWindows()
+    vi.restoreAllMocks()
   })
 
   it('marks the conversation busy for the life of the stream', () => {

@@ -1233,7 +1233,6 @@ async fn send_to_task_takes_a_slot_for_idle_tasks_but_queues_on_running_ones() {
         ),
     ]);
     let handler = {
-        let dispatch_two = dispatch_two;
         move |_request: &Value, messages: &[Value]| {
             let last_user = messages
                 .iter()

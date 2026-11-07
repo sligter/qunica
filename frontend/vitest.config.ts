@@ -9,6 +9,9 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    // Each worker loads jsdom and the app graph; bound resource contention
+    // rather than relaxing the existing per-test timeouts.
+    maxWorkers: 2,
     setupFiles: ['./src/test/setup.ts'],
   },
 })

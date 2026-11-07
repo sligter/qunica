@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { enUS } from '@/i18n/resources/en-US'
 import { zhCN } from '@/i18n/resources/zh-CN'
+import { ApiError } from '@/lib/api-v2/client'
 import { AppActionsPage } from '@/pages/settings/AppActionsPage'
 import { useAuthStore } from '@/stores/authStore'
 import type { AppActionRead } from '@/types/api'
@@ -41,8 +42,16 @@ async function renderPage(
   hasMore = false,
   response?: (path: string, options?: { method?: string }) => unknown,
 ) {
-  if (response) fetchJson.mockImplementation(response)
-  else fetchJson.mockResolvedValue({ items: actions, has_more: hasMore, total: actions.length })
+  fetchJson.mockImplementation((path: string, options?: { method?: string }) => {
+    if (path === '/settings/system') return { assistant_auto_approve: false }
+    if (response) return response(path, options)
+    if (path.startsWith('/app-actions?')) {
+      return { items: actions, has_more: hasMore, total: actions.length }
+    }
+    const detail = actions.find((item) => path === `/app-actions/${item.id}`)
+    if (detail && (!options?.method || options.method === 'GET')) return detail
+    throw new Error(`Unexpected request: ${options?.method ?? 'GET'} ${path}`)
+  })
   const i18n = i18next.createInstance()
   await i18n.use(initReactI18next).init({
     lng: 'en-US',
@@ -81,7 +90,31 @@ describe('AppActionsPage', () => {
     expect(screen.getByText('Applied')).toBeVisible()
     expect(screen.getByText('Rejected')).toBeVisible()
     // Only the pending row offers a decision.
-    expect(screen.getAllByRole('button', { name: 'Confirm and run' })).toHaveLength(1)
+    expect(await screen.findAllByRole('button', { name: 'Confirm and run' })).toHaveLength(1)
+  })
+
+  it.each([
+    { name: 'missing', detail: new ApiError(404, 'not_found', 'action not found'), label: enUS.assistant.actions.unavailable },
+    { name: 'unreadable', detail: new ApiError(503, 'unavailable', 'temporarily unavailable'), label: enUS.assistant.actions.statusError },
+    { name: 'applied', detail: action({ status: 'applied' }), label: enUS.assistant.actions.applied },
+  ])('does not offer approval when pending history has $name detail', async ({ detail, label }) => {
+    const pending = action({})
+    await renderPage([pending], false, (path) => {
+      if (path.startsWith('/app-actions?')) {
+        return { items: [pending], has_more: false, total: 1 }
+      }
+      if (path === `/app-actions/${pending.id}`) {
+        if (detail instanceof ApiError) throw detail
+        return detail
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+
+    expect(await screen.findByText(label)).toBeVisible()
+    expect(screen.getByText(enUS.assistant.actions.pending)).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Confirm and run' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: enUS.assistant.actions.reject })).not.toBeInTheDocument()
+    expect(fetchJson.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false)
   })
 
   it('shows why a failed apply failed', async () => {
@@ -110,11 +143,14 @@ describe('AppActionsPage', () => {
     const first = action({ id: 'a1', status: 'applied', summary: 'Create agent "First"' })
     const second = action({ id: 'a2', status: 'applied', summary: 'Create agent "Second"' })
 
-    await renderPage([first], true, (path: string) =>
-      path.includes('skip=50')
-        ? { items: [second], has_more: false, total: 51 }
-        : { items: [first], has_more: true, total: 51 },
-    )
+    await renderPage([first], true, (path: string) => {
+      if (path.startsWith('/app-actions?')) {
+        return path.includes('skip=50')
+          ? { items: [second], has_more: false, total: 51 }
+          : { items: [first], has_more: true, total: 51 }
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
 
     expect(await screen.findByText('Create agent "First"')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Next' }))
@@ -131,12 +167,13 @@ describe('AppActionsPage', () => {
     const item = action({ id: 'action-1', status: 'applied' })
     let deleted = false
 
-    await renderPage([item], false, (_path, options) => {
-      if (options?.method === 'DELETE') {
+    await renderPage([item], false, (path, options) => {
+      if (path === `/app-actions/${item.id}` && options?.method === 'DELETE') {
         deleted = true
         return undefined
       }
-      return { items: deleted ? [] : [item], has_more: false }
+      if (path.startsWith('/app-actions?')) return { items: deleted ? [] : [item], has_more: false }
+      throw new Error(`Unexpected request: ${path}`)
     })
 
     expect(await screen.findByText(item.summary)).toBeVisible()
@@ -163,7 +200,9 @@ describe('AppActionsPage', () => {
         cleared = true
         return undefined
       }
-      return { items: cleared ? [pending] : [applied, pending], has_more: false }
+      if (path === `/app-actions/${pending.id}`) return pending
+      if (path.startsWith('/app-actions?')) return { items: cleared ? [pending] : [applied, pending], has_more: false }
+      throw new Error(`Unexpected request: ${path}`)
     })
 
     expect(await screen.findByText('Applied action')).toBeVisible()
