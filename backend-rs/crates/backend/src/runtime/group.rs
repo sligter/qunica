@@ -1022,7 +1022,16 @@ async fn run_inner(
         );
     }
 
-    run_scheduled_turn(services, req, ctx, &group, &user_message.id).await
+    // Note: keep the coordinator's large future off the caller's poll frame;
+    // nested handoffs must fit the default Windows stack. See RIG_MIGRATION.md.
+    Box::pin(run_scheduled_turn(
+        services,
+        req,
+        ctx,
+        &group,
+        &user_message.id,
+    ))
+    .await
 }
 
 async fn run_scheduled_turn(
@@ -1097,7 +1106,7 @@ async fn run_scheduled_turn(
     // Note: a durable automation snapshots its budget at acceptance. The
     // runtime intersects that ceiling with the group's *current* limits, so an
     // old task can never regain permissions or budget an owner later removed.
-    let automation_budget: Option<(i64, i64)> = sqlx::query_as(
+    let automation_budget: Option<(i64, i64)> = match sqlx::query_as(
         "SELECT json_extract(automation_snapshot_json,'$.budget.max_agent_steps'), \
                 json_extract(automation_snapshot_json,'$.budget.max_total_tokens') \
          FROM execution_jobs WHERE stream_id=? AND automation_snapshot_json IS NOT NULL",
@@ -1105,7 +1114,17 @@ async fn run_scheduled_turn(
     .bind(ctx.stream_id.to_string())
     .fetch_optional(&services.pool)
     .await
-    .unwrap_or(None);
+    {
+        Ok(budget) => budget,
+        Err(error) => {
+            // Note: a read failure is not an absent snapshot. Falling back to
+            // group limits could discard the accepted task's stricter budget.
+            tracing::error!(stream_id = %ctx.stream_id, %error, "failed to load task budget");
+            return ctx
+                .fail("Unable to load the task budget; execution was stopped.")
+                .await;
+        }
+    };
     let max_agent_steps = automation_budget.map_or(group_max_agent_steps, |(steps, _)| {
         group_max_agent_steps.min(steps.clamp(1, i64::from(u32::MAX)) as u32)
     });

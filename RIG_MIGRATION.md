@@ -90,6 +90,13 @@ size. This changes storage, not dispatch, cancellation or approval policy. The
 existing nested success/silent/failure/cancellation/budget tests are required
 with and without default features without increasing `RUST_MIN_STACK`.
 
+The scheduled coordinator is also boxed at the `run_inner` boundary. Adding an
+early budget-read failure await exposed a default Windows stack overflow during
+nested handoffs. Boxing only the error branch
+did not protect that path; boxing the coordinator keeps its state off the
+caller frame. This adds one future allocation per scheduled turn, with the same
+awaited lifecycle and host-owned cancellation and side effects.
+
 `tests/rig_dependencies.rs` exercises a sans-I/O `AgentRun` step and constructs a
 Provider with Qunica's reqwest 0.13 client. It makes no network requests and is
 not evidence of message compatibility or durable execution. Those remain P2/P3

@@ -57,6 +57,127 @@ fn ok(body: String) -> (StatusCode, String) {
     (StatusCode::OK, body)
 }
 
+async fn assert_unreadable_automation_budget_stops_dispatch(name: &str, snapshot: &str) {
+    let scenario = Scenario::new(
+        name,
+        vec![
+            ok(tool_body(vec![(
+                "write",
+                "Write",
+                json!({"file_path":"budget-must-stop.txt","content":"unexpected side effect"}),
+            )])),
+            ok(text_body("finished")),
+        ],
+    )
+    .await;
+    let (status, automation) = send(
+        &scenario.app,
+        authed_json(
+            "POST",
+            "/api/v2/automations",
+            &scenario.token,
+            json!({
+                "group_id":scenario.group,"name":"Budget fault","prompt":"Perform the task",
+                "trigger":{"kind":"cron","expression":"* * * * *"},"timezone":"UTC",
+                "budget":{"max_agent_steps":1,"max_total_tokens":32000,"turn_timeout_seconds":60}
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{automation}");
+    let pool = scenario.state.db.pool();
+    sqlx::query("CREATE TABLE budget_read_fault(snapshot TEXT NOT NULL)")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO budget_read_fault VALUES(?)")
+        .bind(snapshot)
+        .execute(pool)
+        .await
+        .unwrap();
+    // Inject before acceptance commits and launches the worker, avoiding a race
+    // between mutating the snapshot and the runtime reading its original value.
+    sqlx::query("CREATE TRIGGER corrupt_budget_snapshot AFTER UPDATE OF automation_snapshot_json ON execution_jobs \
+        WHEN NEW.automation_snapshot_json != (SELECT snapshot FROM budget_read_fault) BEGIN \
+        UPDATE execution_jobs SET automation_snapshot_json=(SELECT snapshot FROM budget_read_fault) WHERE id=NEW.id; END")
+        .execute(pool).await.unwrap();
+    let due = chrono::DateTime::parse_from_rfc3339("2026-10-18T12:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    sqlx::query("UPDATE automations SET next_run_at=? WHERE id=?")
+        .bind(due.timestamp())
+        .bind(automation["id"].as_str().unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        qunica_backend::api::automations::tick(
+            &scenario.state,
+            due + chrono::Duration::seconds(3),
+            false,
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    let (job_status, turn_status, stream_id): (String, String, String) =
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let row: (String, String, String, i64) = sqlx::query_as(
+                    "SELECT j.status,t.status,j.stream_id,j.worker_active FROM execution_jobs j \
+                     JOIN group_turns t ON t.id=j.turn_id WHERE j.automation_id=?",
+                )
+                .bind(automation["id"].as_str().unwrap())
+                .fetch_one(pool)
+                .await
+                .unwrap();
+                if !matches!(row.0.as_str(), "queued" | "running") && row.3 == 0 {
+                    break (row.0, row.1, row.2);
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+    assert!(
+        !scenario.root.path().join("budget-must-stop.txt").exists(),
+        "unreadable budget must stop external effects"
+    );
+    assert!(
+        scenario.requests.lock().await.is_empty(),
+        "unreadable budget must stop before requesting the provider"
+    );
+    assert_eq!(
+        (job_status.as_str(), turn_status.as_str()),
+        ("failed", "failed")
+    );
+    let dispatches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_dispatches d JOIN group_turns t ON t.id=d.turn_id WHERE t.group_id=?",
+    ).bind(&scenario.group).fetch_one(pool).await.unwrap();
+    assert_eq!(dispatches, 0);
+    let kinds: Vec<String> = sqlx::query_scalar(
+        "SELECT kind FROM stream_events WHERE stream_id=? AND kind IN ('error','done') ORDER BY seq",
+    ).bind(&stream_id).fetch_all(pool).await.unwrap();
+    assert_eq!(kinds, ["error", "done"]);
+}
+
+#[tokio::test]
+async fn invalid_json_automation_budget_stops_before_dispatch() {
+    assert_unreadable_automation_budget_stops_dispatch("budget-json", "{").await;
+}
+
+#[tokio::test]
+async fn unreadable_step_automation_budget_stops_before_dispatch() {
+    assert_unreadable_automation_budget_stops_dispatch("budget-step",
+        r#"{"budget":{"max_agent_steps":"invalid","max_total_tokens":32000,"turn_timeout_seconds":60}}"#).await;
+}
+
+#[tokio::test]
+async fn unreadable_token_automation_budget_stops_before_dispatch() {
+    assert_unreadable_automation_budget_stops_dispatch("budget-token",
+        r#"{"budget":{"max_agent_steps":1,"max_total_tokens":"invalid","turn_timeout_seconds":60}}"#).await;
+}
+
 #[tokio::test]
 async fn rig_explicit_empty_completion_is_silent_and_committed_once() {
     let scenario = Scenario::new("empty-completion", vec![ok(text_body(""))]).await;
