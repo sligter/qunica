@@ -1266,6 +1266,8 @@ export interface GroupNoteRead {
   content: string
   created_at: string
   updated_at: string
+  /** Present on a committed write when the derived shared index needs repair. */
+  warning?: { code: 'note_index_pending'; reason: string }
 }
 
 export interface GroupNoteCreate {

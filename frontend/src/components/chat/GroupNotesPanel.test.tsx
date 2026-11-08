@@ -97,4 +97,36 @@ describe('GroupNotesPanel i18n', () => {
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
     expect((screen.getByLabelText('Content') as HTMLTextAreaElement).value).toContain('Status: rejected — Too costly\nSince: 2025-01-02')
   })
+
+  it.each([
+    ['create', 'en-US', 'The note is saved, but the shared notes index could not be updated. Do not save it again to retry.'],
+    ['update', 'en-US', 'The note is saved, but the shared notes index could not be updated. Do not save it again to retry.'],
+    ['create', 'zh-CN', '笔记已保存，但共享笔记索引未能更新。请勿通过再次保存来重试。'],
+  ] as const)('acknowledges a saved %s in %s without offering the save again', async (action, locale, message) => {
+    await i18n.changeLanguage(locale)
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ...rawNote,
+      content: 'Saved body',
+      warning: { code: 'note_index_pending', reason: 'group note index path is not a regular file' },
+    }), { status: action === 'create' ? 201 : 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    renderPanel('Saved body')
+    const newLabel = locale === 'zh-CN' ? '新建笔记' : 'New note'
+    const saveLabel = locale === 'zh-CN' ? '保存' : 'Save'
+    fireEvent.click(action === 'create'
+      ? screen.getByRole('button', { name: newLabel })
+      : screen.getByText(rawNote.title))
+    if (action === 'create') fireEvent.change(screen.getByLabelText(locale === 'zh-CN' ? '标题' : 'Title'), { target: { value: 'Saved' } })
+    fireEvent.click(screen.getByRole('button', { name: saveLabel }))
+    expect(await screen.findByRole('status')).toHaveTextContent(message)
+    expect(screen.queryByRole('button', { name: saveLabel })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: newLabel })).toBeVisible()
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe(action === 'create' ? 'POST' : 'PATCH')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: newLabel }))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: saveLabel })).toBeVisible()
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
 })

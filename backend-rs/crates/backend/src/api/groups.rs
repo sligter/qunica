@@ -717,6 +717,14 @@ pub struct GroupNoteResponse {
     content: String,
     created_at: String,
     updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<GroupNoteWarning>,
+}
+
+#[derive(Debug, Serialize)]
+struct GroupNoteWarning {
+    code: &'static str,
+    reason: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1220,6 +1228,7 @@ impl GroupNoteRow {
             content,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            warning: None,
         }
     }
 }
@@ -3204,13 +3213,23 @@ pub(crate) async fn create_group_note_with_pool(
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit group note create"))?;
-    sync_group_note_index(pool, &root, &group_id).await?;
+    // Note: COMMIT succeeded. An index failure must not invite a replay of the
+    // saved operation (including ACP calls and approved Assistant actions).
+    let warning = sync_group_note_index(pool, &root, &group_id)
+        .await
+        .err()
+        .map(|error| GroupNoteWarning {
+            code: "note_index_pending",
+            reason: error.message_text(),
+        });
 
     let row = fetch_group_note_row(pool, &group_id, &note_id)
         .await?
         .ok_or_else(|| ApiError::internal("group note vanished after insert"))?;
     let content = read_group_note_content(&root, &row.id, &row.content)?;
-    Ok(row.into_response_with_content(content))
+    let mut response = row.into_response_with_content(content);
+    response.warning = warning;
+    Ok(response)
 }
 
 pub async fn update_group_note(
@@ -3303,13 +3322,21 @@ pub(crate) async fn update_group_note_with_pool(
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit group note update"))?;
-    sync_group_note_index(pool, &root, &group_id).await?;
+    let warning = sync_group_note_index(pool, &root, &group_id)
+        .await
+        .err()
+        .map(|error| GroupNoteWarning {
+            code: "note_index_pending",
+            reason: error.message_text(),
+        });
 
     let row = fetch_group_note_row(pool, &group_id, &note_id)
         .await?
         .ok_or_else(|| ApiError::internal("group note vanished after update"))?;
     let content = read_group_note_content(&root, &row.id, &row.content)?;
-    Ok(row.into_response_with_content(content))
+    let mut response = row.into_response_with_content(content);
+    response.warning = warning;
+    Ok(response)
 }
 
 pub(crate) async fn update_group_note_by_id_inner(
@@ -3376,7 +3403,22 @@ pub async fn delete_group_note(
             "reason": error.message_text(),
         }))
     })?;
-    sync_group_note_index(state.db.pool(), &root, &group_id).await?;
+    sync_group_note_index(state.db.pool(), &root, &group_id)
+        .await
+        .map_err(|error| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "note_index_pending",
+                "group note was deleted but its index could not be refreshed",
+            )
+            .with_details(serde_json::json!({
+                "committed": true,
+                "group_id": group_id,
+                "note_id": note_id,
+                "phase": "index_sync",
+                "reason": error.message_text(),
+            }))
+        })?;
 
     Ok(StatusCode::NO_CONTENT)
 }

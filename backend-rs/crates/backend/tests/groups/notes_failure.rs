@@ -10,6 +10,8 @@ use std::fs;
 
 #[path = "notes_failure/delete_commit.rs"]
 mod delete_commit;
+#[path = "notes_failure/index_result.rs"]
+mod index_result;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Snapshot {
@@ -171,11 +173,10 @@ fn internal_error(status: StatusCode, value: &Value, message: &str) {
     );
 }
 
-fn index_error(status: StatusCode, value: &Value) {
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+fn index_warning(value: &Value) {
     assert_eq!(
-        *value,
-        json!({"error":{"code":"invalid_input","message":"group note index path is not a regular file","details":{}}})
+        value["warning"],
+        json!({"code":"note_index_pending","reason":"group note index path is not a regular file"})
     );
 }
 
@@ -413,52 +414,56 @@ async fn failed_delete_commit_preserves_native_edits_after_reopen() {
 }
 
 #[tokio::test]
-async fn a_post_commit_index_failure_keeps_the_created_note_and_explicit_retry_duplicates_it() {
+async fn a_post_commit_index_failure_acknowledges_the_created_identity_without_replaying_create() {
     let fixture = Fixture::new(false).await;
     fixture.block_index();
     let before = fixture.snapshot().await;
-    for attempt in 1..=2 {
-        let (status, body) = fixture
-            .mutate("POST", None, json!({"title":"After","content":"after"}))
-            .await;
-        index_error(status, &body);
-        let snapshot = fixture.snapshot().await;
-        assert_eq!(snapshot.rows.len(), attempt);
-        assert_eq!(snapshot.events.len(), before.events.len() + attempt);
-        assert_eq!(snapshot.watermark, before.watermark + attempt as i64);
-        for row in &snapshot.rows {
-            assert_eq!(
-                (row.1.as_str(), row.2.as_str(), row.3.as_str()),
-                ("After", "after", "active")
-            );
-            assert_eq!(
-                fs::read_to_string(fixture.note_path(&row.0)).unwrap(),
-                "after"
-            );
-            assert_eq!(fixture.get(&row.0).await.0, StatusCode::OK);
-        }
-    }
+    let (status, body) = fixture
+        .mutate("POST", None, json!({"title":"After","content":"after"}))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    index_warning(&body);
+    let id = body["id"].as_str().unwrap();
+    assert_eq!(body["group_id"], fixture.group);
+    assert_eq!(body["content"], "after");
+    let snapshot = fixture.snapshot().await;
+    assert_eq!(snapshot.rows.len(), 1);
+    assert_eq!(snapshot.rows[0].0, id);
+    assert_eq!(snapshot.events.len(), before.events.len() + 1);
+    assert_eq!(snapshot.watermark, before.watermark + 1);
+    assert_eq!(fs::read_to_string(fixture.note_path(id)).unwrap(), "after");
+    assert_eq!(fixture.get(id).await.1["content"], "after");
     let list = fixture.list().await;
-    assert_eq!(list.len(), 2);
-    assert_ne!(list[0]["id"], list[1]["id"]);
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0]["id"], id);
     fs::remove_dir(fixture.index_path()).unwrap();
-    assert_eq!(fixture.list().await.len(), 2);
+    assert_eq!(fixture.list().await.len(), 1);
     assert!(
         !fixture.index_path().exists(),
         "reads do not regenerate the index"
     );
     let (status, body) = fixture
-        .mutate(
-            "POST",
-            None,
-            json!({"title":"Repair control","content":"control"}),
-        )
+        .mutate("PATCH", Some(id), json!({"title":"Revised"}))
         .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.get("warning").is_none(),
+        "ordinary responses stay compatible"
+    );
+    assert_eq!(body["id"], id);
+    assert_eq!(body["content"], "after");
+    assert_eq!(fixture.snapshot().await.rows.len(), 1);
     let index = fixture.index();
     for row in fixture.snapshot().await.rows {
         assert!(index.contains(&format!("({}.md)", row.0)));
     }
+    let executor = ToolExecutor::new(None)
+        .unwrap()
+        .with_group_notes(Some(fixture.root.path().join("Notes")))
+        .unwrap();
+    let native = executor.execute("ReadGroupNotes", json!({})).await;
+    assert_eq!(native.status, ToolStatus::Completed, "{}", native.output);
+    assert!(native.output.contains(&format!("({id}.md)")));
 }
 
 #[tokio::test]
@@ -475,7 +480,10 @@ async fn a_post_commit_index_failure_keeps_the_update_and_account_event() {
             json!({"title":"After","content":"after"}),
         )
         .await;
-    index_error(status, &body);
+    assert_eq!(status, StatusCode::OK, "{body}");
+    index_warning(&body);
+    assert_eq!(body["id"], id);
+    assert_eq!(body["content"], "after");
     let snapshot = fixture.snapshot().await;
     assert_eq!(snapshot.rows.len(), 1);
     assert_eq!(
@@ -503,7 +511,16 @@ async fn a_post_commit_index_failure_keeps_the_delete_and_a_repeat_delete_is_not
     fixture.block_index();
     let before = fixture.snapshot().await;
     let (status, body) = fixture.mutate("DELETE", Some(id), json!({})).await;
-    index_error(status, &body);
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body,
+        json!({"error":{
+            "code":"note_index_pending",
+            "message":"group note was deleted but its index could not be refreshed",
+            "details":{"committed":true,"group_id":fixture.group,"note_id":id,
+                "phase":"index_sync","reason":"group note index path is not a regular file"}
+        }})
+    );
     let snapshot = fixture.snapshot().await;
     assert_eq!(snapshot.rows[0].3, "deleted");
     assert_eq!(snapshot.events.len(), before.events.len() + 1);

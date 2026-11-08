@@ -14,19 +14,22 @@ afterEach(() => {
 })
 
 describe('API retry policy', () => {
-  it('preserves a committed note cleanup conflict without replaying DELETE', async () => {
+  it.each([
+    ['note_cleanup_pending', 'file_cleanup', 'failed to delete group note content', 'group note was deleted but its file cleanup failed'],
+    ['note_index_pending', 'index_sync', 'failed to write group note index', 'group note was deleted but its index could not be refreshed'],
+  ])('preserves a committed %s conflict without replaying DELETE', async (code, phase, reason, message) => {
     vi.useFakeTimers()
     const details = {
       committed: true,
       group_id: 'group-1',
       note_id: 'note-1',
-      phase: 'file_cleanup',
-      reason: 'failed to delete group note content',
+      phase,
+      reason,
     }
     const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => new Response(
       JSON.stringify({ error: {
-        code: 'note_cleanup_pending',
-        message: 'group note was deleted but its file cleanup failed',
+        code,
+        message,
         details,
       } }),
       { status: 409 },
@@ -37,7 +40,7 @@ describe('API retry policy', () => {
     await vi.runAllTimersAsync()
     const error = await pending
     expect(error).toBeInstanceOf(ApiError)
-    expect(error).toMatchObject({ status: 409, code: 'note_cleanup_pending', details })
+    expect(error).toMatchObject({ status: 409, code, message, details })
     expect(fetchMock).toHaveBeenCalledOnce()
   })
   it('does not replay a native mutation with uncertain delivery', async () => {

@@ -25,27 +25,31 @@ async fn revoked_call(bridge: &NotesBridge, name: &str, args: Value) {
 }
 
 #[tokio::test]
-async fn index_failure_is_a_tool_error_even_though_create_committed_and_revocation_still_blocks_writes(
+async fn index_failure_reports_saved_create_and_edit_without_tool_error_and_revocation_blocks_writes(
 ) {
     let (context, root) = fixture().await;
     let bridge = NotesBridge::start().await.unwrap();
     let lease = bridge.activate(context.clone());
     fs::create_dir_all(root.path().join("Notes/index.md")).unwrap();
     let events = event_count(&context).await;
-    let failed = call(
+    let created = call(
         &bridge,
         "CreateGroupNote",
         json!({"title":"Created","content":"saved body"}),
     )
     .await;
+    assert_ne!(created["isError"], true, "{created}");
+    let saved = output(&created);
     assert_eq!(
-        error_text(&failed),
-        "group note index path is not a regular file"
+        saved["warning"],
+        json!({"code":"note_index_pending","reason":"group note index path is not a regular file"})
     );
     let listed = output(&call(&bridge, "ReadGroupNotes", json!({})).await);
     assert_eq!(listed["notes"].as_array().unwrap().len(), 1);
     let path = listed["notes"][0]["path"].as_str().unwrap();
+    assert_eq!(saved["path"], path);
     let read = output(&call(&bridge, "ReadGroupNotes", json!({"path":path})).await);
+    assert_eq!(saved["id"], read["id"]);
     assert_eq!(read["content"], "saved body");
     let persisted: String = sqlx::query_scalar("SELECT content FROM group_notes")
         .fetch_one(&context.pool)
@@ -57,6 +61,19 @@ async fn index_failure_is_a_tool_error_even_though_create_committed_and_revocati
         "saved body"
     );
     assert_eq!(event_count(&context).await, events + 1);
+    let edited = call(
+        &bridge,
+        "EditGroupNote",
+        json!({"path":path,"edits":[{"old_text":"saved body","new_text":"edited body"}]}),
+    )
+    .await;
+    assert_ne!(edited["isError"], true, "{edited}");
+    let edited = output(&edited);
+    assert_eq!(edited["id"], saved["id"]);
+    assert_eq!(edited["path"], path);
+    assert_eq!(edited["content"], "edited body");
+    assert_eq!(edited["warning"], saved["warning"]);
+    assert_eq!(event_count(&context).await, events + 2);
     drop(lease);
     revoked_call(
         &bridge,
@@ -67,13 +84,13 @@ async fn index_failure_is_a_tool_error_even_though_create_committed_and_revocati
     revoked_call(
         &bridge,
         "EditGroupNote",
-        json!({"path":path,"edits":[{"old_text":"saved body","new_text":"not allowed"}]}),
+        json!({"path":path,"edits":[{"old_text":"edited body","new_text":"not allowed"}]}),
     )
     .await;
-    assert_eq!(event_count(&context).await, events + 1);
+    assert_eq!(event_count(&context).await, events + 2);
     assert_eq!(
         fs::read_to_string(root.path().join("Notes").join(path)).unwrap(),
-        "saved body"
+        "edited body"
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM group_notes")

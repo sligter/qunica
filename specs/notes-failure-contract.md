@@ -17,9 +17,10 @@ responses therefore need examination before extracting this business flow from
 
 ## Decision
 
-R08a (`2f6976b`) established the failure matrix. The subsequent deletion fix moves
-unlink after COMMIT and strengthens its regression assertions. The matrix below
-includes that correction; other observed defects remain explicitly unfixed.
+R08a (`2f6976b`) established the failure matrix. The deletion fix (`47c1658`)
+moves unlink after COMMIT. Committed writes now distinguish a failed derived
+index from a failed note operation. The matrix includes these corrections;
+create/update COMMIT failures remain explicitly unfixed.
 
 | Injected failure | HTTP result | Database / account events | Body and index / reread |
 | --- | --- | --- | --- |
@@ -30,9 +31,10 @@ includes that correction; other observed defects remain explicitly unfixed.
 | Title-only update COMMIT rejected | Same update error | Original row/events restored | Independently edited file remains unchanged. |
 | Delete COMMIT rejected | 500 `failed to commit group note delete` | Registration remains active; no deletion event | File bytes remain, including completed native edits and an edit performed during the UPDATE. GET retains those bytes after database reopen. R08a demonstrated their loss before this fix. |
 | File removal fails after delete commits | 409 `note_cleanup_pending`, committed identity in details | Deleted row and account event remain committed | File and stale index may remain. GET/repeated DELETE are 404. Releasing the external lock does not automatically replay cleanup. |
-| Index path is a directory after create commits | 400 `group note index path is not a regular file` | New row and account event committed | New body exists and can be read by registered ID. An explicit repeat POST creates a second active note; the test performs the repeat deliberately, not as a recommended recovery policy. |
-| Same index failure after update | Same 400 | Updated row and account event committed | Updated body is readable. Removing the obstruction and reading does not regenerate the index. |
-| Same index failure after delete | Same 400 | Deleted row and account event committed | Body is absent, GET/repeated DELETE are 404, list excludes the note; repeat deletion does not emit a second event. |
+| Index path is a directory after create commits | 201 with saved note identity and `warning.code=note_index_pending` | New row and account event committed | New body is readable by registered ID. No repeat create is required. Removing the obstruction and making a legitimate title-only update refreshes the index without creating another note. |
+| Same index failure after update | 200 with saved note identity and the same warning | Updated row and account event committed | Updated body is readable. Removing the obstruction and reading does not regenerate the index. |
+| Same index failure after delete | 409 `note_index_pending`, committed identity in details | Deleted row and account event committed | Body is absent, GET/repeated DELETE are 404, list excludes the note; repeat deletion does not emit a second event. |
+| Windows sharing lock permits index reads/deletion but denies writing | Same 201/200 warning or DELETE 409, reason `failed to write group note index` | Each actual note mutation emits exactly one event | Existing index bytes remain intact. After releasing the lock a successful update regenerates the index, including new notes and excluding deleted notes. |
 
 SQLite faults use test-owned triggers and a `DEFERRABLE INITIALLY DEFERRED`
 foreign key. A control test proves INSERT succeeds and the actual COMMIT fails
@@ -58,10 +60,33 @@ DELETE. Pre-commit SQL/path/permission errors and successful 204 responses keep
 their existing meanings. No shared retry policy or frontend production code is
 changed. Cleanup/index reconciliation remains explicit pending work.
 
-ACP bridge tests exercise real loopback JSON-RPC. A post-commit create error has
-`isError: true` even though listing/reading finds the committed note. An edit
-COMMIT error leaves the new file readable with the old DB body and no new account
-event; repeating the same exact replacement fails because the old text is absent.
+The create/update response adds an **optional** field only when the post-commit
+index refresh fails:
+
+```json
+{"id":"<note-id>","group_id":"<group-id>","title":"Saved","content":"body","created_at":"...","updated_at":"...","warning":{"code":"note_index_pending","reason":"group note index path is not a regular file"}}
+```
+
+This is a successful note write, not an instruction to retry it. Ordinary writes,
+GET and list omit `warning` entirely, preserving their previous JSON shapes.
+The existing TypeScript note type includes the optional warning; this endpoint
+already uses the generic API client rather than a Notes-specific Zod schema.
+The panel closes its save form and shows a translated saved/index-pending notice.
+The original index path checks still reject directories and symlinks; warnings
+do not authorize overwriting an obstruction.
+
+DELETE still returns 204 when all steps succeed. Its index error uses the existing
+error envelope, code `note_index_pending`, and details
+`{committed:true,group_id,note_id,phase:"index_sync",reason:"..."}` with status 409.
+The client preserves these details and does not automatically retry DELETE.
+
+ACP bridge tests exercise real loopback JSON-RPC. Committed create/edit results
+have `isError: false`, the saved identity/path, and the same warning. Approved
+Assistant create/update actions finish as `applied` and persist that result in
+`result_json`; approving the same action again returns it without another note
+mutation or account event. An edit COMMIT error still leaves the new file readable
+with the old DB body and no new account event; repeating the same exact replacement
+fails because the old text is absent.
 Revoking the lease still rejects create/edit with 403 and leaves data unchanged.
 Existing tests retain membership, cross-group, stale-edit and delayed-revocation
 coverage.
@@ -83,10 +108,20 @@ between SQLite and the filesystem. A crash or cleanup error after commit can
 leave the deleted note's file; that is reported explicitly when a response is
 available, without replaying the operation or falsely marking it uncommitted.
 
-The other confirmed P1 defect remains: an operation can commit while reporting
-an index error, with duplicate creation on explicit retry. Failed updates/orphan
-creates also remain inconsistent. These are fault-injection results, not claims
-about normal production incidence.
+Index refresh failures now report the committed identity without marking a saved
+create/edit as failed. Failed updates/orphan creates on COMMIT rejection remain
+inconsistent. These are fault-injection results, not claims about normal production
+incidence. A deliberately submitted new POST is still a new create; this change
+does not introduce a request deduplication key or guarantee exactly-once delivery.
+
+Index convergence retains the existing rule: a subsequent successful note write
+rebuilds it from active registrations. Native readers use the physical index;
+ACP lists registrations directly and can still list saved notes while the index
+is blocked. Reads have no new filesystem side effects. A standalone repair command
+or startup repair is separate work; no artificial note edit or replay of the
+original create is recommended as recovery. A lock/obstruction must be resolved
+before refresh can succeed. The deletion UI still uses its existing conflict
+error display/cache handling; no broader query invalidation policy changes here.
 
 R08 remains in progress. Preserve these observations in separate bug-fix reviews
 before moving shared business ownership:
@@ -94,12 +129,12 @@ before moving shared business ownership:
 | Next slice | Required outcome and verification |
 | --- | --- |
 | R08b2: failed create/update body mutation | Deletion's rejected COMMIT now preserves bytes. Establish equally strong create/update invariants without replacing file-first reads or overwriting newer external edits. Choose write ordering or a staged recovery scheme only after examining its own failure windows. |
-| R08c: committed operation with failed index | Define how callers learn committed identity/outcome and how the index converges. An ambiguous error must not invite an automatic replay of create. Include HTTP, ACP, native Notes readers and approved Assistant action consumers; assess compatibility explicitly. |
+| R08c: committed operation with failed index | Saved create/edit results and committed DELETE conflicts now cover HTTP, ACP, native-reader convergence on the next successful write, and approved Assistant action consumers. Standalone repair and post-commit reread failures still need an independently tested policy. |
 | R08d: shared Notes service | Reuse the existing authoring guide, workspace checks and write guard. Extract only after the failure policy is explicit; preserve file-first reads, ownership, membership, symlink rejection, expected-content checks and lease revocation. |
 
-The fix changes deletion's failure ordering and adds an explicit committed-cleanup
-error. Routes, normal responses, schema, security policy, shared retry policy and
-file authority stay compatible. Revisit the observed assertions when a verified
+The fixes change deletion's failure ordering, add committed-cleanup/index errors,
+and an optional write warning. Routes, ordinary response shapes, database schema,
+security policy, shared retry policy and file authority stay compatible. Revisit the observed assertions when a verified
 fix deliberately changes them; replace them with stronger invariants, not skips
 or relaxed checks. These tests do not simulate process termination, power loss,
 partial/short writes, disk exhaustion, permission races or real remote platforms.
