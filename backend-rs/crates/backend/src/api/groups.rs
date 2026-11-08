@@ -3352,11 +3352,30 @@ pub async fn delete_group_note(
     .await
     .map_err(|_| ApiError::internal("failed to delete group note"))?;
 
-    delete_group_note_content(&root, &note_id)?;
+    // Note: native note edits may exist only in the file. Validate first, but
+    // never unlink before COMMIT: rollback cannot recover those newer bytes.
+    group_note_path(&root, &note_id)?;
+    inspect_group_note_file(&root, &note_id)?;
 
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit group note delete"))?;
+    delete_group_note_content(&root, &note_id).map_err(|error| {
+        // DELETE 500 responses are retried by the existing API client. Report
+        // the committed identity as a conflict instead of replaying cleanup.
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "note_cleanup_pending",
+            "group note was deleted but its file cleanup failed",
+        )
+        .with_details(serde_json::json!({
+            "committed": true,
+            "group_id": group_id,
+            "note_id": note_id,
+            "phase": "file_cleanup",
+            "reason": error.message_text(),
+        }))
+    })?;
     sync_group_note_index(state.db.pool(), &root, &group_id).await?;
 
     Ok(StatusCode::NO_CONTENT)

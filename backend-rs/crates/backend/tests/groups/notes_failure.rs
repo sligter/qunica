@@ -8,6 +8,9 @@ use qunica_backend::{
 };
 use std::fs;
 
+#[path = "notes_failure/delete_commit.rs"]
+mod delete_commit;
+
 #[derive(Debug, PartialEq, Eq)]
 struct Snapshot {
     rows: Vec<(String, String, String, String, String, String)>,
@@ -361,7 +364,7 @@ async fn failed_title_only_commit_keeps_the_independently_edited_file() {
 }
 
 #[tokio::test]
-async fn failed_delete_commit_restores_registration_but_loses_file_only_edits_after_reopen() {
+async fn failed_delete_commit_preserves_native_edits_after_reopen() {
     let mut fixture = Fixture::new(true).await;
     let note = fixture.create().await;
     let id = note["id"].as_str().unwrap();
@@ -391,12 +394,19 @@ async fn failed_delete_commit_restores_registration_but_loses_file_only_edits_af
         }
         assert_eq!(fixture.snapshot().await, before);
         assert_eq!(fixture.index(), index);
-        assert!(!fixture.note_path(id).exists());
+        assert!(
+            fixture.note_path(id).is_file(),
+            "COMMIT rejection must preserve the native edit"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.note_path(id)).unwrap(),
+            "file-only newer body"
+        );
         let (status, note) = fixture.get(id).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
-            note["content"], "db before",
-            "missing file falls back to older SQLite body"
+            note["content"], "file-only newer body",
+            "failed deletion must not replace a native edit with the database fallback"
         );
     }
     fixture.state.db.pool().close().await;

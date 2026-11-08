@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { ApiError, fetchJson } from './client'
 import {
   fetchWithRetry,
   isRetryableHttpStatus,
@@ -13,6 +14,32 @@ afterEach(() => {
 })
 
 describe('API retry policy', () => {
+  it('preserves a committed note cleanup conflict without replaying DELETE', async () => {
+    vi.useFakeTimers()
+    const details = {
+      committed: true,
+      group_id: 'group-1',
+      note_id: 'note-1',
+      phase: 'file_cleanup',
+      reason: 'failed to delete group note content',
+    }
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => new Response(
+      JSON.stringify({ error: {
+        code: 'note_cleanup_pending',
+        message: 'group note was deleted but its file cleanup failed',
+        details,
+      } }),
+      { status: 409 },
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    const pending = fetchJson('/groups/group-1/notes/note-1', { method: 'DELETE' })
+      .catch((error: unknown) => error)
+    await vi.runAllTimersAsync()
+    const error = await pending
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({ status: 409, code: 'note_cleanup_pending', details })
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
   it('does not replay a native mutation with uncertain delivery', async () => {
     const error = Object.assign(new TypeError('encrypted connection lost'), { requestMayHaveBeenSent: true })
     const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(error)
