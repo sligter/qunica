@@ -1,4 +1,8 @@
 //! Durable command acceptance; HTTP and WS share this service and worker.
+#[cfg(test)]
+#[path = "commands/acceptance_tests.rs"]
+mod acceptance_tests;
+
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},

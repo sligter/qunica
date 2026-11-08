@@ -13,6 +13,9 @@ use tokio_tungstenite::{
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[path = "realtime/command_acceptance.rs"]
+mod command_acceptance;
+
 async fn request(
     app: &Router,
     method: &str,
