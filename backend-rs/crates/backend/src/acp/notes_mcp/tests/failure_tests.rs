@@ -1,0 +1,138 @@
+use super::*;
+use std::fs;
+
+fn error_text(result: &Value) -> &str {
+    assert_eq!(result["isError"], true, "{result}");
+    result["content"][0]["text"].as_str().unwrap()
+}
+
+async fn event_count(context: &NotesContext) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM account_events WHERE group_id=? AND kind='note.changed'",
+    )
+    .bind(&context.group_id)
+    .fetch_one(&context.pool)
+    .await
+    .unwrap()
+}
+
+async fn revoked_call(bridge: &NotesBridge, name: &str, args: Value) {
+    let response = reqwest::Client::builder().no_proxy().build().unwrap()
+        .post(&bridge.endpoint).bearer_auth(&bridge.state.token)
+        .json(&json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":args}}))
+        .send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn index_failure_is_a_tool_error_even_though_create_committed_and_revocation_still_blocks_writes(
+) {
+    let (context, root) = fixture().await;
+    let bridge = NotesBridge::start().await.unwrap();
+    let lease = bridge.activate(context.clone());
+    fs::create_dir_all(root.path().join("Notes/index.md")).unwrap();
+    let events = event_count(&context).await;
+    let failed = call(
+        &bridge,
+        "CreateGroupNote",
+        json!({"title":"Created","content":"saved body"}),
+    )
+    .await;
+    assert_eq!(
+        error_text(&failed),
+        "group note index path is not a regular file"
+    );
+    let listed = output(&call(&bridge, "ReadGroupNotes", json!({})).await);
+    assert_eq!(listed["notes"].as_array().unwrap().len(), 1);
+    let path = listed["notes"][0]["path"].as_str().unwrap();
+    let read = output(&call(&bridge, "ReadGroupNotes", json!({"path":path})).await);
+    assert_eq!(read["content"], "saved body");
+    let persisted: String = sqlx::query_scalar("SELECT content FROM group_notes")
+        .fetch_one(&context.pool)
+        .await
+        .unwrap();
+    assert_eq!(persisted, "saved body");
+    assert_eq!(
+        fs::read_to_string(root.path().join("Notes").join(path)).unwrap(),
+        "saved body"
+    );
+    assert_eq!(event_count(&context).await, events + 1);
+    drop(lease);
+    revoked_call(
+        &bridge,
+        "CreateGroupNote",
+        json!({"title":"Revoked","content":"not allowed"}),
+    )
+    .await;
+    revoked_call(
+        &bridge,
+        "EditGroupNote",
+        json!({"path":path,"edits":[{"old_text":"saved body","new_text":"not allowed"}]}),
+    )
+    .await;
+    assert_eq!(event_count(&context).await, events + 1);
+    assert_eq!(
+        fs::read_to_string(root.path().join("Notes").join(path)).unwrap(),
+        "saved body"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM group_notes")
+            .fetch_one(&context.pool)
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn failed_edit_commit_reports_error_but_reads_the_new_file_and_does_not_replay_an_exact_edit()
+{
+    let (context, root) = fixture().await;
+    let bridge = NotesBridge::start().await.unwrap();
+    let lease = bridge.activate(context.clone());
+    let created = output(
+        &call(
+            &bridge,
+            "CreateGroupNote",
+            json!({"title":"Before","content":"before body"}),
+        )
+        .await,
+    );
+    let path = created["path"].as_str().unwrap();
+    let events = event_count(&context).await;
+    let index = fs::read_to_string(root.path().join("Notes/index.md")).unwrap();
+    for statement in [
+        "CREATE TABLE test_note_commit_parent(id INTEGER PRIMARY KEY)",
+        "CREATE TABLE test_note_commit_child(parent_id INTEGER REFERENCES test_note_commit_parent(id) DEFERRABLE INITIALLY DEFERRED)",
+        "CREATE TRIGGER test_note_commit_failure AFTER UPDATE ON group_notes BEGIN INSERT INTO test_note_commit_child(parent_id) VALUES(1); END",
+    ] { sqlx::query(statement).execute(&context.pool).await.unwrap(); }
+    let edit = json!({"path":path,"edits":[{"old_text":"before body","new_text":"after body"}]});
+    let failed = call(&bridge, "EditGroupNote", edit.clone()).await;
+    assert_eq!(error_text(&failed), "failed to commit group note update");
+    assert_eq!(event_count(&context).await, events);
+    assert_eq!(
+        fs::read_to_string(root.path().join("Notes/index.md")).unwrap(),
+        index
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("Notes").join(path)).unwrap(),
+        "after body"
+    );
+    let persisted: String = sqlx::query_scalar("SELECT content FROM group_notes")
+        .fetch_one(&context.pool)
+        .await
+        .unwrap();
+    assert_eq!(persisted, "before body");
+    let read = output(&call(&bridge, "ReadGroupNotes", json!({"path":path})).await);
+    assert_eq!(read["content"], "after body");
+    let repeated = call(&bridge, "EditGroupNote", edit.clone()).await;
+    assert!(error_text(&repeated).contains("not found"), "{repeated}");
+    assert_eq!(event_count(&context).await, events);
+    assert_eq!(
+        fs::read_to_string(root.path().join("Notes").join(path)).unwrap(),
+        "after body"
+    );
+    drop(lease);
+    revoked_call(&bridge, "EditGroupNote", edit).await;
+    assert_eq!(event_count(&context).await, events);
+}

@@ -16,6 +16,9 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[path = "groups/notes_failure.rs"]
+mod notes_failure;
+
 async fn app() -> Router {
     qunica_backend::api::router_for_tests().await
 }

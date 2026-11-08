@@ -494,6 +494,8 @@ async fn relay() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    mod failure_tests;
+
     async fn fixture() -> (NotesContext, tempfile::TempDir) {
         let db = crate::db::Db::connect("sqlite::memory:").await.unwrap();
         db.migrate().await.unwrap();
