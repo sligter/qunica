@@ -14,12 +14,9 @@ use super::{
     schedule::{MissedPolicy, Schedule, Trigger},
     signature,
 };
-use crate::api::{
-    auth,
-    commands::{self, Command, MessageAcceptance, PreparedMessage},
-    error::ApiError,
-    AppState,
-};
+use crate::api::{auth, commands, error::ApiError, AppState};
+
+use crate::db::commands::{self as command_store, Command, MessageAcceptance, PreparedMessage};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -404,7 +401,7 @@ async fn cancel_queued(tx: &mut Transaction<'_, Sqlite>, automation: &str) -> Re
     let ids:Vec<String>=sqlx::query_scalar("SELECT id FROM execution_jobs WHERE automation_id=? AND status='queued' AND worker_active=0 AND occupies_thread=0")
         .bind(automation).fetch_all(&mut **tx).await.map_err(db_error)?;
     for id in ids {
-        commands::cancel_queued_job_in_tx(tx, &id)
+        command_store::cancel_queued_job_in_tx(tx, &id)
             .await
             .map_err(db_error)?;
     }
@@ -628,7 +625,9 @@ async fn watchdog_thread(
     .await
     .map_err(db_error)?;
     if let Some(thread) = existing {
-        commands::reopen_paused_thread_in_tx(tx, &thread, now).await?;
+        command_store::reopen_paused_thread_in_tx(tx, &thread, now)
+            .await
+            .map_err(command_store_error)?;
         return Ok(thread);
     }
     let thread = new_thread(tx, a, &a.name, now).await?;
@@ -662,8 +661,8 @@ async fn accept(
         target: json!({"conversation_id":a.group_id,"thread_id":thread}),
         payload: json!({"content":prepared.content}),
     };
-    let digest = commands::payload_hash(&command);
-    commands::insert_message_in_tx(
+    let digest = command_store::payload_hash(&command);
+    command_store::insert_message_in_tx(
         tx,
         MessageAcceptance {
             owner: &a.owner_id,
@@ -674,7 +673,7 @@ async fn accept(
             prepared: &prepared,
             now,
             reuse_job: None,
-            author: content_json.map(|meta| commands::MessageAuthor {
+            author: content_json.map(|meta| command_store::MessageAuthor {
                 sender_type: "user",
                 sender_id: Some(&a.owner_id),
                 message_type: "text",
@@ -683,6 +682,7 @@ async fn accept(
         },
     )
     .await
+    .map_err(command_store_error)
 }
 
 /// Route an event of an external topic.
@@ -784,7 +784,9 @@ async fn deliver(
     target: &Target<'_>,
     automation: Option<&str>,
 ) -> Result<Value, ApiError> {
-    commands::reopen_paused_thread_in_tx(tx, thread, target.now).await?;
+    command_store::reopen_paused_thread_in_tx(tx, thread, target.now)
+        .await
+        .map_err(command_store_error)?;
     type Pending = (String, String, String, String, String, String, String);
     let pending: Option<Pending> = sqlx::query_as(
         "SELECT j.id,j.request_id,j.turn_id,j.stream_id,m.id,COALESCE(m.content,''),m.meta \
@@ -1084,4 +1086,8 @@ pub async fn tick(
         commands::launch(state.clone());
     }
     Ok(accepted)
+}
+
+fn command_store_error(error: command_store::CommandStoreError) -> ApiError {
+    ApiError::internal(error.to_string())
 }

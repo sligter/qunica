@@ -99,7 +99,7 @@ pub async fn sync_pending_in_tx(
         }
         sqlx::query("INSERT INTO pending_approvals(id,owner_id,group_id,thread_id,tool_call_id,action_hash,action_json,request_json,created_at,updated_at) SELECT ?,g.owner_id,t.group_id,t.id,?,?,?,?,?,? FROM threads t JOIN groups g ON g.id=t.group_id WHERE t.id=?")
             .bind(Uuid::new_v4().to_string()).bind(id).bind(hash).bind(action.to_string()).bind(request.to_string())
-            .bind(crate::api::commands::now()).bind(crate::api::commands::now()).bind(thread).execute(&mut **tx).await?;
+            .bind(crate::db::commands::now()).bind(crate::db::commands::now()).bind(thread).execute(&mut **tx).await?;
     }
     Ok(())
 }
@@ -131,7 +131,7 @@ pub async fn verify_resolved_action(
         );
         if status == "pending" {
             let changed=sqlx::query("UPDATE pending_approvals SET status='resolved',version=version+1,decision_json=?,updated_at=? WHERE thread_id=? AND tool_call_id=? AND status='pending' AND action_hash=?")
-                .bind(serde_json::to_string(decision)?).bind(crate::api::commands::now()).bind(thread).bind(&call.id).bind(&hash).execute(pool).await?.rows_affected();
+                .bind(serde_json::to_string(decision)?).bind(crate::db::commands::now()).bind(thread).bind(&call.id).bind(&hash).execute(pool).await?.rows_affected();
             anyhow::ensure!(changed == 1, "approval was already resolved");
             return Ok(());
         }

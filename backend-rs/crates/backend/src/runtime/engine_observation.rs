@@ -39,7 +39,7 @@ impl Observation {
         // Note: pause only gates intake. Existing accepted calls/approvals retain
         // their engine; routing them to native would discard signed history.
         let paused = paused && start.engine == "rig" && !start.resumed;
-        let now = crate::api::commands::now();
+        let now = crate::db::commands::now();
         let version = if start.engine == "rig" {
             RIG_VERSION.to_string()
         } else {
@@ -126,7 +126,7 @@ impl Observation {
         sqlx::query("UPDATE engine_executions SET status=?,active_duration_ms=active_duration_ms+?,tool_calls=?,settled_tool_calls=?,tool_errors=?,unsettled_tools=?,updated_at=? WHERE id=?")
             .bind(status).bind(self.started.elapsed().as_millis().min(i64::MAX as u128) as i64)
             .bind(calls.len() as i64).bind(settled).bind(errors).bind(unsettled)
-            .bind(crate::api::commands::now()).bind(&self.id).execute(pool).await?;
+            .bind(crate::db::commands::now()).bind(&self.id).execute(pool).await?;
         Ok(())
     }
 }

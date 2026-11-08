@@ -1,3 +1,5 @@
+pub(crate) mod commands;
+
 use std::{str::FromStr, time::Duration};
 
 use sqlx::{

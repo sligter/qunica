@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use uuid::Uuid;
 
-use crate::api::commands;
+use crate::db::commands;
 use crate::llm::ToolDefinition;
 use crate::runtime::recall::{load_thread, minutes_since, progress};
 use crate::runtime::router::{db, required, task_status};

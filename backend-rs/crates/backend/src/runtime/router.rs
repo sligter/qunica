@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::api::automations::topics;
-use crate::api::commands::{
+use crate::db::commands::{
     self, cancel_turn_effects_in_tx, insert_message_in_tx, payload_hash,
     reopen_paused_thread_in_tx, Command, MessageAcceptance, MessageAuthor, PreparedMessage,
 };
@@ -294,7 +294,7 @@ impl RouterTools {
         let now = commands::now();
         reopen_paused_thread_in_tx(&mut tx, task, &now)
             .await
-            .map_err(|error| error.message_text())?;
+            .map_err(|error| error.to_string())?;
         self.post_in_tx(&mut tx, task, &instructions, &now).await?;
         // Note: omitted topics keep the task's subscriptions; a given list
         // replaces them, which is how a cancelled task gets its topics back.
@@ -392,7 +392,7 @@ impl RouterTools {
         let now = commands::now();
         reopen_paused_thread_in_tx(&mut tx, &task, &now)
             .await
-            .map_err(|error| error.message_text())?;
+            .map_err(|error| error.to_string())?;
         let accepted = self.post_in_tx(&mut tx, &task, &message, &now).await?;
         tx.commit().await.map_err(db)?;
         Ok(json!({
@@ -624,7 +624,7 @@ impl RouterTools {
             },
         )
         .await
-        .map_err(|error| error.message_text())
+        .map_err(|error| error.to_string())
     }
 }
 
@@ -706,7 +706,7 @@ async fn cancel_in_tx(
     for turn in &turns {
         cancel_turn_effects_in_tx(tx, turn, task)
             .await
-            .map_err(|error| error.message_text())?;
+            .map_err(|error| error.to_string())?;
     }
     // A stopped task stops following its topics; their events come back to
     // the router.
@@ -834,7 +834,7 @@ pub(crate) async fn report_in_tx(
         },
     )
     .await
-    .map_err(|error| sqlx::Error::Protocol(error.message_text()))?;
+    .map_err(|error| sqlx::Error::Protocol(error.to_string()))?;
     Ok(())
 }
 
