@@ -8,6 +8,8 @@ use qunica_backend::{
 };
 use std::fs;
 
+#[path = "notes_failure/create_commit.rs"]
+mod create_commit;
 #[path = "notes_failure/delete_commit.rs"]
 mod delete_commit;
 #[path = "notes_failure/index_result.rs"]
@@ -277,8 +279,8 @@ async fn a_deferred_constraint_rejects_commit_after_successful_statement_executi
 }
 
 #[tokio::test]
-async fn failed_create_commit_leaves_an_unregistered_file_but_no_registration_or_event() {
-    let fixture = Fixture::new(false).await;
+async fn failed_create_commit_leaves_no_published_note_or_registration_after_reopen() {
+    let mut fixture = Fixture::new(true).await;
     let before = fixture.snapshot().await;
     fixture.reject_commit("INSERT").await;
     let (status, body) = fixture
@@ -291,20 +293,22 @@ async fn failed_create_commit_leaves_an_unregistered_file_but_no_registration_or
     internal_error(status, &body, "failed to commit group note create");
     assert_eq!(fixture.snapshot().await, before);
     assert!(!fixture.index_path().exists());
-    let files = fs::read_dir(fixture.root.path().join("Notes"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect::<Vec<_>>();
-    assert_eq!(files.len(), 1);
-    assert_eq!(fs::read_to_string(&files[0]).unwrap(), "orphan body");
-    let id = files[0].file_stem().unwrap().to_str().unwrap();
-    Uuid::parse_str(id).unwrap();
-    assert_eq!(fixture.get(id).await.0, StatusCode::NOT_FOUND);
-    assert!(fixture.list().await.is_empty());
-    assert!(
-        !fixture.index_path().exists(),
-        "a read does not repair the orphan or index"
-    );
+    for reopen in [false, true] {
+        if reopen {
+            fixture.reopen().await;
+        }
+        assert_eq!(fixture.snapshot().await, before);
+        assert!(fixture.list().await.is_empty());
+        assert_eq!(
+            fs::read_dir(fixture.root.path().join("Notes"))
+                .unwrap()
+                .count(),
+            0,
+            "a rejected COMMIT must not publish Markdown or retain its temporary file"
+        );
+        assert!(!fixture.index_path().exists());
+    }
+    fixture.state.db.pool().close().await;
 }
 
 #[tokio::test]

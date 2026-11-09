@@ -31,7 +31,7 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
   const [creating, setCreating] = useState(false)
   const [title, setTitle] = useState('')
   const [noteContent, setNoteContent] = useState('')
-  const [indexPending, setIndexPending] = useState(false)
+  const [savedWarning, setSavedWarning] = useState<GroupNoteRead['warning']>()
   const note = useGroupNote(groupId, editing?.id)
 
   useEffect(() => {
@@ -41,7 +41,7 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
   }, [editing, note.data])
 
   const openCreate = () => {
-    setIndexPending(false)
+    setSavedWarning(undefined)
     setEditing(null)
     setCreating(true)
     setTitle('')
@@ -49,7 +49,7 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
   }
 
   const openEdit = (note: GroupNoteRead) => {
-    setIndexPending(false)
+    setSavedWarning(undefined)
     setCreating(false)
     setEditing(note)
     setTitle(note.title)
@@ -67,7 +67,7 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
         data: { title, content },
       })
     }
-    setIndexPending(saved?.warning?.code === 'note_index_pending')
+    setSavedWarning(saved?.warning)
     setCreating(false)
     setEditing(null)
   }
@@ -224,9 +224,11 @@ export function GroupNotesPanel({ groupId }: GroupNotesPanelProps) {
           )}
         </>
       )}
-      {indexPending && (
+      {savedWarning && (
         <p className="text-sm text-muted-foreground" role="status">
-          {t('chat:workspace.notesPanel.savedIndexPending')}
+          {t(savedWarning.code === 'note_content_pending'
+            ? 'chat:workspace.notesPanel.savedContentPending'
+            : 'chat:workspace.notesPanel.savedIndexPending')}
         </p>
       )}
       {mutationError && (

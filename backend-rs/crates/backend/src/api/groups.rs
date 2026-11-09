@@ -13,6 +13,7 @@ use std::{
     io::{self, Write},
     path::{Path as FsPath, PathBuf},
 };
+use tempfile::NamedTempFile;
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -3208,25 +3209,42 @@ pub(crate) async fn create_group_note_with_pool(
     .map_err(|_| ApiError::internal("failed to create group note"))?;
 
     check_note_write_guard(guard)?;
-    write_group_note_content(&root, &note_id, &content)?;
+    // Note: publish only after COMMIT. Rollback must not leave an unregistered
+    // note or delete a target that another writer may have created meanwhile.
+    let staged = stage_group_note_create(&root, &note_id, &content)?;
 
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit group note create"))?;
-    // Note: COMMIT succeeded. An index failure must not invite a replay of the
-    // saved operation (including ACP calls and approved Assistant actions).
-    let warning = sync_group_note_index(pool, &root, &group_id)
-        .await
-        .err()
-        .map(|error| GroupNoteWarning {
-            code: "note_index_pending",
+    // A scoped MCP dispatch can expire while COMMIT awaits. Registration is
+    // already durable, but a revoked lease must not start a new file publication.
+    let publication = check_note_write_guard(guard)
+        .and_then(|()| publish_group_note_create(&root, &note_id, staged));
+    let content_pending = publication.is_err();
+    // Stop filesystem work if publication failed. Refresh the index only after
+    // successful publication; retain identity without inviting callers to retry.
+    let warning = match publication {
+        Err(error) => Some(GroupNoteWarning {
+            code: "note_content_pending",
             reason: error.message_text(),
-        });
+        }),
+        Ok(()) => sync_group_note_index(pool, &root, &group_id)
+            .await
+            .err()
+            .map(|error| GroupNoteWarning {
+                code: "note_index_pending",
+                reason: error.message_text(),
+            }),
+    };
 
     let row = fetch_group_note_row(pool, &group_id, &note_id)
         .await?
         .ok_or_else(|| ApiError::internal("group note vanished after insert"))?;
-    let content = read_group_note_content(&root, &row.id, &row.content)?;
+    let content = if content_pending {
+        row.content.clone()
+    } else {
+        read_group_note_content(&root, &row.id, &row.content)?
+    };
     let mut response = row.into_response_with_content(content);
     response.warning = warning;
     Ok(response)
@@ -6305,6 +6323,56 @@ fn read_group_note_content(
     }
 }
 
+fn stage_group_note_create(
+    root: &FsPath,
+    note_id: &str,
+    content: &str,
+) -> Result<NamedTempFile, ApiError> {
+    let path = group_note_path(root, note_id)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| ApiError::invalid_input("group notes path is invalid"))?;
+    fs::create_dir_all(parent)
+        .map_err(|_| ApiError::invalid_input("group notes path is not a directory"))?;
+    let path = group_note_path(root, note_id)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| ApiError::invalid_input("group notes path is invalid"))?;
+    if matches!(
+        inspect_group_note_file(root, note_id)?,
+        GroupNoteFileState::File
+    ) {
+        return Err(ApiError::conflict("new group note path already exists"));
+    }
+    // Use fs::write's standard creation permissions, including the Unix umask.
+    let mut staged = tempfile::Builder::new()
+        .make_in(parent, |path| {
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(path)
+        })
+        .map_err(|_| ApiError::internal("failed to stage group note content"))?;
+    staged
+        .write_all(content.as_bytes())
+        .map_err(|_| ApiError::internal("failed to write group note content"))?;
+    Ok(staged)
+}
+
+fn publish_group_note_create(
+    root: &FsPath,
+    note_id: &str,
+    staged: NamedTempFile,
+) -> Result<(), ApiError> {
+    let path = group_note_path(root, note_id)?;
+    inspect_group_note_file(root, note_id)?;
+    staged
+        .persist_noclobber(path)
+        .map(|_| ())
+        .map_err(|_| ApiError::internal("failed to publish group note content"))
+}
+
 fn write_group_note_content(root: &FsPath, note_id: &str, content: &str) -> Result<(), ApiError> {
     let path = group_note_path(root, note_id)?;
     let parent = path
@@ -6523,6 +6591,48 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn note_create_publication_never_overwrites_a_newer_target() {
+        for kind in ["file", "directory"] {
+            let root = tempfile::tempdir().unwrap();
+            let id = Uuid::new_v4().to_string();
+            let staged = stage_group_note_create(root.path(), &id, "staged body").unwrap();
+            let path = group_note_literal_path(root.path(), &id);
+            if kind == "file" {
+                fs::write(&path, "newer body").unwrap();
+            } else {
+                fs::create_dir(&path).unwrap();
+            }
+            assert!(publish_group_note_create(root.path(), &id, staged).is_err());
+            if kind == "file" {
+                assert_eq!(fs::read_to_string(&path).unwrap(), "newer body");
+            } else {
+                assert!(path.is_dir());
+            }
+            assert_eq!(fs::read_dir(root.path().join("Notes")).unwrap().count(), 1);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn note_create_publication_keeps_standard_creation_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let control = root.path().join("control.md");
+        fs::write(&control, "control").unwrap();
+        let id = Uuid::new_v4().to_string();
+        let staged = stage_group_note_create(root.path(), &id, "body").unwrap();
+        publish_group_note_create(root.path(), &id, staged).unwrap();
+        assert_eq!(
+            fs::metadata(control).unwrap().permissions().mode() & 0o777,
+            fs::metadata(group_note_literal_path(root.path(), &id))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        );
+    }
 
     #[test]
     fn git_paths_accept_the_directory_suffix_from_status() {

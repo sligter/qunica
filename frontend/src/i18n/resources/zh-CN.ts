@@ -440,6 +440,7 @@ export const zhCN: TranslationShape<typeof enUS> = {
       mentionPicker: '提及 Agent',
       notesPanel: {
         savedIndexPending: '笔记已保存，但共享笔记索引未能更新。请勿通过再次保存来重试。',
+        savedContentPending: '笔记已保存，但工作区中的正文文件未能创建。请勿再次创建来重试。',
         title: '群组笔记', description: '沉淀群内的决策、约定与踩坑记录；与主持模型及所有成员共享。', new: '新建笔记', titleLabel: '标题', titlePlaceholder: '笔记标题', contentLabel: '内容', contentPlaceholder: '写下笔记…', loading: '正在加载笔记…', empty: '暂无笔记', emptyNote: '打开后加载', deleteNamed: '删除笔记 {{title}}', loadError: '加载笔记失败：{{message}}', mutationError: '笔记操作失败：{{message}}',
         statusLabel: '状态', categoryLabel: '类别', reasonLabel: '否决原因（必填）',
         statuses: { proposed: '提议中', implemented: '已实施', rejected: '已否决', archived: '已归档' },

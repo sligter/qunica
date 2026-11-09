@@ -25,6 +25,140 @@ async fn revoked_call(bridge: &NotesBridge, name: &str, args: Value) {
 }
 
 #[tokio::test]
+async fn create_commit_failure_is_not_published_and_publication_failure_keeps_saved_identity() {
+    for rejected_commit in [true, false] {
+        let (context, root) = fixture().await;
+        if rejected_commit {
+            for statement in [
+                "CREATE TABLE test_create_parent(id INTEGER PRIMARY KEY)",
+                "CREATE TABLE test_create_child(parent_id INTEGER REFERENCES test_create_parent(id) DEFERRABLE INITIALLY DEFERRED)",
+                "CREATE TRIGGER test_create_failure AFTER INSERT ON group_notes BEGIN INSERT INTO test_create_child(parent_id) VALUES(1); END",
+            ] { sqlx::query(statement).execute(&context.pool).await.unwrap(); }
+        } else {
+            let notes = root.path().join("Notes");
+            let mut connection = context.pool.acquire().await.unwrap();
+            connection
+                .lock_handle()
+                .await
+                .unwrap()
+                .set_commit_hook(move || {
+                    if let Ok(entries) = fs::read_dir(&notes) {
+                        for entry in entries {
+                            let path = entry.unwrap().path();
+                            if path.is_file() && fs::read_to_string(&path).unwrap() == "saved body"
+                            {
+                                fs::remove_file(path).unwrap();
+                            }
+                        }
+                    }
+                    true
+                });
+        }
+        let bridge = NotesBridge::start().await.unwrap();
+        let lease = bridge.activate(context.clone());
+        let events = event_count(&context).await;
+        let result = call(
+            &bridge,
+            "CreateGroupNote",
+            json!({"title":"Created","content":"saved body"}),
+        )
+        .await;
+        if rejected_commit {
+            assert_eq!(error_text(&result), "failed to commit group note create");
+            assert_eq!(event_count(&context).await, events);
+            assert_eq!(fs::read_dir(root.path().join("Notes")).unwrap().count(), 0);
+            assert!(
+                output(&call(&bridge, "ReadGroupNotes", json!({})).await)["notes"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+        } else {
+            let saved = output(&result);
+            assert_eq!(
+                saved["warning"],
+                json!({"code":"note_content_pending","reason":"failed to publish group note content"})
+            );
+            let read =
+                output(&call(&bridge, "ReadGroupNotes", json!({"path":saved["path"]})).await);
+            assert_eq!(read["id"], saved["id"]);
+            assert_eq!(read["content"], "saved body");
+            assert_eq!(event_count(&context).await, events + 1);
+        }
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM group_notes")
+            .fetch_one(&context.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, i64::from(!rejected_commit));
+        drop(lease);
+        revoked_call(
+            &bridge,
+            "CreateGroupNote",
+            json!({"title":"Revoked","content":"not allowed"}),
+        )
+        .await;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM group_notes")
+                .fetch_one(&context.pool)
+                .await
+                .unwrap(),
+            count
+        );
+    }
+}
+
+#[tokio::test]
+async fn create_rechecks_the_lease_before_post_commit_publication() {
+    let (context, root) = fixture().await;
+    let bridge = NotesBridge::start().await.unwrap();
+    let lease = bridge.activate(context.clone());
+    let active = lease.0.clone();
+    let mut connection = context.pool.acquire().await.unwrap();
+    connection
+        .lock_handle()
+        .await
+        .unwrap()
+        .set_commit_hook(move || {
+            active.store(false, Ordering::SeqCst);
+            true
+        });
+    drop(connection);
+    let events = event_count(&context).await;
+    let saved = output(
+        &call(
+            &bridge,
+            "CreateGroupNote",
+            json!({"title":"Accepted","content":"saved body"}),
+        )
+        .await,
+    );
+    assert_eq!(
+        saved["warning"],
+        json!({"code":"note_content_pending","reason":"group notes access has expired"})
+    );
+    let notes = root.path().join("Notes");
+    assert_eq!(
+        fs::read_dir(&notes).unwrap().count(),
+        0,
+        "revocation during COMMIT must stop publication and index writes"
+    );
+    assert_eq!(event_count(&context).await, events + 1);
+    let persisted: (String, String) = sqlx::query_as("SELECT id,content FROM group_notes")
+        .fetch_one(&context.pool)
+        .await
+        .unwrap();
+    assert_eq!(saved["id"], persisted.0);
+    assert_eq!(persisted.1, "saved body");
+    revoked_call(
+        &bridge,
+        "CreateGroupNote",
+        json!({"title":"Denied","content":"not allowed"}),
+    )
+    .await;
+    assert_eq!(event_count(&context).await, events + 1);
+}
+
+#[tokio::test]
 async fn index_failure_reports_saved_create_and_edit_without_tool_error_and_revocation_blocks_writes(
 ) {
     let (context, root) = fixture().await;
