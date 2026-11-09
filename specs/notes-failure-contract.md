@@ -11,7 +11,8 @@ of corruption. See the [shared-notes contract](../backend-rs/crates/backend/src/
 
 Create executes SQL, stages the body in the same Notes directory, commits, then
 publishes without replacing an existing target and refreshes the index. Update
-still executes SQL, writes the body, commits, then refreshes the index. Delete
+prepares a file version, commits SQL, revalidates publication, writes in place,
+then refreshes the index. Delete
 validates the file path, commits the row deletion, removes the body, then refreshes
 the index. SQLite rollback cannot undo a completed filesystem operation. Error
 responses therefore need examination before extracting this business flow from
@@ -22,7 +23,8 @@ responses therefore need examination before extracting this business flow from
 R08a (`2f6976b`) established the failure matrix. The deletion fix (`47c1658`)
 moves unlink after COMMIT. Committed writes distinguish a failed derived index
 from a failed note operation. Creation now stages before COMMIT and publishes
-after it; update COMMIT failures remain explicitly unfixed.
+after it. Update also defers body writes until a successful COMMIT; its private
+`api::groups::note_update` module owns preparation and publication checks.
 
 | Injected failure | HTTP result | Database / account events | Body and index / reread |
 | --- | --- | --- | --- |
@@ -33,10 +35,14 @@ after it; update COMMIT failures remain explicitly unfixed.
 | Body staging file removed by an external actor during COMMIT | 201 with saved identity and `warning.code=note_content_pending` | Registration, DB body and account event committed exactly once | Publication fails; subsequent index writes stop. GET/ACP detail use the existing missing-file DB fallback, including after database reopen. A pre-existing index obstruction remains untouched. |
 | ACP lease revoked during COMMIT | MCP saved result with `note_content_pending`, reason `group notes access has expired` | The already accepted registration/body/event remain committed once | The existing write guard is checked again before publication: no final Markdown or index is written and the owned stage is removed. Later MCP requests receive 403. |
 | A regular file or directory appears at the target after staging (publisher unit test) | Publication helper rejects it | This filesystem test makes no claim about a transaction | Existing bytes/directory remain; the publisher does not replace the new target and cleans its own staging file. |
-| Content update COMMIT rejected | 500 `failed to commit group note update` | Original metadata/body and event sequence restored | New body remains in the file; old index remains. GET reads the new body with old metadata, including after closing/reopening SQLite and rebuilding the HTTP router. |
-| External file edit during UPDATE, followed by deferred-FK COMMIT rejection | Same update 500 | Original row and note event sequence restored | The current API file write overwrites the intervening edit with the request body. Reopening does not recover that external edit. This is an observed defect, not a desired contract. |
+| Content update COMMIT rejected | 500 `failed to commit group note update` | Original metadata/body and event sequence restored | The original file and index remain, including after database reopen. No target body is written before COMMIT. |
+| External file edit during UPDATE, followed by deferred-FK COMMIT rejection | Same update 500 | Original row and note event sequence restored | The intervening external edit remains, also after reopen. No backup compensation is attempted. |
 | COMMIT callback writes a newer body and rejects the commit | Same update 500 | SQLite rolls back the row/events | The newer external body remains, also after reopen. A future rollback handler must not restore an older backup over it. |
-| Approved update hits rejected COMMIT | 500 `app_action_failed`; approval becomes `failed` | Note row/events roll back; approval history records the error | The approved body still reaches the file. Reapproving the same failed action returns 409 and leaves a later external edit untouched; `failed` does not imply no file effect. |
+| Approved update hits rejected COMMIT | 500 `app_action_failed`; approval becomes `failed` | Note row/events roll back; approval history records the error | The original file remains. Reapproving the same failed action returns 409 and leaves a later external edit untouched. This is a confirmed rejection test, not classification of unknown COMMIT I/O outcomes. |
+| File edited, replaced with identical bytes, or removed during successful update COMMIT | 200 with accepted identity/body and `note_content_pending` | Accepted update remains committed | Changed/replacement bytes remain; removed files are not resurrected. Index writes stop. Normal GET stays file-first, or DB fallback for a missing file. |
+| Missing body at update preparation | 200 on success, existing 500 on rejected COMMIT, or 200/pending if a target appears during COMMIT | Accepted SQL/event only on successful COMMIT | Reuses staging/noclobber; rejected COMMIT leaves no final body or owned temporary file. A new target is preserved. |
+| Registration/content/group/workspace invalidated before publication | 200 with accepted receipt and content warning | No new mutation/event from publication barrier | Current state is checked on the writer connection, including single-connection pools; body/index stay unchanged. Triggers perform real state changes, not mocked queries. |
+| Write lease/membership revoked at update COMMIT, or file made read-only on Windows | 200/MCP saved receipt with content warning | Already accepted update remains committed | No body/index publication. Subsequent revoked access is denied. Approved pending updates remain applied; reapproval returns the same receipt without replay. |
 | Title-only update COMMIT rejected | Same update error | Original row/events restored | Independently edited file remains unchanged. |
 | Delete COMMIT rejected | 500 `failed to commit group note delete` | Registration remains active; no deletion event | File bytes remain, including completed native edits and an edit performed during the UPDATE. GET retains those bytes after database reopen. R08a demonstrated their loss before this fix. |
 | File removal fails after delete commits | 409 `note_cleanup_pending`, committed identity in details | Deleted row and account event remain committed | File and stale index may remain. GET/repeated DELETE are 404. Releasing the external lock does not automatically replay cleanup. |
@@ -99,8 +105,8 @@ all-platform atomicity or cleanup after process termination; some failures may
 leave an extra temporary link. The Unix permission comparison test is added for
 CI; it is not executed by Windows validation. No process-wide umask is changed.
 
-The create/update response adds an **optional** field only when the post-commit
-index refresh fails:
+The create/update response uses an **optional** two-field warning for a failed
+post-commit content publication or index refresh. An index failure example:
 
 ```json
 {"id":"<note-id>","group_id":"<group-id>","title":"Saved","content":"body","created_at":"...","updated_at":"...","warning":{"code":"note_index_pending","reason":"group note index path is not a regular file"}}
@@ -123,9 +129,9 @@ ACP bridge tests exercise real loopback JSON-RPC. Committed create/edit results
 have `isError: false`, the saved identity/path, and the same warning. Approved
 Assistant create/update actions finish as `applied` and persist that result in
 `result_json`; approving the same action again returns it without another note
-mutation or account event. An edit COMMIT error still leaves the new file readable
-with the old DB body and no new account event; repeating the same exact replacement
-fails because the old text is absent.
+mutation or account event. A confirmed rejected edit COMMIT keeps the original
+file and DB body with no new account event. An explicit repeat under the same
+fault also fails without a file effect; it is not an automatic retry.
 Revoking the lease still rejects create/edit with 403 and leaves data unchanged.
 Existing tests retain membership, cross-group, stale-edit and delayed-revocation
 coverage.
@@ -149,7 +155,7 @@ a replacement mock. A separate hard-link fixture exercises the same two APIs:
 
 | Existing operation | Protected DACL on Windows | Hard-link alias |
 | --- | --- | --- |
-| Notes content PATCH (`fs::write`) | Protection remains set | Alias sees the changed body. |
+| Notes content PATCH (checked handle, in-place write) | Protection remains set | Alias sees the changed body. |
 | Workspace text save (temporary file + persist) | Protection is lost | Alias keeps the preceding body; target has a different file identity. |
 
 These are observed compatibility differences. The DACL test measures the
@@ -184,9 +190,14 @@ between SQLite and the filesystem. A crash or cleanup error after commit can
 leave the deleted note's file; that is reported explicitly when a response is
 available, without replaying the operation or falsely marking it uncommitted.
 
+Content updates now read/hash the existing file during preparation and again
+before writing, and acquire a second short SQLite writer barrier. This adds I/O
+and lock work; no latency or throughput improvement is claimed. Revisit this
+boundary if measured note-update or SQLite writer wait becomes material.
+
 Index refresh failures report the committed identity without marking a saved
 create/edit as failed. A confirmed rejected create COMMIT no longer publishes an
-orphan note. Content updates on COMMIT rejection remain inconsistent. These are
+orphan note, and a rejected update COMMIT does not overwrite the target. These are
 fault-injection results, not claims about normal production
 incidence. A deliberately submitted new POST is still a new create; this change
 does not introduce a request deduplication key or guarantee exactly-once delivery.
@@ -213,53 +224,35 @@ before moving shared business ownership:
 
 | Next slice | Required outcome and verification |
 | --- | --- |
-| R08b2: failed body mutation | Rejected create COMMIT now leaves no final note. Establish update invariants without replacing file-first reads or overwriting newer external edits. Creation publication/temporary-file repair and crash recovery remain explicit boundaries. |
+| R08b2: failed body mutation | Rejected create/update COMMIT now leaves no final new note or overwritten body. Existing updates preserve metadata/identity and reject observed conflicting publication. Creation/update repair and crash recovery remain explicit boundaries. |
 | R08c: committed operation with failed index | Saved create/edit results and committed DELETE conflicts now cover HTTP, ACP, native-reader convergence on the next successful write, and approved Assistant action consumers. Standalone repair and post-commit reread failures still need an independently tested policy. |
 | R08d: shared Notes service | Reuse the existing authoring guide, workspace checks and write guard. Extract only after the failure policy is explicit; preserve file-first reads, ownership, membership, symlink rejection, expected-content checks and lease revocation. |
 
-### Next update-fix PR: preserve file identity and move writes after COMMIT
+### Update preparation and publication
 
-The new tests add a safety net; production update behavior is unchanged. The next
-bug-fix slice should use the existing in-place file semantics for existing notes,
-rather than directly copying Workspace replacement or restoring backups:
+Existing targets retain a read handle and raw SHA-256 digest before SQL UPDATE.
+The MCP expected-content check binds to that same snapshot. Preparation checks
+write access without create/truncate; publication reopens the file to honor
+changed permissions. Missing targets reuse creation staging/noclobber. Title-only
+updates do not rewrite or materialize a body; empty strings and NUL remain valid.
 
-1. **Strengthen failure assertions first.** Change the existing failed-update
-   expectation to preserve the prior file; change the during-UPDATE defect case
-   to preserve the intervening edit. Keep the during-COMMIT newer edit, DACL,
-   hard-link and reapproval assertions. Add publication faults and lease expiry
-   during the update COMMIT before changing production code.
-2. **Prepare under the existing SQLite writer transaction.** Capture a binary-safe
-   full-file digest and file identity for an existing target, using the same
-   snapshot for the MCP expected-content check. Do not add Workspace size/NUL
-   limits. For a missing file reuse creation's staging/noclobber flow. Title-only
-   updates must not materialize or rewrite a body.
-3. **Commit the accepted DB mutation without touching the target.** On confirmed
-   rejection drop only owned temporary resources. Never delete or restore the
-   target as compensation. Keep existing tool identity and note-event association.
-4. **Admit publication against current state.** Reuse `db::begin_write` as a
-   publication barrier to revalidate active registration, intended DB content and
-   workspace binding, then check the scoped guard after all awaited reads. This
-   must prevent an older call from publishing after a newer API update/delete.
-   The barrier performs no new note mutation or note event; lock-order and
-   in-memory-pool tests are required. Do not use `updated_at` as identity.
-5. **Preserve existing-file metadata.** Open an existing target without create or
-   truncation, check the opened file's identity/digest before changing bytes, and
-   keep its ACL and hard links. Revalidate the workspace/path fence. Evaluate the
-   already locked `same-file` 1.0.6 dependency for portable handle identity rather
-   than inventing raw OS bindings. A missing/replaced/version-conflicting target
-   must stop publication; a truly missing prepared target uses noclobber.
-6. **Report committed publication failures.** Return the accepted identity and
-   `note_content_pending`, stop index work, and keep ordinary GET file-first.
-   ACP/approved actions must retain a known saved receipt without replay. Extend
-   the existing localized message to cover updates as well as creation. Failure
-   after bytes may have been written is not evidence of non-execution.
-7. **Validate and review.** Run both complete Rust workspace configurations,
-   strict Clippy/fmt, frontend tests/lint/type/build when changing warning copy,
-   and Windows Tauri. Repeat the real Windows DACL/hard-link cases; run Unix
-   identity/permission cases in CI. Revert the isolated commit without a migration
-   if required, acknowledging that this restores the old failed-update defect.
+After COMMIT, `db::begin_write` supplies a short publication barrier. Its reads
+reuse that connection to check active registration/group, accepted body value,
+group owner, workspace identity/root/status and current membership. The scoped
+lease is checked after all awaits. This barrier neither mutates a note nor emits
+an event; it releases through rollback. A zero-row primary UPDATE is rejected.
+An accepted mutation whose publication is blocked returns its known receipt,
+without requiring a fresh DB/file read to recover the accepted identity.
 
-This plan does not promise atomic compare-and-swap against uncooperative external
+The already locked [same-file 1.0.6 Handle](https://docs.rs/same-file/1.0.6/same_file/struct.Handle.html)
+provides portable open-file identity in addition to the digest. Both lock files
+add only its direct backend dependency edge. Publication checks the opened file,
+path fence and identity before writing the handle in place. It refreshes identity
+after writing because Windows handle equality includes cached file size. Failures
+stop index work and reuse the optional `note_content_pending` warning. English
+and Chinese notices cover both create and update without offering a replay.
+
+This boundary does not promise atomic compare-and-swap against uncooperative external
 processes between a final check and an in-place write. Partial writes, power loss,
 ambiguous COMMIT I/O and durable repair remain separate recovery boundaries.
 Stronger external-writer guarantees require an explicit coordination/authority
@@ -267,8 +260,8 @@ contract; neither a new mutex nor an optimistic hash check alone establishes it.
 This safety-net slice introduces no journal, general storage framework or
 production test hook.
 
-The fixes change deletion's failure ordering, add committed-cleanup/index errors,
-and an optional write warning. Routes, ordinary response shapes, database schema,
+The fixes defer deletion/body publication until after COMMIT, add committed
+cleanup/index errors and an optional write warning. Routes, ordinary response shapes, database schema,
 security policy, shared retry policy and file authority stay compatible. Revisit the observed assertions when a verified
 fix deliberately changes them; replace them with stronger invariants, not skips
 or relaxed checks. These tests do not simulate process termination, power loss,

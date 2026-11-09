@@ -1,5 +1,4 @@
-//! Current update outcomes, including defects. These are not the desired
-//! guarantees of a future publication/rollback implementation.
+//! Commit rejection and publication preserve independent file edits and metadata.
 use super::*;
 use qunica_backend::tools::AppControlContext;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +12,7 @@ async fn connections(fixture: &Fixture) -> Vec<sqlx::pool::PoolConnection<sqlx::
 }
 
 #[tokio::test]
-async fn a_rejected_update_can_overwrite_an_external_edit_made_during_the_statement() {
+async fn a_rejected_update_preserves_an_external_edit_made_during_the_statement() {
     let mut fixture = Fixture::new(true).await;
     let note = fixture.create().await;
     let id = note["id"].as_str().unwrap();
@@ -49,15 +48,15 @@ async fn a_rejected_update_can_overwrite_an_external_edit_made_during_the_statem
         assert_eq!(fixture.index(), index);
         assert_eq!(
             fixture.get(id).await.1["content"],
-            "request body",
-            "current API file write overwrites the intervening edit despite COMMIT rejection"
+            "external edit during SQL UPDATE",
+            "a rejected database mutation must not write the target"
         );
     }
     fixture.state.db.pool().close().await;
 }
 
 #[tokio::test]
-async fn a_commit_rejection_keeps_an_edit_made_after_the_api_file_write() {
+async fn a_commit_rejection_keeps_an_edit_made_during_commit() {
     let mut fixture = Fixture::new(true).await;
     let note = fixture.create().await;
     let id = note["id"].as_str().unwrap();
@@ -100,7 +99,7 @@ async fn a_commit_rejection_keeps_an_edit_made_after_the_api_file_write() {
 }
 
 #[tokio::test]
-async fn failed_approval_keeps_partial_file_effect_but_reapproval_does_not_replay_it() {
+async fn failed_approval_keeps_the_file_and_reapproval_does_not_replay_it() {
     let fixture = Fixture::new(true).await;
     let note = fixture.create().await;
     let id = note["id"].as_str().unwrap();
@@ -158,8 +157,8 @@ async fn failed_approval_keeps_partial_file_effect_but_reapproval_does_not_repla
     assert_eq!(snapshot.events, before.events);
     assert_eq!(
         fixture.get(id).await.1["content"],
-        "approved request body",
-        "a failed approval does not mean its file effect was rolled back"
+        "db before",
+        "a confirmed rejected update must not publish the approved content"
     );
     fs::write(fixture.note_path(id), "external edit after failure").unwrap();
     let (status, repeated) = send(&fixture.app, approve()).await;

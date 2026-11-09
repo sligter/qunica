@@ -17,6 +17,8 @@ use tempfile::NamedTempFile;
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use uuid::Uuid;
 
+mod note_update;
+
 use crate::api::{
     agents::normalize_avatar_url,
     auth::current_user_id,
@@ -3299,6 +3301,11 @@ pub(crate) async fn update_group_note_with_pool(
         .map_err(|_| ApiError::internal("failed to start group note update transaction"))?;
 
     check_note_write_guard(guard)?;
+    // Prepare without changing the target: a rejected COMMIT must leave both
+    // the previous file and any independent edits untouched.
+    let prepared = should_write_content
+        .then(|| note_update::prepare(&root, &note_id, &content))
+        .transpose()?;
     if let Some(expected) = guard.and_then(|g| g.expected_content) {
         // Note: MCP validates an edit before writing. Recheck under the same
         // SQLite writer transaction used by UI updates so a slow model check
@@ -3317,9 +3324,12 @@ pub(crate) async fn update_group_note_with_pool(
                 "group note changed; read it again before editing",
             ));
         }
+        if let Some(prepared) = &prepared {
+            prepared.check_expected(expected)?;
+        }
     }
 
-    sqlx::query(
+    let updated = sqlx::query(
         "UPDATE group_notes SET title = ?, content = ?, updated_at = ? \
          WHERE id = ? AND group_id = ? AND status = 'active'",
     )
@@ -3331,15 +3341,46 @@ pub(crate) async fn update_group_note_with_pool(
     .execute(&mut *tx)
     .await
     .map_err(|_| ApiError::internal("failed to update group note"))?;
+    if updated.rows_affected() != 1 {
+        return Err(ApiError::not_found("group note no longer exists"));
+    }
 
     check_note_write_guard(guard)?;
-    if should_write_content {
-        write_group_note_content(&root, &note_id, &content)?;
-    }
 
     tx.commit()
         .await
         .map_err(|_| ApiError::internal("failed to commit group note update"))?;
+    if let Some(prepared) = prepared {
+        if let Err(error) = note_update::publish(
+            pool,
+            owner_id,
+            &group_id,
+            &group.owner_id,
+            group.workspace_id.as_deref(),
+            prepared,
+            guard,
+        )
+        .await
+        {
+            // Note: registration is committed even if publication or a later
+            // read is unavailable. Keep the accepted receipt; do not write the
+            // index or invite callers to replay an already committed mutation.
+            let mut response = GroupNoteRow {
+                id: note_id,
+                group_id,
+                title,
+                content: content.clone(),
+                created_at: existing.created_at,
+                updated_at: now,
+            }
+            .into_response_with_content(content);
+            response.warning = Some(GroupNoteWarning {
+                code: "note_content_pending",
+                reason: error.message_text(),
+            });
+            return Ok(response);
+        }
+    }
     let warning = sync_group_note_index(pool, &root, &group_id)
         .await
         .err()
@@ -4920,6 +4961,13 @@ async fn group_notes_workspace_root(
     .map_err(|_| ApiError::internal("database error"))?
     .ok_or_else(|| ApiError::invalid_input("group workspace is not active"))?;
 
+    validate_group_note_workspace_root(row, owner_id)
+}
+
+fn validate_group_note_workspace_root(
+    row: GroupNoteWorkspaceRow,
+    owner_id: &str,
+) -> Result<PathBuf, ApiError> {
     if row.owner_id != owner_id {
         return Err(ApiError::permission_denied(
             "group workspace belongs to another user",
@@ -4962,13 +5010,22 @@ async fn load_active_note_group(
     if group.owner_id == user_id {
         return Ok(group);
     }
+    check_group_note_membership(pool, group_id, user_id).await?;
+    Ok(group)
+}
+
+async fn check_group_note_membership<'e>(
+    executor: impl sqlx::Executor<'e, Database = Sqlite>,
+    group_id: &str,
+    user_id: &str,
+) -> Result<(), ApiError> {
     let member: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM group_members \
          WHERE group_id = ? AND user_id = ? AND status = 'active')",
     )
     .bind(group_id)
     .bind(user_id)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
     .map_err(|_| ApiError::internal("database error"))?;
     if !member {
@@ -4976,7 +5033,7 @@ async fn load_active_note_group(
             "group notes are not shared with this user",
         ));
     }
-    Ok(group)
+    Ok(())
 }
 
 async fn fetch_user_row(pool: &SqlitePool, user_id: &str) -> Result<Option<UserRow>, ApiError> {
@@ -6371,19 +6428,6 @@ fn publish_group_note_create(
         .persist_noclobber(path)
         .map(|_| ())
         .map_err(|_| ApiError::internal("failed to publish group note content"))
-}
-
-fn write_group_note_content(root: &FsPath, note_id: &str, content: &str) -> Result<(), ApiError> {
-    let path = group_note_path(root, note_id)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| ApiError::invalid_input("group notes path is invalid"))?;
-    fs::create_dir_all(parent)
-        .map_err(|_| ApiError::invalid_input("group notes path is not a directory"))?;
-
-    let path = group_note_path(root, note_id)?;
-    inspect_group_note_file(root, note_id)?;
-    fs::write(path, content).map_err(|_| ApiError::internal("failed to write group note content"))
 }
 
 fn delete_group_note_content(root: &FsPath, note_id: &str) -> Result<(), ApiError> {

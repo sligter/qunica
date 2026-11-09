@@ -16,6 +16,8 @@ mod delete_commit;
 mod index_result;
 #[path = "notes_failure/update_boundary.rs"]
 mod update_boundary;
+#[path = "notes_failure/update_commit.rs"]
+mod update_commit;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Snapshot {
@@ -314,7 +316,7 @@ async fn failed_create_commit_leaves_no_published_note_or_registration_after_reo
 }
 
 #[tokio::test]
-async fn failed_update_commit_leaves_file_ahead_of_database_even_after_reopen() {
+async fn failed_update_commit_preserves_the_original_file_even_after_reopen() {
     let mut fixture = Fixture::new(true).await;
     let note = fixture.create().await;
     let id = note["id"].as_str().unwrap();
@@ -335,12 +337,15 @@ async fn failed_update_commit_leaves_file_ahead_of_database_even_after_reopen() 
             fixture.reopen().await;
         }
         assert_eq!(fixture.snapshot().await, before);
-        assert_eq!(fs::read_to_string(fixture.note_path(id)).unwrap(), "after");
+        assert_eq!(
+            fs::read_to_string(fixture.note_path(id)).unwrap(),
+            "file before"
+        );
         assert_eq!(fixture.index(), index);
         let (status, note) = fixture.get(id).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(note["title"], "Before");
-        assert_eq!(note["content"], "after");
+        assert_eq!(note["content"], "file before");
         let list = fixture.list().await;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0]["title"], "Before");

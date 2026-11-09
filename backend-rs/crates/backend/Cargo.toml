@@ -42,6 +42,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 serde_yaml = "0.9"
 sha2 = "0.10"
+same-file = "1.0.6"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid", "time", "json", "macros", "migrate"] }
 tempfile = "3"
 thiserror = "1"

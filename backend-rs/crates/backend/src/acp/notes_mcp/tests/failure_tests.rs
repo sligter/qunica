@@ -236,8 +236,62 @@ async fn index_failure_reports_saved_create_and_edit_without_tool_error_and_revo
 }
 
 #[tokio::test]
-async fn failed_edit_commit_reports_error_but_reads_the_new_file_and_does_not_replay_an_exact_edit()
-{
+async fn update_rechecks_the_lease_before_post_commit_publication() {
+    let (context, root) = fixture().await;
+    let bridge = NotesBridge::start().await.unwrap();
+    let lease = bridge.activate(context.clone());
+    let created = output(
+        &call(
+            &bridge,
+            "CreateGroupNote",
+            json!({"title":"Before", "content":"before body"}),
+        )
+        .await,
+    );
+    let path = created["path"].as_str().unwrap();
+    let index = fs::read_to_string(root.path().join("Notes/index.md")).unwrap();
+    let events = event_count(&context).await;
+    let active = lease.0.clone();
+    let mut connection = context.pool.acquire().await.unwrap();
+    connection
+        .lock_handle()
+        .await
+        .unwrap()
+        .set_commit_hook(move || {
+            active.store(false, Ordering::SeqCst);
+            true
+        });
+    drop(connection);
+    let edit = json!({"path":path,"edits":[{"old_text":"before body","new_text":"after body"}]});
+    let saved = output(&call(&bridge, "EditGroupNote", edit.clone()).await);
+    assert_eq!(saved["id"], created["id"]);
+    assert_eq!(saved["content"], "after body");
+    assert_eq!(
+        saved["warning"],
+        json!({"code":"note_content_pending", "reason":"group notes access has expired"})
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("Notes").join(path)).unwrap(),
+        "before body"
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("Notes/index.md")).unwrap(),
+        index
+    );
+    assert_eq!(event_count(&context).await, events + 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT content FROM group_notes")
+            .fetch_one(&context.pool)
+            .await
+            .unwrap(),
+        "after body"
+    );
+    revoked_call(&bridge, "EditGroupNote", edit).await;
+    assert_eq!(event_count(&context).await, events + 1);
+}
+
+#[tokio::test]
+async fn failed_edit_commit_reports_error_and_keeps_the_original_file() {
     let (context, root) = fixture().await;
     let bridge = NotesBridge::start().await.unwrap();
     let lease = bridge.activate(context.clone());
@@ -267,7 +321,7 @@ async fn failed_edit_commit_reports_error_but_reads_the_new_file_and_does_not_re
     );
     assert_eq!(
         fs::read_to_string(root.path().join("Notes").join(path)).unwrap(),
-        "after body"
+        "before body"
     );
     let persisted: String = sqlx::query_scalar("SELECT content FROM group_notes")
         .fetch_one(&context.pool)
@@ -275,13 +329,13 @@ async fn failed_edit_commit_reports_error_but_reads_the_new_file_and_does_not_re
         .unwrap();
     assert_eq!(persisted, "before body");
     let read = output(&call(&bridge, "ReadGroupNotes", json!({"path":path})).await);
-    assert_eq!(read["content"], "after body");
+    assert_eq!(read["content"], "before body");
     let repeated = call(&bridge, "EditGroupNote", edit.clone()).await;
-    assert!(error_text(&repeated).contains("not found"), "{repeated}");
+    assert_eq!(error_text(&repeated), "failed to commit group note update");
     assert_eq!(event_count(&context).await, events);
     assert_eq!(
         fs::read_to_string(root.path().join("Notes").join(path)).unwrap(),
-        "after body"
+        "before body"
     );
     drop(lease);
     revoked_call(&bridge, "EditGroupNote", edit).await;

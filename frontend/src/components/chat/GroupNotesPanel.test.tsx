@@ -102,8 +102,10 @@ describe('GroupNotesPanel i18n', () => {
     ['create', 'en-US', 'The note is saved, but the shared notes index could not be updated. Do not save it again to retry.', 'note_index_pending'],
     ['update', 'en-US', 'The note is saved, but the shared notes index could not be updated. Do not save it again to retry.', 'note_index_pending'],
     ['create', 'zh-CN', '笔记已保存，但共享笔记索引未能更新。请勿通过再次保存来重试。', 'note_index_pending'],
-    ['create', 'en-US', 'The note is saved, but its workspace file could not be created. Do not create it again to retry.', 'note_content_pending'],
-    ['create', 'zh-CN', '笔记已保存，但工作区中的正文文件未能创建。请勿再次创建来重试。', 'note_content_pending'],
+    ['create', 'en-US', 'The note is saved, but its workspace content could not be published. Do not submit the same change again to retry.', 'note_content_pending'],
+    ['create', 'zh-CN', '笔记已保存，但正文未能发布到工作区。请勿再次提交相同更改来重试。', 'note_content_pending'],
+    ['update', 'en-US', 'The note is saved, but its workspace content could not be published. Do not submit the same change again to retry.', 'note_content_pending'],
+    ['update', 'zh-CN', '笔记已保存，但正文未能发布到工作区。请勿再次提交相同更改来重试。', 'note_content_pending'],
   ] as const)('acknowledges a saved %s in %s without offering the save again', async (action, locale, message, code) => {
     await i18n.changeLanguage(locale)
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({

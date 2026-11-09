@@ -483,7 +483,7 @@ export const enUS = {
       mentionPicker: 'Mention an agent',
       notesPanel: {
         savedIndexPending: 'The note is saved, but the shared notes index could not be updated. Do not save it again to retry.',
-        savedContentPending: 'The note is saved, but its workspace file could not be created. Do not create it again to retry.',
+        savedContentPending: 'The note is saved, but its workspace content could not be published. Do not submit the same change again to retry.',
         title: 'Group notes', description: 'Record decisions, conventions and lessons; shared with the moderator and every member.', new: 'New note', titleLabel: 'Title', titlePlaceholder: 'Note title', contentLabel: 'Content', contentPlaceholder: 'Write your note…', loading: 'Loading notes…', empty: 'No notes yet', emptyNote: 'Open to load', deleteNamed: 'Delete note {{title}}', loadError: 'Failed to load notes: {{message}}', mutationError: 'Note operation failed: {{message}}',
         statusLabel: 'Status', categoryLabel: 'Category', reasonLabel: 'Rejection reason (required)',
         statuses: { proposed: 'Proposed', implemented: 'Implemented', rejected: 'Rejected', archived: 'Archived' },

@@ -2006,6 +2006,7 @@ dependencies = [
  "rig-agent",
  "rig-core",
  "rig-reqwest",
+ "same-file",
  "serde",
  "serde_json",
  "serde_yaml",
