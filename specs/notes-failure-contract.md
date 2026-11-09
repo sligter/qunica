@@ -34,6 +34,9 @@ after it; update COMMIT failures remain explicitly unfixed.
 | ACP lease revoked during COMMIT | MCP saved result with `note_content_pending`, reason `group notes access has expired` | The already accepted registration/body/event remain committed once | The existing write guard is checked again before publication: no final Markdown or index is written and the owned stage is removed. Later MCP requests receive 403. |
 | A regular file or directory appears at the target after staging (publisher unit test) | Publication helper rejects it | This filesystem test makes no claim about a transaction | Existing bytes/directory remain; the publisher does not replace the new target and cleans its own staging file. |
 | Content update COMMIT rejected | 500 `failed to commit group note update` | Original metadata/body and event sequence restored | New body remains in the file; old index remains. GET reads the new body with old metadata, including after closing/reopening SQLite and rebuilding the HTTP router. |
+| External file edit during UPDATE, followed by deferred-FK COMMIT rejection | Same update 500 | Original row and note event sequence restored | The current API file write overwrites the intervening edit with the request body. Reopening does not recover that external edit. This is an observed defect, not a desired contract. |
+| COMMIT callback writes a newer body and rejects the commit | Same update 500 | SQLite rolls back the row/events | The newer external body remains, also after reopen. A future rollback handler must not restore an older backup over it. |
+| Approved update hits rejected COMMIT | 500 `app_action_failed`; approval becomes `failed` | Note row/events roll back; approval history records the error | The approved body still reaches the file. Reapproving the same failed action returns 409 and leaves a later external edit untouched; `failed` does not imply no file effect. |
 | Title-only update COMMIT rejected | Same update error | Original row/events restored | Independently edited file remains unchanged. |
 | Delete COMMIT rejected | 500 `failed to commit group note delete` | Registration remains active; no deletion event | File bytes remain, including completed native edits and an edit performed during the UPDATE. GET retains those bytes after database reopen. R08a demonstrated their loss before this fix. |
 | File removal fails after delete commits | 409 `note_cleanup_pending`, committed identity in details | Deleted row and account event remain committed | File and stale index may remain. GET/repeated DELETE are 404. Releasing the external lock does not automatically replay cleanup. |
@@ -133,6 +136,37 @@ warning; reading returns the DB fallback. Revocation still rejects a new create.
 Approved Assistant creation with a publication fault remains `applied`; repeating
 that approval returns the same result without another registration or event.
 
+### Existing update writers and metadata compatibility
+
+Five update-boundary tests use the existing HTTP fixture. SQLite UPDATE and COMMIT
+callbacks change only private fixture files, with no database calls inside the
+callbacks. The COMMIT rejection callback returns false, exercising SQLite's real
+rollback. The approval case uses AppPropose and the actual approval endpoint.
+
+The Windows fixture marks the note's DACL as protected while retaining its rules.
+It then exercises Notes PATCH and the existing Workspace text-save endpoint, not
+a replacement mock. A separate hard-link fixture exercises the same two APIs:
+
+| Existing operation | Protected DACL on Windows | Hard-link alias |
+| --- | --- | --- |
+| Notes content PATCH (`fs::write`) | Protection remains set | Alias sees the changed body. |
+| Workspace text save (temporary file + persist) | Protection is lost | Alias keeps the preceding body; target has a different file identity. |
+
+These are observed compatibility differences. The DACL test measures the
+protection flag, not an effective-access escalation or every ACL entry. The
+Workspace outcomes are not desired Notes update guarantees. Rust's
+[Permissions documentation](https://doc.rust-lang.org/std/fs/struct.Permissions.html#method.readonly)
+also distinguishes the readonly attribute from ACLs; copying `Permissions` alone
+does not establish DACL equivalence. The fixture prints no SID or SDDL, changes
+only its temporary note, and clears only the child's inherited `PSModulePath` so
+Windows PowerShell can load its own built-in Security module.
+
+Direct reuse also changes validation: Workspace text saves reject NUL bytes and
+oversized content, whereas Notes PATCH currently imposes neither of those text
+editor restrictions. `SAVE_LOCK` serializes Workspace saves, but native
+`WorkspaceTools::edit` performs `fs::write` without acquiring it. Consequently a
+check-and-rename solution cannot claim coordination with every Notes writer.
+
 ## Alternatives considered
 
 Existing CRUD and permission tests are inexpensive and already protect ordinary
@@ -182,6 +216,56 @@ before moving shared business ownership:
 | R08b2: failed body mutation | Rejected create COMMIT now leaves no final note. Establish update invariants without replacing file-first reads or overwriting newer external edits. Creation publication/temporary-file repair and crash recovery remain explicit boundaries. |
 | R08c: committed operation with failed index | Saved create/edit results and committed DELETE conflicts now cover HTTP, ACP, native-reader convergence on the next successful write, and approved Assistant action consumers. Standalone repair and post-commit reread failures still need an independently tested policy. |
 | R08d: shared Notes service | Reuse the existing authoring guide, workspace checks and write guard. Extract only after the failure policy is explicit; preserve file-first reads, ownership, membership, symlink rejection, expected-content checks and lease revocation. |
+
+### Next update-fix PR: preserve file identity and move writes after COMMIT
+
+The new tests add a safety net; production update behavior is unchanged. The next
+bug-fix slice should use the existing in-place file semantics for existing notes,
+rather than directly copying Workspace replacement or restoring backups:
+
+1. **Strengthen failure assertions first.** Change the existing failed-update
+   expectation to preserve the prior file; change the during-UPDATE defect case
+   to preserve the intervening edit. Keep the during-COMMIT newer edit, DACL,
+   hard-link and reapproval assertions. Add publication faults and lease expiry
+   during the update COMMIT before changing production code.
+2. **Prepare under the existing SQLite writer transaction.** Capture a binary-safe
+   full-file digest and file identity for an existing target, using the same
+   snapshot for the MCP expected-content check. Do not add Workspace size/NUL
+   limits. For a missing file reuse creation's staging/noclobber flow. Title-only
+   updates must not materialize or rewrite a body.
+3. **Commit the accepted DB mutation without touching the target.** On confirmed
+   rejection drop only owned temporary resources. Never delete or restore the
+   target as compensation. Keep existing tool identity and note-event association.
+4. **Admit publication against current state.** Reuse `db::begin_write` as a
+   publication barrier to revalidate active registration, intended DB content and
+   workspace binding, then check the scoped guard after all awaited reads. This
+   must prevent an older call from publishing after a newer API update/delete.
+   The barrier performs no new note mutation or note event; lock-order and
+   in-memory-pool tests are required. Do not use `updated_at` as identity.
+5. **Preserve existing-file metadata.** Open an existing target without create or
+   truncation, check the opened file's identity/digest before changing bytes, and
+   keep its ACL and hard links. Revalidate the workspace/path fence. Evaluate the
+   already locked `same-file` 1.0.6 dependency for portable handle identity rather
+   than inventing raw OS bindings. A missing/replaced/version-conflicting target
+   must stop publication; a truly missing prepared target uses noclobber.
+6. **Report committed publication failures.** Return the accepted identity and
+   `note_content_pending`, stop index work, and keep ordinary GET file-first.
+   ACP/approved actions must retain a known saved receipt without replay. Extend
+   the existing localized message to cover updates as well as creation. Failure
+   after bytes may have been written is not evidence of non-execution.
+7. **Validate and review.** Run both complete Rust workspace configurations,
+   strict Clippy/fmt, frontend tests/lint/type/build when changing warning copy,
+   and Windows Tauri. Repeat the real Windows DACL/hard-link cases; run Unix
+   identity/permission cases in CI. Revert the isolated commit without a migration
+   if required, acknowledging that this restores the old failed-update defect.
+
+This plan does not promise atomic compare-and-swap against uncooperative external
+processes between a final check and an in-place write. Partial writes, power loss,
+ambiguous COMMIT I/O and durable repair remain separate recovery boundaries.
+Stronger external-writer guarantees require an explicit coordination/authority
+contract; neither a new mutex nor an optimistic hash check alone establishes it.
+This safety-net slice introduces no journal, general storage framework or
+production test hook.
 
 The fixes change deletion's failure ordering, add committed-cleanup/index errors,
 and an optional write warning. Routes, ordinary response shapes, database schema,

@@ -14,6 +14,8 @@ mod create_commit;
 mod delete_commit;
 #[path = "notes_failure/index_result.rs"]
 mod index_result;
+#[path = "notes_failure/update_boundary.rs"]
+mod update_boundary;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Snapshot {
