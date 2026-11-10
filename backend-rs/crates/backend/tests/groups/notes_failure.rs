@@ -8,6 +8,8 @@ use qunica_backend::{
 };
 use std::fs;
 
+#[path = "notes_failure/access_boundary.rs"]
+mod access_boundary;
 #[path = "notes_failure/create_commit.rs"]
 mod create_commit;
 #[path = "notes_failure/create_receipt.rs"]

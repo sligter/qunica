@@ -1,13 +1,15 @@
 //! SQLite authorization barrier for an accepted Notes update.
 //! File preparation/publication lives in the shared Notes file lifecycle.
 //! See specs/notes-failure-contract.md for failure and external-writer boundaries.
-use super::{
-    check_group_note_membership, check_note_write_guard, validate_group_note_workspace_root,
-    GroupNoteWorkspaceRow, GroupNoteWriteGuard,
-};
 use crate::{
     api::error::ApiError,
-    group_notes::files::{changed, PreparedUpdate},
+    group_notes::{
+        access::{
+            check_group_note_membership, check_note_write_guard,
+            validate_group_note_workspace_root, GroupNoteWorkspaceRow, GroupNoteWriteGuard,
+        },
+        files::{changed, PreparedUpdate},
+    },
 };
 use sqlx::SqlitePool;
 

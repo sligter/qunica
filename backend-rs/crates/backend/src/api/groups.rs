@@ -18,6 +18,12 @@ use uuid::Uuid;
 
 mod note_update;
 
+use crate::db::groups::{fetch_row, GroupRow, GROUP_COLUMNS};
+use crate::group_notes::access::{
+    check_note_write_guard, group_notes_workspace_root, load_active_note_group,
+    GroupNoteWorkspaceRow, GroupNoteWriteGuard,
+};
+
 use crate::group_notes::files::{
     self as note_files, delete_group_note_content, group_note_path, inspect_group_note_file,
     publish_group_note_create, read_group_note_content, stage_group_note_create, NOTES_DIR,
@@ -42,34 +48,6 @@ use crate::llm::{
 };
 use crate::runtime::workspace_scope::WorkspaceMode;
 use crate::tools::{resolve_workspace_path, ToolError};
-
-const GROUP_COLUMNS: &str = "id, owner_id, workspace_id, auto_share_workspace_with_new_agents, name, description, announcement, avatar_url, \
-     COALESCE((SELECT json_group_array(json_object( \
-       'id', avatar_members.id, 'name', avatar_members.name, 'kind', avatar_members.kind, \
-       'avatar_url', avatar_members.avatar_url)) \
-       FROM ( \
-         SELECT users.id AS id, users.name AS name, 'user' AS kind, users.avatar_url AS avatar_url, \
-                group_members.joined_at AS joined_at \
-         FROM group_members JOIN users ON users.id = group_members.user_id \
-         WHERE group_members.group_id = groups.id AND group_members.status = 'active' \
-         UNION ALL \
-         SELECT agents.id AS id, COALESCE(group_agents.display_name, agents.name) AS name, \
-                'agent' AS kind, agents.avatar_url AS avatar_url, group_agents.joined_at AS joined_at \
-         FROM group_agents JOIN agents ON agents.id = group_agents.agent_id \
-         WHERE group_agents.group_id = groups.id AND group_agents.status = 'active' \
-               AND agents.status = 'active' \
-         ORDER BY joined_at ASC, id ASC LIMIT 6 \
-       ) AS avatar_members), '[]') AS avatar_members_json, \
-     free_speech, proactive_mode, \
-     allow_agent_free_mention, agent_free_mention_max_dispatches, communication_mode, \
-     default_speaking_order_json, \
-     scheduler_mode, agent_mention_policy, max_agent_steps, max_steps_per_agent, \
-     max_scheduler_hops, max_moderator_calls, max_consecutive_failures, \
-     max_total_failures, max_total_tokens, turn_timeout_seconds, moderator_enabled, \
-     moderator_provider_id, moderator_model, \
-     decision_enabled, decision_scenarios_json, router_agent_id, max_router_tasks, \
-     muted_agent_ids_json, admin_agent_ids_json, muted_member_ids_json, status, \
-     created_at, updated_at";
 
 const GROUP_AGENT_COLUMNS: &str = "group_agents.group_id, group_agents.agent_id, \
      group_agents.display_name, agents.name AS agent_name, agents.avatar_url, group_agents.role, \
@@ -771,49 +749,6 @@ pub struct GroupWorkspaceFilePreviewResponse {
     size: Option<i64>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct GroupRow {
-    id: String,
-    owner_id: String,
-    workspace_id: Option<String>,
-    auto_share_workspace_with_new_agents: i64,
-    name: String,
-    description: Option<String>,
-    announcement: Option<String>,
-    avatar_url: Option<String>,
-    avatar_members_json: String,
-    // SQLite stores booleans as integers; these are exposed as booleans below.
-    free_speech: i64,
-    proactive_mode: i64,
-    allow_agent_free_mention: i64,
-    agent_free_mention_max_dispatches: i64,
-    communication_mode: String,
-    default_speaking_order_json: Option<String>,
-    scheduler_mode: String,
-    agent_mention_policy: String,
-    max_agent_steps: Option<i64>,
-    max_steps_per_agent: i64,
-    max_scheduler_hops: i64,
-    max_moderator_calls: i64,
-    max_consecutive_failures: i64,
-    max_total_failures: i64,
-    max_total_tokens: i64,
-    turn_timeout_seconds: i64,
-    moderator_enabled: i64,
-    moderator_provider_id: Option<String>,
-    moderator_model: Option<String>,
-    decision_enabled: i64,
-    decision_scenarios_json: String,
-    router_agent_id: Option<String>,
-    max_router_tasks: i64,
-    muted_agent_ids_json: Option<String>,
-    admin_agent_ids_json: Option<String>,
-    muted_member_ids_json: Option<String>,
-    status: String,
-    created_at: String,
-    updated_at: String,
-}
-
 /// The mode clients and app-control tools see, independent of their row shape.
 pub(crate) fn effective_scheduler_mode(stored_mode: &str, router_agent_id: Option<&str>) -> String {
     // Note: the column's CHECK constraint predates router mode (migration 0052).
@@ -1093,14 +1028,6 @@ struct GroupFileRow {
     file_size: i64,
     mime_type: Option<String>,
     created_at: String,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct GroupNoteWorkspaceRow {
-    owner_id: String,
-    backend_type: String,
-    local_path: Option<String>,
-    status: String,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -3158,22 +3085,6 @@ pub(crate) async fn create_group_note_inner(
     create_group_note_with_pool(state.db.pool(), owner_id, group_id, body, None).await
 }
 
-/// A scoped MCP write can expire while waiting for SQLite or model validation.
-#[derive(Clone, Copy)]
-pub(crate) struct GroupNoteWriteGuard<'a> {
-    pub active: &'a std::sync::atomic::AtomicBool,
-    pub expected_content: Option<&'a str>,
-}
-
-fn check_note_write_guard(guard: Option<GroupNoteWriteGuard<'_>>) -> Result<(), ApiError> {
-    if guard.is_some_and(|g| !g.active.load(std::sync::atomic::Ordering::SeqCst)) {
-        return Err(ApiError::permission_denied(
-            "group notes access has expired",
-        ));
-    }
-    Ok(())
-}
-
 pub(crate) async fn create_group_note_with_pool(
     pool: &SqlitePool,
     owner_id: &str,
@@ -4111,16 +4022,6 @@ async fn load_active_owned_workspace(
     Ok(row)
 }
 
-async fn fetch_row(pool: &SqlitePool, group_id: &str) -> Result<Option<GroupRow>, ApiError> {
-    let sql =
-        format!("SELECT {GROUP_COLUMNS} FROM groups WHERE id = ? AND conversation_kind = 'group'");
-    sqlx::query_as::<_, GroupRow>(&sql)
-        .bind(group_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| ApiError::internal("database error"))
-}
-
 async fn fetch_group_agent_rows(
     pool: &SqlitePool,
     group_id: &str,
@@ -4945,108 +4846,6 @@ fn validate_git_commit_message(raw: &str) -> Result<String, ApiError> {
         ));
     }
     Ok(message)
-}
-
-pub(crate) async fn group_notes_root_for_owner(
-    pool: &SqlitePool,
-    owner_id: &str,
-    group_id: &str,
-) -> Result<PathBuf, ApiError> {
-    let group = load_active_note_group(pool, group_id, owner_id).await?;
-    group_notes_workspace_root(pool, &group, owner_id).await
-}
-
-async fn group_notes_workspace_root(
-    pool: &SqlitePool,
-    group: &GroupRow,
-    owner_id: &str,
-) -> Result<PathBuf, ApiError> {
-    let workspace_id = group
-        .workspace_id
-        .as_deref()
-        .ok_or_else(|| ApiError::invalid_input("group has no bound workspace"))?;
-    let row = sqlx::query_as::<_, GroupNoteWorkspaceRow>(
-        "SELECT owner_id, backend_type, local_path, status FROM workspaces WHERE id = ?",
-    )
-    .bind(workspace_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|_| ApiError::internal("database error"))?
-    .ok_or_else(|| ApiError::invalid_input("group workspace is not active"))?;
-
-    validate_group_note_workspace_root(row, owner_id)
-}
-
-fn validate_group_note_workspace_root(
-    row: GroupNoteWorkspaceRow,
-    owner_id: &str,
-) -> Result<PathBuf, ApiError> {
-    if row.owner_id != owner_id {
-        return Err(ApiError::permission_denied(
-            "group workspace belongs to another user",
-        ));
-    }
-    if row.status != "active" {
-        return Err(ApiError::invalid_input("group workspace is not active"));
-    }
-    if row.backend_type != "local" {
-        return Err(ApiError::invalid_input(
-            "group notes require a local workspace",
-        ));
-    }
-    let local_path = row
-        .local_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .ok_or_else(|| ApiError::invalid_input("local workspace has no local_path"))?;
-    let root = fs::canonicalize(local_path).map_err(|_| {
-        ApiError::invalid_input("group workspace path must be an existing directory")
-    })?;
-    if !root.is_dir() {
-        return Err(ApiError::invalid_input(
-            "group workspace path must be an existing directory",
-        ));
-    }
-    Ok(root)
-}
-
-async fn load_active_note_group(
-    pool: &SqlitePool,
-    group_id: &str,
-    user_id: &str,
-) -> Result<GroupRow, ApiError> {
-    let group = fetch_row(pool, group_id)
-        .await?
-        .filter(|row| row.status == "active")
-        .ok_or_else(|| ApiError::not_found("group not found"))?;
-    if group.owner_id == user_id {
-        return Ok(group);
-    }
-    check_group_note_membership(pool, group_id, user_id).await?;
-    Ok(group)
-}
-
-async fn check_group_note_membership<'e>(
-    executor: impl sqlx::Executor<'e, Database = Sqlite>,
-    group_id: &str,
-    user_id: &str,
-) -> Result<(), ApiError> {
-    let member: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM group_members \
-         WHERE group_id = ? AND user_id = ? AND status = 'active')",
-    )
-    .bind(group_id)
-    .bind(user_id)
-    .fetch_one(executor)
-    .await
-    .map_err(|_| ApiError::internal("database error"))?;
-    if !member {
-        return Err(ApiError::permission_denied(
-            "group notes are not shared with this user",
-        ));
-    }
-    Ok(())
 }
 
 async fn fetch_user_row(pool: &SqlitePool, user_id: &str) -> Result<Option<UserRow>, ApiError> {

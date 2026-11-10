@@ -16,4 +16,5 @@ pub(crate) fn default_content(title: &str, since: &str) -> String {
     )
 }
 
+pub(crate) mod access;
 pub(crate) mod files;

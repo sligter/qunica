@@ -1,4 +1,5 @@
 pub(crate) mod commands;
+pub(crate) mod groups;
 
 use std::{str::FromStr, time::Duration};
 

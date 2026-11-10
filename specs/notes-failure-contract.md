@@ -258,6 +258,34 @@ reads retain their order. Reusing `ApiError` preserves existing error envelopes;
 this step does not claim a transport-independent Notes service or remove ACP's
 remaining dependency on the Group API. R08 service extraction remains incomplete.
 
+### Access and Group projection ownership
+
+`group_notes::access` owns the existing workspace-root, active-group, membership,
+and dispatch-lease checks, including the workspace row decoded by the publication
+barrier. API orchestration, ACP and the barrier call these functions at their
+previous points; authorization is still performed by the host. The same borrowed
+lease flag and expected-content reference are preserved. No additional lock,
+transaction, query, retry or recovery state is introduced.
+
+The existing `GroupRow`, `GROUP_COLUMNS` and `fetch_row` now live together in
+`db::groups`, shared by the API and Notes access. Their fields, SQL and decoding
+are retained, rather than adding a second Notes projection. The row is an owned
+internal read record, with crate-visible fields; API response mapping remains in
+the API. The read helper and access module retain `ApiError` to preserve the
+current compatibility envelope; that error-type dependency on the API remains
+an explicit cost. This is not a generic Repository framework, and Notes CRUD
+orchestration remains in the API.
+
+A characterization test first runs on the original implementation. It stores a
+TEXT step budget that SQLite accepts but the original full-row decoder rejects,
+with both active and deleted workspaces. All five Notes endpoints return the
+same database error before workspace checks, without changing notes, files,
+index or account sequence. Restoring the valid budget makes a normal read succeed
+or expose the existing inactive-workspace error. This is fixture corruption,
+not evidence that the normal API produces such a value. Narrowing the projection
+or changing error precedence requires a separate behavior decision and stronger
+replacement assertions.
+
 ### Update preparation and publication
 
 Existing targets retain a read handle and raw SHA-256 digest before SQL UPDATE.

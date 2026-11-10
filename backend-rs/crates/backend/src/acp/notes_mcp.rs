@@ -29,6 +29,7 @@ use uuid::Uuid;
 use crate::{
     api::groups,
     decision::{self, DecisionGate, DecisionScenario},
+    group_notes::access as note_access,
     tools::{FileEdit, WorkspaceTools, MAX_WRITE_BYTES},
 };
 
@@ -298,7 +299,7 @@ impl ActiveContext {
     async fn call(&self, name: &str, args: Value) -> Result<String, String> {
         let c = &self.context;
         self.check().await?;
-        let root = groups::group_notes_root_for_owner(&c.pool, &c.owner_id, &c.group_id)
+        let root = note_access::group_notes_root_for_owner(&c.pool, &c.owner_id, &c.group_id)
             .await
             .map_err(|e| e.message_text())?;
         match name {
@@ -340,7 +341,7 @@ impl ActiveContext {
                     &c.owner_id,
                     &c.group_id,
                     body,
-                    Some(groups::GroupNoteWriteGuard {
+                    Some(note_access::GroupNoteWriteGuard {
                         active: &self.active,
                         expected_content: None,
                     }),
@@ -380,7 +381,7 @@ impl ActiveContext {
                     &c.group_id,
                     id,
                     body,
-                    Some(groups::GroupNoteWriteGuard {
+                    Some(note_access::GroupNoteWriteGuard {
                         active: &self.active,
                         expected_content: Some(original),
                     }),
@@ -870,7 +871,7 @@ mod tests {
             &context.group_id,
             note["id"].as_str().unwrap(),
             serde_json::from_value(json!({"content":"Stale replacement"})).unwrap(),
-            Some(groups::GroupNoteWriteGuard {
+            Some(note_access::GroupNoteWriteGuard {
                 active: &active,
                 expected_content: Some("Original"),
             }),
@@ -884,7 +885,7 @@ mod tests {
             &context.owner_id,
             &context.group_id,
             serde_json::from_value(json!({"title":"Expired"})).unwrap(),
-            Some(groups::GroupNoteWriteGuard {
+            Some(note_access::GroupNoteWriteGuard {
                 active: &active,
                 expected_content: None,
             }),
