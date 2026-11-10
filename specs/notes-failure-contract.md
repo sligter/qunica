@@ -23,8 +23,9 @@ responses therefore need examination before extracting this business flow from
 R08a (`2f6976b`) established the failure matrix. The deletion fix (`47c1658`)
 moves unlink after COMMIT. Committed writes distinguish a failed derived index
 from a failed note operation. Creation now stages before COMMIT and publishes
-after it. Update also defers body writes until a successful COMMIT; its private
-`api::groups::note_update` module owns preparation and publication checks.
+after it. Update also defers body writes until a successful COMMIT. The shared
+`group_notes::files` module owns file preparation and publication; the private
+`api::groups::note_update` module retains the SQLite authorization barrier.
 
 | Injected failure | HTTP result | Database / account events | Body and index / reread |
 | --- | --- | --- | --- |
@@ -239,6 +240,23 @@ before moving shared business ownership:
 | R08b2: failed body mutation | Rejected create/update COMMIT now leaves no final new note or overwritten body. Existing updates preserve metadata/identity and reject observed conflicting publication. Creation/update repair and crash recovery remain explicit boundaries. |
 | R08c: committed operation with failed index | Saved create/edit results and committed DELETE conflicts cover HTTP, ACP, native-reader convergence on the next successful write, and approved actions. A failed create publication keeps its accepted identity without a reread, including when the pool closes. Standalone repair and successful-publication/index-only reread failures still need an independently tested policy. |
 | R08d: shared Notes service | Reuse the existing authoring guide, workspace checks and write guard. Extract only after the failure policy is explicit; preserve file-first reads, ownership, membership, symlink rejection, expected-content checks and lease revocation. |
+
+### File lifecycle ownership
+
+`group_notes::files` owns body path checks, file-first reads with missing-file DB
+fallback, create staging/noclobber, deletion, and the update's file identity/digest
+snapshot. It has no connection pool, SQL, HTTP handler, lease, or retry state.
+The caller supplies the authorized root and retains responsibility for COMMIT
+ordering. The preparation snapshot has private fields and read-only accessors;
+the existing database barrier uses those values before consuming publication.
+
+The existing file functions and tests are moved without changing their bodies.
+Characterization tests first verify file authority, corrupt/non-file read rejection,
+and abandonment of a prepared update on the original implementation. The API's
+SQL, membership/lease checks, accepted receipts, index refresh and post-commit
+reads retain their order. Reusing `ApiError` preserves existing error envelopes;
+this step does not claim a transport-independent Notes service or remove ACP's
+remaining dependency on the Group API. R08 service extraction remains incomplete.
 
 ### Update preparation and publication
 

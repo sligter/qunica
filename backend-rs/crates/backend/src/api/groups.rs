@@ -13,11 +13,16 @@ use std::{
     io::{self, Write},
     path::{Path as FsPath, PathBuf},
 };
-use tempfile::NamedTempFile;
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 use uuid::Uuid;
 
 mod note_update;
+
+use crate::group_notes::files::{
+    self as note_files, delete_group_note_content, group_note_path, inspect_group_note_file,
+    publish_group_note_create, read_group_note_content, stage_group_note_create, NOTES_DIR,
+    NOTE_FILE_SUFFIX,
+};
 
 use crate::api::{
     agents::normalize_avatar_url,
@@ -94,8 +99,6 @@ const GROUP_MEMBER_COLUMNS: &str = "group_members.group_id, group_members.user_i
 
 const GROUP_NOTE_COLUMNS: &str = "id, group_id, title, content, created_at, updated_at";
 
-const NOTES_DIR: &str = "Notes";
-const NOTE_FILE_SUFFIX: &str = ".md";
 const NOTE_INDEX_FILE: &str = "index.md";
 const GROUP_FILE_COLUMNS: &str = "id, group_id, filename, file_size, mime_type, created_at";
 const UPLOADS_DIR: &str = "uploads";
@@ -3314,7 +3317,7 @@ pub(crate) async fn update_group_note_with_pool(
     // Prepare without changing the target: a rejected COMMIT must leave both
     // the previous file and any independent edits untouched.
     let prepared = should_write_content
-        .then(|| note_update::prepare(&root, &note_id, &content))
+        .then(|| note_files::prepare(&root, &note_id, &content))
         .transpose()?;
     if let Some(expected) = guard.and_then(|g| g.expected_content) {
         // Note: MCP validates an edit before writing. Recheck under the same
@@ -6308,10 +6311,6 @@ fn workspace_path_error(err: ToolError) -> ApiError {
     }
 }
 
-fn note_relative_path(note_id: &str) -> String {
-    format!("{NOTES_DIR}/{note_id}{NOTE_FILE_SUFFIX}")
-}
-
 async fn sync_group_note_index(
     pool: &SqlitePool,
     root: &FsPath,
@@ -6344,116 +6343,6 @@ async fn sync_group_note_index(
     }
     index.push('\n');
     fs::write(path, index).map_err(|_| ApiError::internal("failed to write group note index"))
-}
-
-fn group_note_path(root: &FsPath, note_id: &str) -> Result<PathBuf, ApiError> {
-    resolve_workspace_path(root, &note_relative_path(note_id)).map_err(path_safety_error)
-}
-
-fn group_note_literal_path(root: &FsPath, note_id: &str) -> PathBuf {
-    root.join(note_relative_path(note_id))
-}
-
-enum GroupNoteFileState {
-    Missing,
-    File,
-}
-
-fn inspect_group_note_file(root: &FsPath, note_id: &str) -> Result<GroupNoteFileState, ApiError> {
-    match fs::symlink_metadata(group_note_literal_path(root, note_id)) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() {
-                return Err(ApiError::invalid_input(
-                    "group note path must not be a symlink",
-                ));
-            }
-            if !metadata.is_file() {
-                return Err(ApiError::invalid_input("group note path is not a file"));
-            }
-            Ok(GroupNoteFileState::File)
-        }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(GroupNoteFileState::Missing),
-        Err(_) => Err(ApiError::invalid_input("group note path is invalid")),
-    }
-}
-
-fn read_group_note_content(
-    root: &FsPath,
-    note_id: &str,
-    fallback: &str,
-) -> Result<String, ApiError> {
-    let path = group_note_path(root, note_id)?;
-    match inspect_group_note_file(root, note_id)? {
-        GroupNoteFileState::Missing => Ok(fallback.to_string()),
-        GroupNoteFileState::File => fs::read_to_string(path)
-            .map_err(|_| ApiError::invalid_input("group note is not valid UTF-8")),
-    }
-}
-
-fn stage_group_note_create(
-    root: &FsPath,
-    note_id: &str,
-    content: &str,
-) -> Result<NamedTempFile, ApiError> {
-    let path = group_note_path(root, note_id)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| ApiError::invalid_input("group notes path is invalid"))?;
-    fs::create_dir_all(parent)
-        .map_err(|_| ApiError::invalid_input("group notes path is not a directory"))?;
-    let path = group_note_path(root, note_id)?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| ApiError::invalid_input("group notes path is invalid"))?;
-    if matches!(
-        inspect_group_note_file(root, note_id)?,
-        GroupNoteFileState::File
-    ) {
-        return Err(ApiError::conflict("new group note path already exists"));
-    }
-    // Use fs::write's standard creation permissions, including the Unix umask.
-    let mut staged = tempfile::Builder::new()
-        .make_in(parent, |path| {
-            fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(path)
-        })
-        .map_err(|_| ApiError::internal("failed to stage group note content"))?;
-    staged
-        .write_all(content.as_bytes())
-        .map_err(|_| ApiError::internal("failed to write group note content"))?;
-    Ok(staged)
-}
-
-fn publish_group_note_create(
-    root: &FsPath,
-    note_id: &str,
-    staged: NamedTempFile,
-) -> Result<(), ApiError> {
-    let path = group_note_path(root, note_id)?;
-    inspect_group_note_file(root, note_id)?;
-    staged
-        .persist_noclobber(path)
-        .map(|_| ())
-        .map_err(|_| ApiError::internal("failed to publish group note content"))
-}
-
-fn delete_group_note_content(root: &FsPath, note_id: &str) -> Result<(), ApiError> {
-    let path = group_note_path(root, note_id)?;
-    match inspect_group_note_file(root, note_id)? {
-        GroupNoteFileState::Missing => Ok(()),
-        GroupNoteFileState::File => fs::remove_file(path)
-            .map_err(|_| ApiError::internal("failed to delete group note content")),
-    }
-}
-
-fn path_safety_error(err: ToolError) -> ApiError {
-    match err {
-        ToolError::Invalid(message) => ApiError::invalid_input(message),
-        ToolError::Io(_) => ApiError::invalid_input("group note path is invalid"),
-    }
 }
 
 fn validate_name(raw: &str) -> Result<String, ApiError> {
@@ -6645,48 +6534,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn note_create_publication_never_overwrites_a_newer_target() {
-        for kind in ["file", "directory"] {
-            let root = tempfile::tempdir().unwrap();
-            let id = Uuid::new_v4().to_string();
-            let staged = stage_group_note_create(root.path(), &id, "staged body").unwrap();
-            let path = group_note_literal_path(root.path(), &id);
-            if kind == "file" {
-                fs::write(&path, "newer body").unwrap();
-            } else {
-                fs::create_dir(&path).unwrap();
-            }
-            assert!(publish_group_note_create(root.path(), &id, staged).is_err());
-            if kind == "file" {
-                assert_eq!(fs::read_to_string(&path).unwrap(), "newer body");
-            } else {
-                assert!(path.is_dir());
-            }
-            assert_eq!(fs::read_dir(root.path().join("Notes")).unwrap().count(), 1);
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn note_create_publication_keeps_standard_creation_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-        let root = tempfile::tempdir().unwrap();
-        let control = root.path().join("control.md");
-        fs::write(&control, "control").unwrap();
-        let id = Uuid::new_v4().to_string();
-        let staged = stage_group_note_create(root.path(), &id, "body").unwrap();
-        publish_group_note_create(root.path(), &id, staged).unwrap();
-        assert_eq!(
-            fs::metadata(control).unwrap().permissions().mode() & 0o777,
-            fs::metadata(group_note_literal_path(root.path(), &id))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777
-        );
-    }
 
     #[test]
     fn git_paths_accept_the_directory_suffix_from_status() {

@@ -15,3 +15,5 @@ pub(crate) fn default_content(title: &str, since: &str) -> String {
          ## Consequences\n\nBenefits, costs, and a concrete signal requiring reconsideration.\n"
     )
 }
+
+pub(crate) mod files;
