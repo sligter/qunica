@@ -10,6 +10,8 @@ use std::fs;
 
 #[path = "notes_failure/create_commit.rs"]
 mod create_commit;
+#[path = "notes_failure/create_receipt.rs"]
+mod create_receipt;
 #[path = "notes_failure/delete_commit.rs"]
 mod delete_commit;
 #[path = "notes_failure/index_result.rs"]

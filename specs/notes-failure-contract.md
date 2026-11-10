@@ -33,6 +33,8 @@ after it. Update also defers body writes until a successful COMMIT; its private
 | Create COMMIT rejected | 500 `failed to commit group note create` | No registration or `note.changed` event | No final Markdown is published. The owned temporary file is removed during normal error unwinding; the fixture Notes directory is empty before and after closing/reopening SQLite. |
 | Observe creation during real COMMIT | Ordinary 201, no warning | One active registration and event | No final `.md` is visible inside the COMMIT callback. After success the complete body and index exist, with no temporary file left. |
 | Body staging file removed by an external actor during COMMIT | 201 with saved identity and `warning.code=note_content_pending` | Registration, DB body and account event committed exactly once | Publication fails; subsequent index writes stop. GET/ACP detail use the existing missing-file DB fallback, including after database reopen. A pre-existing index obstruction remains untouched. |
+| Same publication failure, with pool shutdown during the accepted COMMIT | 201 with the accepted INSERT identity/body and the same content warning | Reopening the physical DB proves one committed registration/event | No post-commit read is required on this error path. The owned stage is absent and index work stops; GET after reopening retains the existing DB fallback. |
+| Same publication failure, with the registration changed/deleted by a fixture trigger | HTTP/MCP accepted receipt with content warning; approval records applied | Current registration is deleted; no automatic repair or recreation | The receipt contains the actual INSERT bindings, not a later row. GET remains 404 and ACP list excludes it. Reapproval returns the recorded result without another note/event. |
 | ACP lease revoked during COMMIT | MCP saved result with `note_content_pending`, reason `group notes access has expired` | The already accepted registration/body/event remain committed once | The existing write guard is checked again before publication: no final Markdown or index is written and the owned stage is removed. Later MCP requests receive 403. |
 | A regular file or directory appears at the target after staging (publisher unit test) | Publication helper rejects it | This filesystem test makes no claim about a transaction | Existing bytes/directory remain; the publisher does not replace the new target and cleans its own staging file. |
 | Content update COMMIT rejected | 500 `failed to commit group note update` | Original metadata/body and event sequence restored | The original file and index remain, including after database reopen. No target body is written before COMMIT. |
@@ -59,9 +61,15 @@ No production fault hook, migration, sleep or retry is added.
 
 Creation uses SQLx 0.8.6's [COMMIT callback](https://docs.rs/sqlx/0.8.6/sqlx/sqlite/struct.LockedSqliteHandle.html#method.set_commit_hook)
 only on fixture connections to observe publication ordering or remove the body
-file during the real commit. These callbacks perform filesystem operations only;
-they never query or change their SQLite connection. The existing deferred-FK
+file during the real commit. These callbacks never query or change their SQLite
+connection. The existing deferred-FK
 test still proves a rejected COMMIT, independently of this observation hook.
+
+The receipt fixture also calls [SQLx Pool::close](https://docs.rs/sqlx/0.8.6/sqlx/struct.Pool.html#method.close)
+inside the COMMIT callback: it fences new acquisitions without cancelling the
+checked-out connection. It does not await closure or run SQLite there. The test
+awaits closure and reopens the physical database before asserting the response,
+independently proving the accepted registration and event survived shutdown.
 
 The in-flight edit test uses SQLx 0.8.6's [connection update callback](https://docs.rs/sqlx/0.8.6/sqlx/sqlite/struct.LockedSqliteHandle.html#method.set_update_hook)
 only on fixture connections to write newer file bytes during the real UPDATE.
@@ -83,9 +91,11 @@ changed. Cleanup/index reconciliation remains explicit pending work.
 
 Creation publication failures use the same optional two-field warning shape,
 with code `note_content_pending` and reason `failed to publish group note content`
-(or the existing path validation reason). The response content comes from the
-committed DB row on this path, so an invalid or unavailable file cannot hide the
-saved identity behind another file-read error. Later GETs keep file-first reads.
+(or the existing path validation reason). On this failure path, the response is
+assembled from the accepted INSERT bindings without another DB/file read. This
+keeps the accepted identity available if the pool closes or a later deletion
+makes an active-row read unavailable. It is a command receipt, not a guarantee
+that the registration is still active. Later GETs keep file-first reads.
 The index is not refreshed when body publication fails; no unattempted index
 outcome is reported. Ordinary creation and index-only failures retain their
 previous response shapes. The UI distinguishes saved content awaiting a workspace
@@ -216,8 +226,10 @@ a registered DB body, no final Markdown, and a temporary file. API/ACP missing-f
 fallback remains available; native file readers may not see the note until an
 explicit repair. There is no new automatic adoption, replay or startup cleanup.
 Known constraint rejection is tested; ambiguous I/O errors during COMMIT and
-power loss are not classified or solved here. Post-commit DB reread failures also
-retain their existing behavior. A durable recovery design remains separate work.
+power loss are not classified or solved here. Creation and update publication
+failures now return accepted receipts without rereading. Successful-publication
+and index-only paths still retain their existing post-commit DB/file reread
+behavior. A durable recovery design remains separate work.
 
 R08 remains in progress. Preserve these observations in separate bug-fix reviews
 before moving shared business ownership:
@@ -225,7 +237,7 @@ before moving shared business ownership:
 | Next slice | Required outcome and verification |
 | --- | --- |
 | R08b2: failed body mutation | Rejected create/update COMMIT now leaves no final new note or overwritten body. Existing updates preserve metadata/identity and reject observed conflicting publication. Creation/update repair and crash recovery remain explicit boundaries. |
-| R08c: committed operation with failed index | Saved create/edit results and committed DELETE conflicts now cover HTTP, ACP, native-reader convergence on the next successful write, and approved Assistant action consumers. Standalone repair and post-commit reread failures still need an independently tested policy. |
+| R08c: committed operation with failed index | Saved create/edit results and committed DELETE conflicts cover HTTP, ACP, native-reader convergence on the next successful write, and approved actions. A failed create publication keeps its accepted identity without a reread, including when the pool closes. Standalone repair and successful-publication/index-only reread failures still need an independently tested policy. |
 | R08d: shared Notes service | Reuse the existing authoring guide, workspace checks and write guard. Extract only after the failure policy is explicit; preserve file-first reads, ownership, membership, symlink rejection, expected-content checks and lease revocation. |
 
 ### Update preparation and publication

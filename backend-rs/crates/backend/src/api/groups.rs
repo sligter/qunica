@@ -3222,14 +3222,28 @@ pub(crate) async fn create_group_note_with_pool(
     // already durable, but a revoked lease must not start a new file publication.
     let publication = check_note_write_guard(guard)
         .and_then(|()| publish_group_note_create(&root, &note_id, staged));
-    let content_pending = publication.is_err();
     // Stop filesystem work if publication failed. Refresh the index only after
     // successful publication; retain identity without inviting callers to retry.
     let warning = match publication {
-        Err(error) => Some(GroupNoteWarning {
-            code: "note_content_pending",
-            reason: error.message_text(),
-        }),
+        Err(error) => {
+            // Note: return the accepted INSERT, just as update publication does.
+            // Another read may be unavailable or see a later deletion; neither
+            // makes this committed command safe to replay. No index I/O follows.
+            let mut response = GroupNoteRow {
+                id: note_id,
+                group_id,
+                title,
+                content: content.clone(),
+                created_at: now.clone(),
+                updated_at: now,
+            }
+            .into_response_with_content(content);
+            response.warning = Some(GroupNoteWarning {
+                code: "note_content_pending",
+                reason: error.message_text(),
+            });
+            return Ok(response);
+        }
         Ok(()) => sync_group_note_index(pool, &root, &group_id)
             .await
             .err()
@@ -3242,11 +3256,7 @@ pub(crate) async fn create_group_note_with_pool(
     let row = fetch_group_note_row(pool, &group_id, &note_id)
         .await?
         .ok_or_else(|| ApiError::internal("group note vanished after insert"))?;
-    let content = if content_pending {
-        row.content.clone()
-    } else {
-        read_group_note_content(&root, &row.id, &row.content)?
-    };
+    let content = read_group_note_content(&root, &row.id, &row.content)?;
     let mut response = row.into_response_with_content(content);
     response.warning = warning;
     Ok(response)
