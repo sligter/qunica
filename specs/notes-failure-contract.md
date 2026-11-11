@@ -25,7 +25,7 @@ moves unlink after COMMIT. Committed writes distinguish a failed derived index
 from a failed note operation. Creation now stages before COMMIT and publishes
 after it. Update also defers body writes until a successful COMMIT. The shared
 `group_notes::files` module owns file preparation and publication; the private
-`api::groups::note_update` module retains the SQLite authorization barrier.
+`group_notes::note_update` module retains the SQLite authorization barrier.
 
 | Injected failure | HTTP result | Database / account events | Body and index / reread |
 | --- | --- | --- | --- |
@@ -232,14 +232,14 @@ failures now return accepted receipts without rereading. Successful-publication
 and index-only paths still retain their existing post-commit DB/file reread
 behavior. A durable recovery design remains separate work.
 
-R08 remains in progress. Preserve these observations in separate bug-fix reviews
-before moving shared business ownership:
+The shared Notes service preserves these observations. Further recovery changes
+need separate behavior and bug-fix reviews:
 
 | Next slice | Required outcome and verification |
 | --- | --- |
 | R08b2: failed body mutation | Rejected create/update COMMIT now leaves no final new note or overwritten body. Existing updates preserve metadata/identity and reject observed conflicting publication. Creation/update repair and crash recovery remain explicit boundaries. |
 | R08c: committed operation with failed index | Saved create/edit results and committed DELETE conflicts cover HTTP, ACP, native-reader convergence on the next successful write, and approved actions. A failed create publication keeps its accepted identity without a reread, including when the pool closes. Standalone repair and successful-publication/index-only reread failures still need an independently tested policy. |
-| R08d: shared Notes service | Reuse the existing authoring guide, workspace checks and write guard. Extract only after the failure policy is explicit; preserve file-first reads, ownership, membership, symlink rejection, expected-content checks and lease revocation. |
+| R08d: shared Notes service | The shared service reuses the existing authoring guide, workspace checks and write guard. HTTP, ACP and approved actions share CRUD while preserving file-first reads, ownership, membership, symlink rejection, expected-content checks and lease revocation. |
 
 ### File lifecycle ownership
 
@@ -255,8 +255,8 @@ Characterization tests first verify file authority, corrupt/non-file read reject
 and abandonment of a prepared update on the original implementation. The API's
 SQL, membership/lease checks, accepted receipts, index refresh and post-commit
 reads retain their order. Reusing `ApiError` preserves existing error envelopes;
-this step does not claim a transport-independent Notes service or remove ACP's
-remaining dependency on the Group API. R08 service extraction remains incomplete.
+that type dependency remains explicit. ACP now calls the shared Notes service
+instead of Group API business functions.
 
 ### Access and Group projection ownership
 
@@ -273,8 +273,8 @@ are retained, rather than adding a second Notes projection. The row is an owned
 internal read record, with crate-visible fields; API response mapping remains in
 the API. The read helper and access module retain `ApiError` to preserve the
 current compatibility envelope; that error-type dependency on the API remains
-an explicit cost. This is not a generic Repository framework, and Notes CRUD
-orchestration remains in the API.
+an explicit cost. This is not a generic Repository framework. Notes CRUD
+orchestration belongs to `group_notes::service`.
 
 A characterization test first runs on the original implementation. It stores a
 TEXT step budget that SQLite accepts but the original full-row decoder rejects,
@@ -285,6 +285,26 @@ or expose the existing inactive-workspace error. This is fixture corruption,
 not evidence that the normal API produces such a value. Narrowing the projection
 or changing error precedence requires a separate behavior decision and stronger
 replacement assertions.
+
+### Shared command ownership
+
+`group_notes::service` owns the original list/detail/create/update/delete flows,
+Notes SQL, accepted receipts, title validation and derived-index refresh. The
+publication barrier moves unchanged to `group_notes::note_update`. HTTP handlers
+retain user identity and status/JSON wrapping; ACP, approved actions and AppRead
+call the same service with the original pool and host-owned identity/guard.
+Decision-model validation, the ACP write lock and approval-ledger handling remain
+with their callers. The service does not own AppState, an HTTP request or a new
+global state object.
+
+Public Rust DTO names remain available through `api::groups` re-exports. Their
+Serde fields/defaults and optional warning shape are unchanged. A real-handler
+contract first runs on the original implementation: create with null content
+supplies the template, then a null-content title update preserves a native edit,
+the DB body and the ordinary warning-free response. The API's prompt projection
+continues to consume the shared Notes record/column list. ACP's registered-note
+list keeps its existing created-time order, distinct from the HTTP list order;
+no read, retry, concurrency or repair policy is unified in this extraction.
 
 ### Update preparation and publication
 

@@ -18,3 +18,6 @@ pub(crate) fn default_content(title: &str, since: &str) -> String {
 
 pub(crate) mod access;
 pub(crate) mod files;
+
+mod note_update;
+pub(crate) mod service;

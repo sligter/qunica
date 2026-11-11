@@ -66,12 +66,13 @@ pub(crate) async fn get(ctx: &AppControlContext, args: &Value) -> Result<ToolRes
         .ok_or_else(|| ToolError::invalid("id is required"))?;
 
     // Note content lives in the app-managed Notes directory and can be newer
-    // than the database fallback after an Agent edits it. Reuse the API's safe
+    // than the database fallback after an Agent edits it. Reuse Notes' safe
     // path checks instead of returning stale SQL content.
     if kind == TargetKind::GroupNote {
-        let item = crate::api::groups::get_group_note_by_id_inner(ctx.pool(), ctx.owner_id(), id)
-            .await
-            .map_err(|error| ToolError::invalid(error.message_text()))?;
+        let item =
+            crate::group_notes::service::get_group_note_by_id_inner(ctx.pool(), ctx.owner_id(), id)
+                .await
+                .map_err(|error| ToolError::invalid(error.message_text()))?;
         return Ok(completed(json!({
             "kind": kind.as_str(),
             "item": item,

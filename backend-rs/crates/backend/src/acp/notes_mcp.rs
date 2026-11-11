@@ -27,9 +27,8 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::{
-    api::groups,
     decision::{self, DecisionGate, DecisionScenario},
-    group_notes::access as note_access,
+    group_notes::{access as note_access, service as notes},
     tools::{FileEdit, WorkspaceTools, MAX_WRITE_BYTES},
 };
 
@@ -313,7 +312,7 @@ impl ActiveContext {
                         Ok(json!({"notes": rows.into_iter().map(|(id,title)| json!({"path":format!("{id}.md"),"title":title})).collect::<Vec<_>>()}).to_string())
                     }
                     Some(path) => {
-                        let note = groups::get_group_note_inner(
+                        let note = notes::get_group_note_inner(
                             &c.pool,
                             &c.owner_id,
                             &c.group_id,
@@ -336,7 +335,7 @@ impl ActiveContext {
                 self.check().await?;
                 let _write = c.write_lock.lock().await;
                 self.check().await?;
-                let note = groups::create_group_note_with_pool(
+                let note = notes::create_group_note_with_pool(
                     &c.pool,
                     &c.owner_id,
                     &c.group_id,
@@ -355,7 +354,7 @@ impl ActiveContext {
                 let id = note_id(&args.path)?;
                 // Membership in the database is mandatory: a UUID-shaped file
                 // from a different group sharing this workspace is not ours.
-                let existing = groups::get_group_note_inner(&c.pool, &c.owner_id, &c.group_id, id)
+                let existing = notes::get_group_note_inner(&c.pool, &c.owner_id, &c.group_id, id)
                     .await
                     .map_err(|e| e.message_text())?;
                 let existing = serde_json::to_value(existing).map_err(|_| "Invalid note")?;
@@ -375,7 +374,7 @@ impl ActiveContext {
                     .map_err(|_| "Invalid note")?;
                 let _write = c.write_lock.lock().await;
                 self.check().await?;
-                let note = groups::update_group_note_with_pool(
+                let note = notes::update_group_note_with_pool(
                     &c.pool,
                     &c.owner_id,
                     &c.group_id,
@@ -395,7 +394,7 @@ impl ActiveContext {
     }
 }
 
-fn note_result(note: groups::GroupNoteResponse) -> String {
+fn note_result(note: notes::GroupNoteResponse) -> String {
     let mut result = serde_json::to_value(note).expect("serializable note");
     result["path"] = json!(format!("{}.md", result["id"].as_str().unwrap_or_default()));
     result.to_string()
@@ -633,7 +632,7 @@ mod tests {
         let foreign_group = Uuid::new_v4().to_string();
         sqlx::query("INSERT INTO groups (id,owner_id,workspace_id,name,created_at,updated_at) SELECT ?,owner_id,workspace_id,'Other','now','now' FROM groups WHERE id = ?")
             .bind(&foreign_group).bind(&context.group_id).execute(&context.pool).await.unwrap();
-        let foreign = groups::create_group_note_with_pool(
+        let foreign = notes::create_group_note_with_pool(
             &context.pool,
             &context.owner_id,
             &foreign_group,
@@ -865,7 +864,7 @@ mod tests {
             .join(note["path"].as_str().unwrap());
         std::fs::write(&path, "Newer edit").unwrap();
         let active = AtomicBool::new(true);
-        let result = groups::update_group_note_with_pool(
+        let result = notes::update_group_note_with_pool(
             &context.pool,
             &context.owner_id,
             &context.group_id,
@@ -880,7 +879,7 @@ mod tests {
         assert_eq!(result.unwrap_err().status_code(), StatusCode::CONFLICT);
         assert_eq!(std::fs::read_to_string(path).unwrap(), "Newer edit");
         active.store(false, Ordering::SeqCst);
-        let result = groups::create_group_note_with_pool(
+        let result = notes::create_group_note_with_pool(
             &context.pool,
             &context.owner_id,
             &context.group_id,

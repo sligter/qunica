@@ -23,6 +23,59 @@ mod update_boundary;
 #[path = "notes_failure/update_commit.rs"]
 mod update_commit;
 
+#[tokio::test]
+async fn public_rust_note_dtos_keep_null_body_and_file_authority_contracts() {
+    use qunica_backend::api::groups::{
+        self, GroupNoteCreateRequest, GroupNoteResponse, GroupNoteUpdateRequest,
+    };
+    fn encode(note: GroupNoteResponse) -> Value {
+        serde_json::to_value(note).unwrap()
+    }
+    let fixture = Fixture::new(false).await;
+    let headers = authed("GET", "/", &fixture.token).headers().clone();
+    let create: GroupNoteCreateRequest =
+        serde_json::from_value(json!({"title":"Contract", "content":null})).unwrap();
+    let (status, axum::Json(created)) = groups::create_group_note(
+        axum::extract::State(fixture.state.clone()),
+        headers.clone(),
+        axum::extract::Path(fixture.group.clone()),
+        axum::Json(create),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, StatusCode::CREATED);
+    let created = encode(created);
+    let id = created["id"].as_str().unwrap();
+    let registered = created["content"].as_str().unwrap();
+    assert!(registered.starts_with("# Contract\nStatus: proposed\n"));
+    assert!(created.get("warning").is_none());
+    fs::write(fixture.note_path(id), "native edit").unwrap();
+
+    let update: GroupNoteUpdateRequest =
+        serde_json::from_value(json!({"title":"Renamed", "content":null})).unwrap();
+    let axum::Json(updated) = groups::update_group_note(
+        axum::extract::State(fixture.state.clone()),
+        headers,
+        axum::extract::Path((fixture.group.clone(), id.to_string())),
+        axum::Json(update),
+    )
+    .await
+    .unwrap();
+    let updated = encode(updated);
+    assert_eq!(updated["id"], id);
+    assert_eq!(updated["title"], "Renamed");
+    assert_eq!(updated["created_at"], created["created_at"]);
+    assert_eq!(updated["content"], "native edit");
+    assert!(updated.get("warning").is_none());
+    assert_eq!(
+        fs::read_to_string(fixture.note_path(id)).unwrap(),
+        "native edit"
+    );
+    assert_eq!(fixture.snapshot().await.rows[0].2, registered);
+    assert!(fixture.index().contains(&format!("[Renamed]({id}.md)")));
+    fixture.state.db.pool().close().await;
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Snapshot {
     rows: Vec<(String, String, String, String, String, String)>,

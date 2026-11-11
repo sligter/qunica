@@ -99,7 +99,7 @@ struct ChatMessagePayload {
 struct GroupNoteCreatePayload {
     group_id: String,
     #[serde(flatten)]
-    note: crate::api::groups::GroupNoteCreateRequest,
+    note: crate::group_notes::service::GroupNoteCreateRequest,
 }
 
 #[derive(Deserialize)]
@@ -498,19 +498,20 @@ async fn apply(
         }
         (TargetKind::GroupNote, Action::Create) => {
             let body: GroupNoteCreatePayload = decode(payload)?;
-            let created = crate::api::groups::create_group_note_inner(
-                state,
+            let created = crate::group_notes::service::create_group_note_with_pool(
+                state.db.pool(),
                 owner_id,
                 &body.group_id,
                 body.note,
+                None,
             )
             .await?;
             Ok(serde_json::to_value(created).unwrap_or_default())
         }
         (TargetKind::GroupNote, Action::Update) => {
             let body = decode(payload)?;
-            let updated = crate::api::groups::update_group_note_by_id_inner(
-                state,
+            let updated = crate::group_notes::service::update_group_note_by_id_inner(
+                state.db.pool(),
                 owner_id,
                 require(target_id)?,
                 body,
@@ -690,7 +691,7 @@ pub(crate) async fn validate_proposal(
             ensure_owned(ctx, TargetKind::Group, &body.group_id).await?;
         }
         TargetKind::GroupNote => {
-            decode::<crate::api::groups::GroupNoteUpdateRequest>(payload.clone())
+            decode::<crate::group_notes::service::GroupNoteUpdateRequest>(payload.clone())
                 .map_err(invalid)?;
         }
         TargetKind::Mcp => {
@@ -786,7 +787,7 @@ fn check_payload_rules(kind: TargetKind, payload: &Value) -> Result<(), ApiError
 
     if kind == TargetKind::GroupNote {
         if let Some(title) = object.get("title").and_then(Value::as_str) {
-            crate::api::groups::validate_note_title(title)?;
+            crate::group_notes::service::validate_note_title(title)?;
         }
     }
 
