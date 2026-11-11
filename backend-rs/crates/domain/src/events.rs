@@ -48,6 +48,19 @@ pub struct StreamEvent<TPayload> {
     pub payload: TPayload,
 }
 
+/// Scheduler selection wire shape; an absent source serializes as JSON null.
+/// Scheduler policy and its enum-to-string mapping remain owned by the runtime.
+#[derive(Debug, Serialize)]
+pub struct SpeakerSelectedPayload<'a> {
+    pub turn_id: &'a str,
+    pub dispatch_id: &'a str,
+    pub source_agent_id: Option<&'a str>,
+    pub target_agent_id: &'a str,
+    pub reason: &'a str,
+    pub action_kind: &'a str,
+    pub hop: u32,
+}
+
 impl<TPayload> StreamEvent<TPayload> {
     pub fn new(stream_id: Uuid, seq: i64, kind: StreamEventKind, payload: TPayload) -> Self {
         let event_id = format!("{stream_id}:{seq}");
@@ -65,6 +78,26 @@ impl<TPayload> StreamEvent<TPayload> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn speaker_selected_dto_preserves_required_nullable_source() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/speaker_selected.json")).unwrap();
+        for source in [None, Some("source-1")] {
+            let mut expected = fixture["payload"].clone();
+            expected["source_agent_id"] = json!(source);
+            let payload = SpeakerSelectedPayload {
+                turn_id: "turn-1",
+                dispatch_id: "dispatch-1",
+                source_agent_id: source,
+                target_agent_id: "agent-1",
+                reason: "deterministic_order",
+                action_kind: "speak",
+                hop: 0,
+            };
+            assert_eq!(serde_json::to_value(payload).unwrap(), expected);
+        }
+    }
 
     #[test]
     fn event_id_is_stable_stream_id_and_sequence() {

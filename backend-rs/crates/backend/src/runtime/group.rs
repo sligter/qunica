@@ -51,7 +51,7 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures_util::{stream::FuturesUnordered, StreamExt};
-use qunica_domain::events::{StreamEvent, StreamEventKind};
+use qunica_domain::events::{SpeakerSelectedPayload, StreamEvent, StreamEventKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
@@ -2713,21 +2713,26 @@ struct SpeakerSelection<'a> {
     hop: u32,
 }
 
+fn speaker_selected_payload(selection: SpeakerSelection<'_>) -> Value {
+    // Note: keep wire shaping pure so the actual producer shares the Zod fixture.
+    json!(SpeakerSelectedPayload {
+        turn_id: selection.turn_id,
+        dispatch_id: selection.dispatch_id,
+        source_agent_id: selection.source_agent_id,
+        target_agent_id: selection.target_agent_id,
+        reason: selection.selection_reason.as_str(),
+        action_kind: selection.action_kind.as_str(),
+        hop: selection.hop,
+    })
+}
+
 async fn emit_speaker_selected(
     ctx: &mut StreamCtx,
     selection: SpeakerSelection<'_>,
 ) -> Result<(), StepErr> {
     ctx.emit_durable_event(
         StreamEventKind::SpeakerSelected,
-        json!({
-            "turn_id": selection.turn_id,
-            "dispatch_id": selection.dispatch_id,
-            "source_agent_id": selection.source_agent_id,
-            "target_agent_id": selection.target_agent_id,
-            "reason": selection.selection_reason.as_str(),
-            "action_kind": selection.action_kind.as_str(),
-            "hop": selection.hop,
-        }),
+        speaker_selected_payload(selection),
     )
     .await
 }
@@ -10074,6 +10079,30 @@ mod tests {
     use crate::runtime::conversation_context::{
         ConversationActor, ConversationAttachment, ConversationMessage,
     };
+
+    #[test]
+    fn speaker_selected_wire_fixture_matches_runtime_mapping() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../domain/src/fixtures/speaker_selected.json"
+        ))
+        .unwrap();
+        for source in [None, Some("source-1")] {
+            let mut expected = fixture.clone();
+            expected["payload"]["source_agent_id"] = json!(source);
+            let payload = speaker_selected_payload(SpeakerSelection {
+                turn_id: "turn-1",
+                dispatch_id: "dispatch-1",
+                source_agent_id: source,
+                target_agent_id: "agent-1",
+                selection_reason: SelectionReason::DeterministicOrder,
+                action_kind: ActionKind::Speak,
+                hop: 0,
+            });
+            let event =
+                StreamEvent::new(Uuid::nil(), 42, StreamEventKind::SpeakerSelected, payload);
+            assert_eq!(serde_json::to_value(event).unwrap(), expected);
+        }
+    }
 
     #[test]
     fn coalescing_joins_text_from_one_agent_only() {

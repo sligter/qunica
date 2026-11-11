@@ -1,0 +1,15 @@
+{
+  "stream_id": "00000000-0000-0000-0000-000000000000",
+  "seq": 42,
+  "event_id": "00000000-0000-0000-0000-000000000000:42",
+  "kind": "speaker_selected",
+  "payload": {
+    "turn_id": "turn-1",
+    "dispatch_id": "dispatch-1",
+    "source_agent_id": null,
+    "target_agent_id": "agent-1",
+    "reason": "deterministic_order",
+    "action_kind": "speak",
+    "hop": 0
+  }
+}

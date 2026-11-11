@@ -1,3 +1,4 @@
+import { schedulerActionKindSchema, schedulerSelectionReasonSchema, speakerSelectedPayloadSchema } from './speakerSelected'
 import { z } from 'zod'
 
 import type {
@@ -74,19 +75,6 @@ const agentDispatchStatusSchema = z.enum([
   'interrupted',
   'cancelled',
   'failed',
-])
-
-const schedulerActionKindSchema = z.enum(['speak', 'call', 'handoff', 'wait', 'silent'])
-
-const schedulerSelectionReasonSchema = z.enum([
-  'user_mention',
-  'agent_call',
-  'agent_handoff',
-  'agent_text_mention',
-  'deterministic_order',
-  'moderator',
-  'moderator_fallback',
-  'decision_model',
 ])
 
 const groupTurnTerminationReasonSchema = z.enum([
@@ -240,17 +228,7 @@ const schedulerEventSchema = z.discriminatedUnion('kind', [
   }),
   schedulerEventBaseSchema.extend({
     kind: z.literal('speaker_selected'),
-    payload: z
-      .object({
-        turn_id: z.string(),
-        dispatch_id: z.string(),
-        source_agent_id: z.string().nullable(),
-        target_agent_id: z.string(),
-        reason: schedulerSelectionReasonSchema,
-        action_kind: schedulerActionKindSchema,
-        hop: z.number().int().nonnegative(),
-      })
-      .strict(),
+    payload: speakerSelectedPayloadSchema,
   }),
   schedulerEventBaseSchema.extend({
     kind: z.literal('dispatch_failed'),

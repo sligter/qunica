@@ -1,3 +1,6 @@
+import type { SchedulerActionKind, SchedulerSelectionReason, SpeakerSelectedPayload } from './speakerSelected'
+export type { SchedulerActionKind, SchedulerSelectionReason, SpeakerSelectedPayload } from './speakerSelected'
+
 export type LegacyStreamEventKind =
   | 'user_message'
   | 'conversation_updated'
@@ -127,18 +130,6 @@ export type AgentDispatchStatus =
   | 'cancelled'
   | 'failed'
 
-export type SchedulerActionKind = 'speak' | 'call' | 'handoff' | 'wait' | 'silent'
-
-export type SchedulerSelectionReason =
-  | 'user_mention'
-  | 'agent_call'
-  | 'agent_handoff'
-  | 'agent_text_mention'
-  | 'deterministic_order'
-  | 'moderator'
-  | 'moderator_fallback'
-  | 'decision_model'
-
 export type GroupTurnTerminationReason =
   | 'waiting_for_user'
   | 'budget_exhausted'
@@ -250,16 +241,6 @@ export interface TurnStartedPayload {
 
 export interface ModeratorStartedPayload {
   turn_id: string
-}
-
-export interface SpeakerSelectedPayload {
-  turn_id: string
-  dispatch_id: string
-  source_agent_id: string | null
-  target_agent_id: string
-  reason: SchedulerSelectionReason
-  action_kind: SchedulerActionKind
-  hop: number
 }
 
 export interface DispatchFailedPayload {
