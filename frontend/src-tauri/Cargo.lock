@@ -3934,7 +3934,7 @@ dependencies = [
 
 [[package]]
 name = "qunica-backend"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3979,7 +3979,7 @@ dependencies = [
 
 [[package]]
 name = "qunica-desktop"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4005,7 +4005,7 @@ dependencies = [
 
 [[package]]
 name = "qunica-domain"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -4016,7 +4016,7 @@ dependencies = [
 
 [[package]]
 name = "qunica-mobile-link"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "axum",

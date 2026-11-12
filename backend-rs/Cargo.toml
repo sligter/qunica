@@ -10,4 +10,4 @@ members = [
 edition = "2021"
 rust-version = "1.97.1"
 license = "UNLICENSED"
-version = "0.1.8"
+version = "0.1.9"

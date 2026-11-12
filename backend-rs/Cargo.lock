@@ -1981,7 +1981,7 @@ dependencies = [
 
 [[package]]
 name = "qunica-backend"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2029,7 +2029,7 @@ dependencies = [
 
 [[package]]
 name = "qunica-computer-supervisor"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2052,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "qunica-domain"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "serde",
  "serde_json",
