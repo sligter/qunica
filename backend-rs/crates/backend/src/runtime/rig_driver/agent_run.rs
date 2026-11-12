@@ -17,7 +17,7 @@ pub(crate) struct RigDriver {
     policy: TurnPolicy,
     report: Option<oneshot::Receiver<CompletionReport>>,
     pub checkpoint: DriverCheckpoint,
-    max_calls: u64,
+    max_calls: Option<u64>,
     max_failures: u64,
     max_tokens: Option<u64>,
 }
@@ -33,6 +33,13 @@ impl RigDriver {
                     .with_context(|| format!("rig_limits.{key} must be a positive integer")),
             }
         };
+        let optional = |key: &str| -> anyhow::Result<Option<u64>> {
+            config
+                .get("rig_limits")
+                .and_then(|limits| limits.get(key))
+                .map(|_| limit(key, 1))
+                .transpose()
+        };
         Ok(Self {
             provider,
             run: None,
@@ -41,13 +48,11 @@ impl RigDriver {
             policy: TurnPolicy::default(),
             report: None,
             checkpoint: DriverCheckpoint::default(),
-            max_calls: limit("max_model_calls", 128)?,
+            // Note: long tool loops are normal work; a model-call cap applies
+            // only when the agent configures one.
+            max_calls: optional("max_model_calls")?,
             max_failures: limit("max_failed_attempts", 16)?,
-            max_tokens: config
-                .get("rig_limits")
-                .and_then(|limits| limits.get("max_total_tokens"))
-                .map(|_| limit("max_total_tokens", 1))
-                .transpose()?,
+            max_tokens: optional("max_total_tokens")?,
         })
     }
 
@@ -69,6 +74,22 @@ impl RigDriver {
             self.checkpoint.failed_attempts = self.checkpoint.failed_attempts.saturating_add(1);
             self.checkpoint.phase = AttemptPhase::Aborted;
         }
+    }
+
+    /// Note: only an explicit human Resume of an interrupted reply reaches
+    /// here. Without it, a run that spent its call or failure budget could never
+    /// continue. Retries, approval resumes and restarts keep the current window.
+    pub fn open_budget_window(&mut self) {
+        let checkpoint = &mut self.checkpoint;
+        checkpoint.window_attempts = checkpoint.attempts;
+        checkpoint.window_failed_attempts = checkpoint.failed_attempts;
+        checkpoint.window_total_tokens = checkpoint.total_tokens;
+    }
+
+    fn window_tokens(&self) -> u64 {
+        self.checkpoint
+            .total_tokens
+            .saturating_sub(self.checkpoint.window_total_tokens)
     }
 
     pub fn settle(&mut self, messages: &[ChatMessage]) -> anyhow::Result<()> {
@@ -138,15 +159,25 @@ impl RigDriver {
             self.pending.is_empty(),
             "cannot rebuild Rig with unsettled tools"
         );
-        if self.checkpoint.attempts >= self.max_calls {
+        let checkpoint = &self.checkpoint;
+        if self.max_calls.is_some_and(|limit| {
+            checkpoint
+                .attempts
+                .saturating_sub(checkpoint.window_attempts)
+                >= limit
+        }) {
             return Err(DriverBudgetExhausted("model-call").into());
         }
-        if self.checkpoint.failed_attempts >= self.max_failures {
+        if checkpoint
+            .failed_attempts
+            .saturating_sub(checkpoint.window_failed_attempts)
+            >= self.max_failures
+        {
             return Err(DriverBudgetExhausted("failure").into());
         }
         if self
             .max_tokens
-            .is_some_and(|limit| self.checkpoint.total_tokens >= limit)
+            .is_some_and(|limit| self.window_tokens() >= limit)
         {
             return Err(DriverBudgetExhausted("token").into());
         }
@@ -317,7 +348,7 @@ impl RigDriver {
         );
         if self
             .max_tokens
-            .is_some_and(|limit| self.checkpoint.total_tokens > limit)
+            .is_some_and(|limit| self.window_tokens() > limit)
         {
             return Err(DriverBudgetExhausted("token").into());
         }
@@ -399,3 +430,7 @@ fn coalesce(messages: &[Message]) -> Vec<Message> {
     }
     normalized
 }
+
+#[cfg(test)]
+#[path = "agent_run_tests.rs"]
+mod tests;

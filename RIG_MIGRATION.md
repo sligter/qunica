@@ -270,11 +270,19 @@ An agent may opt in through its existing `llm_config` API field:
 Missing `engine` means `rig`. Saved `engine: "native"` is a compatibility
 alias for **new Rig execution**, not an engine choice. Unknown values and invalid
 limits fail at API validation and again when loading stored configuration. The
-SDK is required even with `--no-default-features`. Default model-call and
-failed-attempt limits are 128 and 16; the token cap is optional. These limits
+SDK is required even with `--no-default-features`. The default failed-attempt
+limit is 16; the model-call and token caps are optional and unlimited unless
+configured. These limits
 cover one Rig execution, including retries and approval resumes, and supplement
 the group scheduler's budget for summarization and delegated agents. They do
-not reset when AgentRun is rebuilt.
+not reset when AgentRun is rebuilt. An explicit human Resume of an interrupted
+reply (no approval decision) opens a new window of each limit from the current
+counters; the counters themselves stay cumulative. Approval resumes, retries
+and restarts never open a window.
+Window floors are additive checkpoint fields: missing floors read as zero,
+and zero floors are omitted on write to preserve exact legacy schema-3 JSON.
+Nonzero floors are persisted and restored with cumulative counters. The
+versioned durable-record fixtures remain unchanged regression inputs.
 
 Before accepting a recorded model resume command, the agent must retain
 `llm_chat` and valid model configuration. The approval transaction rejects an

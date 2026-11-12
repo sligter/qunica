@@ -38,6 +38,20 @@ pub(crate) struct DriverCheckpoint {
     pub attempt_input_tokens: u64,
     pub attempt_output_tokens: u64,
     pub attempt_total_tokens: u64,
+    /// Counter values when the latest explicit human Resume opened a new
+    /// budget window. Limits apply to usage above these; totals stay cumulative.
+    // Note: zero floors retain the exact legacy checkpoint shape. Nonzero
+    // floors must survive recovery; missing fields still default to zero.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub window_attempts: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub window_failed_attempts: u64,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub window_total_tokens: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -141,7 +155,11 @@ impl TurnEngine {
         Ok((Self::Rig(Box::new(driver)), provider))
     }
 
-    pub fn restore(&mut self, checkpoint: Option<&DriverCheckpoint>) -> anyhow::Result<()> {
+    pub fn restore(
+        &mut self,
+        checkpoint: Option<&DriverCheckpoint>,
+        explicit_resume: bool,
+    ) -> anyhow::Result<()> {
         // Note: a config change must not reinterpret an accepted Rig exchange
         // or reset its budget. See RIG_MIGRATION.md#p3-host-driven-agentrun.
         match self {
@@ -149,7 +167,12 @@ impl TurnEngine {
                 checkpoint.is_none(),
                 "A Rig checkpoint cannot enter legacy recovery."
             ),
-            Self::Rig(driver) => driver.restore(checkpoint),
+            Self::Rig(driver) => {
+                driver.restore(checkpoint);
+                if explicit_resume {
+                    driver.open_budget_window();
+                }
+            }
         }
         Ok(())
     }

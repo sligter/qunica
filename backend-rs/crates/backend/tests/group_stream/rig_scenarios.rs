@@ -715,6 +715,60 @@ async fn rig_call_and_failure_limits_stop_before_another_request() {
 }
 
 #[tokio::test]
+async fn rig_explicit_resume_opens_a_new_call_window_after_exhaustion() {
+    let scenario = Scenario::new(
+        "call-limit-resume",
+        vec![
+            ok(tool_body(vec![(
+                "read",
+                "Read",
+                json!({"file_path":"source.txt"}),
+            )])),
+            ok(text_body("continued")),
+            ok(text_body("must not request")),
+        ],
+    )
+    .await;
+    std::fs::write(scenario.root.path().join("source.txt"), "source").unwrap();
+    set_agent_model_config(
+        &scenario.state,
+        &scenario.agent,
+        json!({"engine":"rig","rig_limits":{"max_model_calls":1}}),
+    )
+    .await;
+    let events = scenario.run().await;
+    assert!(
+        !payloads_of_kind(&events, StreamEventKind::DispatchFailed).is_empty(),
+        "{events:?}"
+    );
+    assert_eq!(scenario.requests.lock().await.len(), 1);
+    let thread: String =
+        sqlx::query_scalar("SELECT thread_id FROM messages WHERE group_id=? AND sender_id=?")
+            .bind(&scenario.group)
+            .bind(&scenario.agent)
+            .fetch_one(scenario.state.db.pool())
+            .await
+            .unwrap();
+    let resumed = stream_events(
+        &scenario.app,
+        &format!("/api/v2/threads/{thread}/resume"),
+        &scenario.token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        payloads_of_kind(&resumed, StreamEventKind::AgentMessage).len(),
+        1,
+        "{resumed:?}"
+    );
+    assert_eq!(scenario.requests.lock().await.len(), 2);
+    let saved = scenario.checkpoint().await["driver_checkpoint"].clone();
+    // Counters stay cumulative; only the window base moves.
+    assert_eq!(saved["attempts"], 2);
+    assert_eq!(saved["window_attempts"], 1);
+}
+
+#[tokio::test]
 async fn rig_token_limit_records_charge_but_blocks_tool_execution() {
     let scenario = Scenario::new(
         "token-limit",

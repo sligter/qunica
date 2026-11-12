@@ -4041,8 +4041,16 @@ async fn run_agent_turn_body(
         .as_ref()
         .map(|resume| resume.turn.clone())
         .unwrap_or_default();
+    // An approval answer resumes the same budget window; a plain Resume of
+    // the interrupted reply is the user's explicit decision to keep going.
+    let explicit_resume = handoff_depth == 0
+        && delegated_input.is_none()
+        && ctx
+            .resume
+            .as_ref()
+            .is_some_and(|resume| resume.approval.is_none());
     engine
-        .restore(turn.driver_checkpoint.as_ref())
+        .restore(turn.driver_checkpoint.as_ref(), explicit_resume)
         .map_err(StepErr::Db)?;
     turn.effort_override = ctx.effort_override;
     turn.execution_id = Some(execution_id.to_owned());
