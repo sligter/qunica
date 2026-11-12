@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::{
+    future::Future,
+    sync::{mpsc, Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
 use qunica_backend::{
     db::Db,
@@ -12,10 +16,67 @@ use qunica_backend::{
     },
 };
 use serde_json::json;
-use tokio::sync::{Barrier, Mutex};
+use tokio::sync::{oneshot, Barrier, Mutex};
+use tracing::{instrument::WithSubscriber, Event, Level, Subscriber};
+use tracing_subscriber::{layer::Context, prelude::*, Layer};
 use uuid::Uuid;
 
 const NOW: &str = "2026-07-14T00:00:00Z";
+
+struct RetryPause {
+    target: &'static str,
+    handshake: StdMutex<Option<(oneshot::Sender<()>, mpsc::Receiver<()>)>>,
+}
+
+impl<S: Subscriber> Layer<S> for RetryPause {
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let metadata = event.metadata();
+        if metadata.target() != self.target
+            || metadata.level() != &Level::WARN
+            || metadata.fields().field("attempt").is_none()
+            || metadata.fields().field("error").is_none()
+        {
+            return;
+        }
+        let handshake = self.handshake.lock().unwrap().take();
+        if let Some((observed, resume)) = handshake {
+            observed.send(()).unwrap();
+            // This callback runs on a dedicated blocking worker, not the test's
+            // async executor. Keep the retry paused until the blocker is gone.
+            resume
+                .recv_timeout(Duration::from_secs(5))
+                .expect("test did not release the SQLite retry");
+        }
+    }
+}
+
+struct PausedWrite<T> {
+    task: tokio::task::JoinHandle<T>,
+    retry: oneshot::Receiver<()>,
+    resume: mpsc::SyncSender<()>,
+}
+
+fn pause_on_first_retry<F>(target: &'static str, operation: F) -> PausedWrite<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    let (observed, retry) = oneshot::channel();
+    let (resume, release) = mpsc::sync_channel(1);
+    let subscriber = tracing_subscriber::registry().with(RetryPause {
+        target,
+        handshake: StdMutex::new(Some((observed, release))),
+    });
+    let runtime = tokio::runtime::Handle::current();
+    let task = tokio::task::spawn_blocking(move || {
+        runtime.block_on(operation.with_subscriber(subscriber))
+    });
+    PausedWrite {
+        task,
+        retry,
+        resume,
+    }
+}
 
 #[tokio::test]
 async fn cancellation_prevents_an_old_dispatch_from_appending_output() {
@@ -157,37 +218,47 @@ async fn finishing_a_dispatch_retries_a_transient_sqlite_write_lock() {
 
     let store = fixture.store.clone();
     let output = fixture.output("message-after-lock");
-    let ready = Arc::new(Barrier::new(2));
-    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-    let finish_ready = ready.clone();
-    let finish = tokio::spawn(async move {
-        finish_ready.wait().await;
-        let _ = entered_tx.send(());
-        store
-            .finish_dispatch(FinishDispatch {
-                dispatch_id: "dispatch-locked".to_owned(),
-                next: DispatchStatus::Completed,
-                artifact: None,
-                total_tokens: 7,
-                failure_code: None,
-                output: Some(output),
-            })
-            .await
-    });
-    ready.wait().await;
-    // Wait until the worker actually enters the write attempt; a busy test
-    // runtime must not turn the retry assertion into a scheduling race.
-    entered_rx.await.unwrap();
-    let started = std::time::Instant::now();
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    let finish = pause_on_first_retry(
+        "qunica_backend::runtime::group_scheduler::store",
+        async move {
+            store
+                .finish_dispatch(FinishDispatch {
+                    dispatch_id: "dispatch-locked".to_owned(),
+                    next: DispatchStatus::Completed,
+                    artifact: None,
+                    total_tokens: 7,
+                    failure_code: None,
+                    output: Some(output),
+                })
+                .await
+        },
+    );
+    // The failed database attempt is observed while its retry is paused. A
+    // delayed parent cannot accidentally release the lock before that attempt.
+    tokio::time::timeout(Duration::from_secs(5), finish.retry)
+        .await
+        .unwrap()
+        .expect("dispatch write finished without observing a retry");
+    assert!(!finish.task.is_finished());
     blocker.rollback().await.unwrap();
+    finish.resume.send(()).unwrap();
 
-    let finished = finish.await.unwrap().unwrap();
-    assert!(started.elapsed() >= std::time::Duration::from_millis(20));
+    let finished = finish.task.await.unwrap().unwrap();
     assert_eq!(finished.status, DispatchStatus::Completed);
     assert_eq!(
         finished.output_message_id.as_deref(),
         Some("message-after-lock")
+    );
+    let counts: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM messages), (SELECT COUNT(*) FROM stream_events)",
+    )
+    .fetch_one(&fixture.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        counts,
+        (1, 1),
+        "retry must commit the message and event once"
     );
 }
 
@@ -223,23 +294,19 @@ async fn persisting_a_stream_event_retries_a_transient_sqlite_write_lock() {
         StreamEventKind::AcpAgentRun,
         json!({"status": "completed"}),
     );
-    let ready = Arc::new(Barrier::new(2));
-    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-    let persist_ready = ready.clone();
     let thread_id = fixture.thread_id.clone();
-    let persist = tokio::spawn(async move {
-        persist_ready.wait().await;
-        let _ = entered_tx.send(());
+    let persist = pause_on_first_retry("qunica_backend::runtime::sequence", async move {
         allocator.persist_event(&thread_id, &event).await
     });
-    ready.wait().await;
-    entered_rx.await.unwrap();
-    let started = std::time::Instant::now();
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    tokio::time::timeout(Duration::from_secs(5), persist.retry)
+        .await
+        .unwrap()
+        .expect("event write finished without observing a retry");
+    assert!(!persist.task.is_finished());
     blocker.rollback().await.unwrap();
+    persist.resume.send(()).unwrap();
 
-    persist.await.unwrap().unwrap();
-    assert!(started.elapsed() >= std::time::Duration::from_millis(20));
+    persist.task.await.unwrap().unwrap();
     let event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stream_events")
         .fetch_one(&fixture.pool)
         .await
